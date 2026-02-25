@@ -139,12 +139,21 @@ function getInlineSkiSvg(): string {
 
 type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond';
 
+let _skiLiftVisible = true;
+
+export function setSkiLift(show: boolean) {
+  _skiLiftVisible = show;
+  const fin = document.getElementById('ski-lift') as SVGElement | null;
+  if (fin) fin.style.display = show ? '' : 'none';
+}
+
 function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
   const outer  = document.getElementById('ski-dot-outer')  as SVGElement | null;
   const inner  = document.getElementById('ski-dot-inner')  as SVGElement | null;
   const circle = document.getElementById('ski-dot-circle') as SVGElement | null;
   const square = document.getElementById('ski-dot-square') as SVGElement | null;
   const link   = document.getElementById('ski-modal-brand-link') as HTMLAnchorElement | null;
+  const fin    = document.getElementById('ski-lift')         as SVGElement | null;
 
   if (outer)  outer.style.display  = variant === 'black-diamond' ? '' : 'none';
   if (inner)  inner.style.display  = variant === 'black-diamond' ? '' : 'none';
@@ -153,6 +162,8 @@ function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
 
   if (circle && variant === 'green-circle') circle.setAttribute('fill', '#22c55e');
   if (square && variant === 'blue-square')  square.setAttribute('fill', '#3b82f6');
+
+  if (fin) fin.style.display = _skiLiftVisible ? '' : 'none';
 
   if (link) {
     link.href = suinsName

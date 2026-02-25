@@ -155,7 +155,10 @@ export { forgetDevice, disconnectSession } from './client/session.js';
 window.addEventListener('ski:wallet-connected', async (e) => {
   const detail = (e as CustomEvent).detail;
   if (!detail?.address) return;
-  await signIn(/* isReconnect */ !!localStorage.getItem('ski:session'));
+  // Only restore an existing signed session — don't prompt for a new signature on connect.
+  // Signing will be triggered explicitly when the session agent backend is available.
+  const hasStored = !!localStorage.getItem('ski:session');
+  if (hasStored) await signIn(/* isReconnect */ true);
 });
 
 window.addEventListener('ski:wallet-disconnected', () => {

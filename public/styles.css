@@ -357,62 +357,19 @@ body {
     0 0 0 1px rgba(148, 163, 184, 0.14) inset;
 }
 
-.wallet-profile-btn.has-primary:hover {
-  background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
-  border-color: rgba(59, 130, 246, 0.86);
+.wallet-profile-btn:hover {
   transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.86);
   box-shadow:
     0 10px 20px rgba(30, 64, 175, 0.2),
     0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
 
-.wallet-profile-btn.no-primary {
-  border-color: rgba(148, 163, 184, 0.38);
-  box-shadow:
-    0 10px 22px rgba(0, 0, 0, 0.62),
-    0 0 0 1px rgba(2, 6, 23, 0.7) inset;
-}
-
-.wallet-profile-btn.no-primary:hover {
-  background: linear-gradient(135deg, rgba(8, 12, 20, 0.96), rgba(4, 8, 14, 0.98));
-  border-color: rgba(15, 23, 42, 0.95);
-  transform: translateY(-1px);
-  box-shadow:
-    0 14px 28px rgba(0, 0, 0, 0.8),
-    0 0 0 1px rgba(15, 23, 42, 0.72) inset,
-    0 0 16px rgba(0, 0, 0, 0.45);
-}
-
-.ski-shape {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  display: inline-block;
-  transition: all 0.2s ease;
-}
-
-.wallet-profile-btn.no-primary .ski-shape {
-  background: #1a1a2e;
-  border: 1.5px solid rgba(200, 200, 220, 0.5);
-  border-radius: 2px;
-  transform: rotate(45deg);
-  margin-right: 2px;
-}
-
-.wallet-profile-btn.has-primary .ski-shape {
-  background: #2563eb;
-  border: 1.5px solid rgba(59, 130, 246, 0.6);
-  border-radius: 3px;
-  transform: rotate(0deg);
-  margin-right: 4px;
-}
-
-.ski-text {
-  font-size: 0.95rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  color: rgba(220, 225, 240, 0.92);
-  line-height: 1;
+.wallet-profile-btn img {
+  height: 22px;
+  width: auto;
+  display: block;
+  object-fit: contain;
 }
 
 .wallet-widget.has-black-diamond .wk-widget-btn.connected {

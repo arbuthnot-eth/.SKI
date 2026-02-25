@@ -266,7 +266,10 @@ function copyAddress() {
 // ─── Profile link ────────────────────────────────────────────────────
 
 function profileHref(): string {
-  if (app.suinsName) return 'https://' + encodeURIComponent(app.suinsName) + '.sui.ski';
+  if (app.suinsName) {
+    const name = app.suinsName.replace(/\.sui$/, '');
+    return 'https://' + encodeURIComponent(name) + '.sui.ski';
+  }
   return 'https://sui.ski';
 }
 
@@ -289,7 +292,7 @@ function renderWidget() {
 
   // Connected: [icon(s)] [name/addr] [balance]
   const hasSuins = !!app.suinsName;
-  const label = hasSuins ? app.suinsName : truncAddr(ws.address);
+  const label = hasSuins ? app.suinsName.replace(/\.sui$/, '') : truncAddr(ws.address);
   const labelClass = hasSuins ? 'wk-widget-title' : 'wk-widget-title is-address';
 
   // Wallet icon
@@ -337,14 +340,15 @@ function renderProfileButton() {
 
   if (!ws.address) {
     els.profileBtn.style.display = 'none';
-    els.profileBtn.classList.remove('has-primary', 'no-primary');
     return;
   }
 
   const hasPrimary = !!app.suinsName;
   els.profileBtn.style.display = '';
-  els.profileBtn.classList.toggle('has-primary', hasPrimary);
-  els.profileBtn.classList.toggle('no-primary', !hasPrimary);
+  const img = els.profileBtn.querySelector('img');
+  if (img) {
+    img.src = hasPrimary ? './assets/blue_dotski.png' : './assets/black_dotskitxt.png';
+  }
 }
 
 // ─── Render: Dropdown Menu ───────────────────────────────────────────
@@ -387,7 +391,7 @@ async function handleDisconnect(reopenModal = false) {
 // ─── Master render ───────────────────────────────────────────────────
 
 function render() {
-  els.widget?.classList.toggle('has-black-diamond', !getState().address);
+  // no-op: profile button now uses img swap
   renderWidget();
   renderProfileButton();
   renderMenu();

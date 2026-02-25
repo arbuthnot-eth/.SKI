@@ -3,8 +3,8 @@
   "private": true,
   "version": "2.0.0",
   "scripts": {
-    "build": "bun build src/ski.ts --outdir public/dist --target browser --minify",
-    "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch",
+    "build": "bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm",
+    "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm",
     "dev:wrangler": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@fingerprintjs/fingerprintjs": "^5.0.1",
+    "@ika.xyz/sdk": "^0.2.7",
     "@mysten/sui": "^2.5.0",
     "@mysten/suins": "^1.0.2",
     "@mysten/wallet-standard": "^0.20.1",

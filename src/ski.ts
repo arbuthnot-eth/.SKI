@@ -14,6 +14,8 @@ import { getState, signPersonalMessage } from './wallet.js';
 import { initUI, showToast, updateAppState } from './ui.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
+// Ika is heavy (~150KB), lazy-load only after sign-in
+const loadIka = () => import('./client/ika.js');
 
 // ─── Sign-in message builder ─────────────────────────────────────────
 
@@ -94,6 +96,14 @@ export async function signIn(): Promise<{
 
     showToast('.SKI session active');
     console.log('[.SKI] Session established for', address, '| device:', visitorId.slice(0, 8));
+
+    // Check for existing Ika dWallets (non-blocking, lazy-loaded)
+    loadIka().then(({ getCrossChainStatus }) => getCrossChainStatus(address)).then((status) => {
+      if (status.ika) {
+        updateAppState({ ikaWalletId: status.dwalletId });
+        console.log('[.SKI] Ika dWallet found:', status.dwalletId.slice(0, 12), `(${status.dwalletCount} total)`);
+      }
+    }).catch(() => {});
 
     return { address, message, signature, bytes, visitorId };
   } catch (err) {

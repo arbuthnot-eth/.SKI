@@ -299,6 +299,11 @@ function renderWidget() {
     iconHtml = `<span class="wk-widget-method-icon"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>`;
   }
 
+  // Ika cross-chain badge
+  const ikaHtml = app.ikaWalletId
+    ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">ika</span>'
+    : '';
+
   // Balance
   const tokenText = fmtSui(app.sui);
   const usdText = fmtUsd(app.usd);
@@ -319,6 +324,7 @@ function renderWidget() {
             <span class="wk-widget-primary-name">${esc(label)}</span>
           </span>
         </span>
+        ${ikaHtml}
         ${balanceHtml}
       </button>
     </div>`;

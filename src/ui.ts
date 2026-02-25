@@ -209,13 +209,25 @@ export async function refreshPortfolio(force = false) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        query: 'query($a:SuiAddress!){address(address:$a){balance(coinType:"0x2::sui::SUI"){totalBalance}}}',
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            defaultSuinsName
+            balance(coinType:"0x2::sui::SUI"){totalBalance}
+          }
+        }`,
         variables: { a: ws.address },
       }),
     });
     const json = await res.json();
-    const mist = Number(json?.data?.address?.balance?.totalBalance || 0);
+    const addr = json?.data?.address;
+    const mist = Number(addr?.balance?.totalBalance || 0);
     app.sui = Number.isFinite(mist) ? mist / 1e9 : 0;
+
+    // SuiNS reverse lookup
+    const name = addr?.defaultSuinsName;
+    if (name && typeof name === 'string') {
+      app.suinsName = name;
+    }
   } catch { /* keep existing */ }
   finally {
     portfolioInFlight = false;

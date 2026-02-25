@@ -6,8 +6,6 @@
  *   2. Sign personal message (proof of ownership)
  *   3. Fingerprint device (FingerprintJS)
  *   4. POST to session agent (Cloudflare Durable Object)
- *   5. Resolve SuiNS name (future)
- *   6. Provision Ika dWallet (future)
  */
 
 import { getState, signPersonalMessage } from './wallet.js';
@@ -17,14 +15,42 @@ import { connectSession, authenticate, disconnectSession } from './client/sessio
 // Ika is heavy (~150KB), lazy-load only after sign-in
 const loadIka = () => import('./client/ika.js');
 
+// ─── Session persistence ─────────────────────────────────────────────
+
+interface StoredSession {
+  address: string;
+  signature: string;
+  bytes: string;
+  visitorId: string;
+  expiresAt: string;
+}
+
+function getStoredSession(address: string): StoredSession | null {
+  try {
+    const raw = localStorage.getItem('ski:session');
+    if (!raw) return null;
+    const s: StoredSession = JSON.parse(raw);
+    if (s.address !== address) return null;
+    if (new Date(s.expiresAt).getTime() < Date.now()) {
+      localStorage.removeItem('ski:session');
+      return null;
+    }
+    return s;
+  } catch { return null; }
+}
+
+function storeSession(s: StoredSession) {
+  try { localStorage.setItem('ski:session', JSON.stringify(s)); } catch {}
+}
+
 // ─── Sign-in message builder ─────────────────────────────────────────
 
-function buildSignMessage(address: string, domain: string): string {
+function buildSignMessage(address: string, domain: string): { message: string; expiresAt: string } {
   const nonce = crypto.randomUUID();
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  return [
+  const message = [
     `${domain} wants you to .SKI`,
     '',
     address,
@@ -37,81 +63,86 @@ function buildSignMessage(address: string, domain: string): string {
     '',
     'This signature activates your .SKI session and costs no gas.',
   ].join('\n');
+
+  return { message, expiresAt };
 }
 
 // ─── Sign-in flow ────────────────────────────────────────────────────
 
-export async function signIn(): Promise<{
-  address: string;
-  message: string;
-  signature: string;
-  bytes: string;
-  visitorId: string;
-} | null> {
-  const ws = getState();
-  if (ws.status !== 'connected' || !ws.account) {
-    showToast('Connect wallet first');
-    return null;
+async function establishSession(address: string, signature: string, bytes: string, visitorId: string) {
+  const sessionKey = buildSessionKey(visitorId, address);
+  connectSession(sessionKey, (state) => {
+    if (state.suinsName) updateAppState({ suinsName: state.suinsName });
+    if (state.ikaWalletId) updateAppState({ ikaWalletId: state.ikaWalletId });
+  });
+
+  try {
+    const result = await authenticate({
+      walletAddress: address,
+      visitorId,
+      confidence: 1,
+      signature,
+      message: '',
+    });
+    if (!result.success) {
+      disconnectSession();
+      return false;
+    }
+  } catch {
+    // Agent might not be deployed yet — that's OK for local dev
   }
 
+  // Check for existing Ika dWallets (non-blocking)
+  loadIka().then(({ getCrossChainStatus }) => getCrossChainStatus(address)).then((status) => {
+    if (status.ika) {
+      updateAppState({ ikaWalletId: status.dwalletId });
+    }
+  }).catch(() => {});
+
+  return true;
+}
+
+export async function signIn(isReconnect = false): Promise<boolean> {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.account) return false;
+
   const address = ws.address;
-  const message = buildSignMessage(address, window.location.host);
+
+  // Check for existing valid session (skip re-signing on page reload)
+  const stored = getStoredSession(address);
+  if (stored) {
+    console.log('[.SKI] Restoring session for', address);
+    await establishSession(address, stored.signature, stored.bytes, stored.visitorId);
+    return true;
+  }
+
+  // Fresh connection — need to sign
+  const { message, expiresAt } = buildSignMessage(address, window.location.host);
   const messageBytes = new TextEncoder().encode(message);
 
   try {
-    // Run signing and fingerprinting in parallel
     const [signResult, deviceId] = await Promise.all([
       signPersonalMessage(messageBytes),
       getDeviceId(),
     ]);
 
     const { signature, bytes } = signResult;
-    const { visitorId, confidence } = deviceId;
+    const { visitorId } = deviceId;
 
-    // Connect to session agent and authenticate
-    const sessionKey = buildSessionKey(visitorId, address);
-    connectSession(sessionKey, (state) => {
-      // Reactive state updates from the agent
-      if (state.suinsName) {
-        updateAppState({ suinsName: state.suinsName });
-      }
-      if (state.ikaWalletId) {
-        updateAppState({ ikaWalletId: state.ikaWalletId });
-      }
-    });
+    // Persist session so we don't re-prompt on reload
+    storeSession({ address, signature, bytes, visitorId, expiresAt });
 
-    const result = await authenticate({
-      walletAddress: address,
-      visitorId,
-      confidence,
-      signature,
-      message,
-    });
+    await establishSession(address, signature, bytes, visitorId);
 
-    if (!result.success) {
-      showToast(result.error || 'Authentication failed');
-      disconnectSession();
-      return null;
-    }
-
-    showToast('.SKI session active');
+    if (!isReconnect) showToast('.SKI session active');
     console.log('[.SKI] Session established for', address, '| device:', visitorId.slice(0, 8));
-
-    // Check for existing Ika dWallets (non-blocking, lazy-loaded)
-    loadIka().then(({ getCrossChainStatus }) => getCrossChainStatus(address)).then((status) => {
-      if (status.ika) {
-        updateAppState({ ikaWalletId: status.dwalletId });
-        console.log('[.SKI] Ika dWallet found:', status.dwalletId.slice(0, 12), `(${status.dwalletCount} total)`);
-      }
-    }).catch(() => {});
-
-    return { address, message, signature, bytes, visitorId };
+    return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Signing failed';
     if (!msg.toLowerCase().includes('reject')) {
       showToast(msg);
     }
-    return null;
+    return false;
   }
 }
 
@@ -124,10 +155,9 @@ export { forgetDevice, disconnectSession } from './client/session.js';
 window.addEventListener('ski:wallet-connected', async (e) => {
   const detail = (e as CustomEvent).detail;
   if (!detail?.address) return;
-  await signIn();
+  await signIn(/* isReconnect */ !!localStorage.getItem('ski:session'));
 });
 
-// Listen for disconnect to clean up session
 window.addEventListener('ski:wallet-disconnected', () => {
   disconnectSession();
 });

@@ -25,8 +25,6 @@ import type { Wallet } from '@wallet-standard/base';
 
 const ASSETS = {
   logoGreen: './assets/green_dotski.png',
-  logoBlack: './assets/black_dotskitxt.png',
-  logoBlue: './assets/blue_dotski.png',
   suiDrop: './assets/sui-drop.svg',
 };
 
@@ -227,6 +225,7 @@ export async function refreshPortfolio(force = false) {
     const name = addr?.defaultSuinsName;
     if (name && typeof name === 'string') {
       app.suinsName = name;
+      try { localStorage.setItem('ski:suins-name', name); } catch {}
     }
   } catch { /* keep existing */ }
   finally {
@@ -344,12 +343,8 @@ function renderProfileButton() {
 
   const hasPrimary = !!app.suinsName;
   els.profileBtn.style.display = '';
-  els.profileBtn.title = 'Open wallet menu';
   els.profileBtn.classList.toggle('has-primary', hasPrimary);
   els.profileBtn.classList.toggle('no-primary', !hasPrimary);
-
-  const img = els.profileBtn.querySelector('.wallet-profile-logo') as HTMLImageElement | null;
-  if (img) img.src = hasPrimary ? ASSETS.logoBlue : ASSETS.logoBlack;
 }
 
 // ─── Render: Dropdown Menu ───────────────────────────────────────────
@@ -438,6 +433,12 @@ export function initUI() {
   // Subscribe to wallet state changes
   subscribe((ws: WalletState) => {
     if (ws.status === 'connected' && ws.address) {
+      // Restore cached SuiNS name instantly (will refresh from network)
+      try {
+        const cached = localStorage.getItem('ski:suins-name');
+        if (cached) app.suinsName = cached;
+      } catch {}
+
       startPolling();
       refreshPortfolio(true);
 
@@ -455,6 +456,7 @@ export function initUI() {
       app.ikaWalletId = '';
       app.menuOpen = false;
       app.copied = false;
+      try { localStorage.removeItem('ski:suins-name'); localStorage.removeItem('ski:session'); } catch {}
 
       window.dispatchEvent(new CustomEvent('ski:wallet-disconnected'));
     }

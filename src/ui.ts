@@ -209,7 +209,7 @@ export async function refreshPortfolio(force = false) {
       body: JSON.stringify({
         query: `query($a:SuiAddress!){
           address(address:$a){
-            defaultSuinsName
+            defaultNameRecord{domain}
             balance(coinType:"0x2::sui::SUI"){totalBalance}
           }
         }`,
@@ -222,7 +222,7 @@ export async function refreshPortfolio(force = false) {
     app.sui = Number.isFinite(mist) ? mist / 1e9 : 0;
 
     // SuiNS reverse lookup
-    const name = addr?.defaultSuinsName;
+    const name = addr?.defaultNameRecord?.domain;
     if (name && typeof name === 'string') {
       app.suinsName = name;
       try { localStorage.setItem('ski:suins-name', name); } catch {}

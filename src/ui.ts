@@ -370,7 +370,6 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
       <div class="ski-detail-key-text">
         <span class="ski-detail-suins-slot"></span>
         <div class="ski-detail-addr-row">
-          ${ai === 0 ? `<span class="ski-detail-name">${esc(w.name)}</span>` : ''}
           <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
           <button class="ski-copy-btn" title="Copy address">\u2398</button>
         </div>
@@ -390,7 +389,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
   detailEl.innerHTML = `
     <div class="ski-detail-header">
       <div class="ski-detail-icon-row">
-        ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
+        ${w.icon ? `<div class="ski-detail-icon-col"><img src="${esc(w.icon)}" alt="" class="ski-detail-icon"><span class="ski-detail-name">${esc(w.name)}</span></div>` : ''}
         <div class="ski-detail-key-column">
           ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
           ${activeKeyHtml}

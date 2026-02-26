@@ -424,6 +424,7 @@ body {
   border-color: rgba(59, 130, 246, 0.86);
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
+  border-radius: 0;
 }
 
 .wk-dd-item.disconnect {
@@ -684,6 +685,7 @@ body {
   max-width: 420px;
   width: calc(100% - 20px);
   max-height: calc(100vh - 32px);
+  overflow: hidden;
   overflow-y: auto;
   position: absolute;
   top: 66px;
@@ -699,8 +701,8 @@ body {
 
 .ski-modal-body {
   display: flex;
-  gap: 12px;
-  padding: 8px 16px 16px;
+  gap: 0;
+  padding: 8px 0 16px;
 }
 
 .ski-modal-col {
@@ -727,7 +729,7 @@ body {
   gap: 6px;
   width: 100%;
   border: 1px solid rgba(59, 130, 246, 0.86);
-  border-radius: 8px;
+  border-radius: 0;
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
   padding: 8px 10px;
@@ -840,6 +842,13 @@ body {
   font-size: 0.7rem;
   text-align: center;
   line-height: 1.4;
+}
+
+.ski-detail-icon-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
 .ski-detail-icon {

@@ -8,8 +8,10 @@
  *   4. POST to session agent (Cloudflare Durable Object)
  */
 
+import { Transaction } from '@mysten/sui/transactions';
 import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
-import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState } from './ui.js';
+import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient } from './ui.js';
+import { restoreSponsor, isSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
 // Ika is heavy (~150KB), lazy-load only after sign-in
@@ -260,12 +262,33 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
     return;
   }
 
-  if (getState().status !== 'connected') {
+  const ws = getState();
+  if (ws.status !== 'connected') {
     dispatch({ success: false, error: 'No wallet connected' });
     return;
   }
 
   try {
+    // Use the sponsored flow when a valid gas sponsor is active and the
+    // transaction is a Transaction object (needed to build kind bytes).
+    if (isSponsorActive() && transaction instanceof Transaction && ws.wallet && ws.account) {
+      showToast('💧 Splash — approve in both wallets');
+      const kindBytes = await (transaction as Transaction).build({
+        client: grpcClient,
+        onlyTransactionKind: true,
+      });
+      const { digest, effects } = await executeSponsored(
+        kindBytes,
+        ws.address,
+        ws.wallet,
+        ws.account,
+        grpcClient,
+      );
+      dispatch({ success: true, digest, effects });
+      return;
+    }
+
+    // Standard (unsponsored) path
     const { digest, effects } = await signAndExecuteTransaction(transaction);
     dispatch({ success: true, digest, effects });
   } catch (err) {
@@ -276,3 +299,33 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
 // ─── Boot ────────────────────────────────────────────────────────────
 
 initUI();
+
+// Handle ?splash= URL param for cross-device Splash sponsorship
+(async () => {
+  const splashParam = new URLSearchParams(location.search).get('splash');
+  if (!splashParam) return;
+  try {
+    const { connectToSponsor } = await import('./client/sponsor.js');
+    let sponsorAddr = splashParam;
+    if (!splashParam.startsWith('0x')) {
+      const resolved = await resolveNameToAddress(
+        splashParam.endsWith('.sui') ? splashParam : `${splashParam}.sui`,
+      );
+      if (resolved) sponsorAddr = resolved;
+    }
+    try { localStorage.setItem('ski:splash-sponsor', sponsorAddr); } catch {}
+    connectToSponsor(sponsorAddr);
+  } catch {}
+})();
+
+// Restore the sponsor wallet silently after extensions have had time to register.
+// 3 s matches the autoReconnect timeout in wallet.ts.
+setTimeout(() => {
+  restoreSponsor(getSuiWallets()).then((ok) => {
+    if (ok) {
+      console.log('[.SKI] Splash sponsor restored');
+      const { wallet, account } = getSponsorState();
+      if (wallet && account) initSplashDO(wallet, account).catch(() => {});
+    }
+  }).catch(() => {});
+}, 3000);

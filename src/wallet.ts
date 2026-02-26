@@ -9,13 +9,13 @@
 import { getWallets } from '@wallet-standard/app';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
 import { createDAppKit } from '@mysten/dapp-kit-core';
-import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from '@mysten/sui/jsonRpc';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 // ─── DApp Kit (chain-aware signing for Backpack + hardware wallets) ───
 
 const dappKit = createDAppKit({
   networks: ['sui:mainnet' as const],
-  createClient: () => new SuiJsonRpcClient({ url: getJsonRpcFullnodeUrl('mainnet') }),
+  createClient: () => new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' }),
   autoConnect: false,
   slushWalletConfig: null,
   enableBurnerWallet: false,
@@ -240,6 +240,37 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   };
 
   return signFeature.signPersonalMessage({ message, account });
+}
+
+// ─── Sign Transaction (without executing) ────────────────────────────
+
+/**
+ * Sign a transaction with the connected wallet but do NOT execute it.
+ * Returns the base64 BCS bytes and the serialized signature.
+ * Used by the sponsored-transaction flow where both wallets sign
+ * the same bytes and the caller submits with both signatures.
+ */
+export async function signTransactionOnly(transaction: unknown): Promise<{
+  bytes: string;
+  signature: string;
+}> {
+  const { wallet, account } = currentState;
+  if (!wallet || !account) throw new Error('No wallet connected');
+
+  if (!('sui:signTransaction' in wallet.features)) {
+    throw new Error(`${wallet.name} does not support sui:signTransaction`);
+  }
+
+  const signFeat = wallet.features['sui:signTransaction'] as {
+    signTransaction: (input: {
+      transaction: unknown;
+      account: WalletAccount;
+      chain: string;
+    }) => Promise<{ bytes: string; signature: string }>;
+  };
+
+  const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+  return signFeat.signTransaction({ transaction, account, chain });
 }
 
 // ─── Sign & Execute Transaction ──────────────────────────────────────

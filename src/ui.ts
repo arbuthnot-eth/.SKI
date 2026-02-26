@@ -20,10 +20,21 @@ import {
   onWalletsChanged,
   type WalletState,
 } from './wallet.js';
-import type { Wallet } from '@wallet-standard/base';
+import type { Wallet, WalletAccount } from '@wallet-standard/base';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import {
+  getSponsorState,
+  isSponsorActive,
+  isSponsoredAddress,
+  activateSponsor,
+  deactivateSponsor,
+  subscribeSponsor,
+  addSponsoredEntry,
+  removeSponsoredEntry,
+  getActiveSponsoredList,
+} from './sponsor.js';
 
-const grpcClient = new SuiGrpcClient({
+export const grpcClient = new SuiGrpcClient({
   network: 'mainnet',
   baseUrl: 'https://fullnode.mainnet.sui.io:443',
 });
@@ -437,6 +448,16 @@ let modalOpen = false;
 const suinsCache: Record<string, string> = {}; // address -> name
 let detailGeneration = 0; // incremented on each showWalletDetail call to cancel stale async lookups
 
+/** Format milliseconds remaining as "Xd", "Xh", or "< 1h". */
+function fmtTimeLeft(expiresAt: string): string {
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return 'expired';
+  const days = Math.floor(ms / 86_400_000);
+  if (days > 0) return `${days}d`;
+  const hrs = Math.floor(ms / 3_600_000);
+  return hrs > 0 ? `${hrs}h` : '< 1h';
+}
+
 /** Profile-picture indicator for a key: black diamond (no SuiNS) or blue square with sui-drop (has SuiNS). */
 function keyPfpHtml(_ai: number, suinsName: string | null): string {
   if (suinsName) {
@@ -620,6 +641,60 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     });
   });
 
+  // ─── Sponsor section (appended below wallet detail) ──────────────────
+  {
+    const sponsorAuth = getSponsorState().auth;
+    const isThisWalletSponsor = !!(
+      sponsorAuth?.walletName === w.name &&
+      new Date(sponsorAuth.expiresAt).getTime() > Date.now()
+    );
+    const canSponsor = 'sui:signPersonalMessage' in w.features;
+    const sponsorDiv = document.createElement('div');
+    sponsorDiv.className = 'ski-detail-sponsor-row';
+
+    if (isThisWalletSponsor) {
+      const msLeft = new Date(sponsorAuth!.expiresAt).getTime() - Date.now();
+      const daysLeft = Math.max(1, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
+      sponsorDiv.innerHTML = `
+        <span class="ski-detail-sponsor-active">\ud83d\udca7 Splash active &middot; ${daysLeft}d left</span>
+        <button class="ski-detail-sponsor-revoke" type="button">Revoke</button>`;
+      sponsorDiv.querySelector('.ski-detail-sponsor-revoke')?.addEventListener('click', () => {
+        deactivateSponsor();
+        showToast('Splash deactivated');
+        render();
+        if (detailEl) showWalletDetail(w, detailEl, connectedAddr);
+      });
+    } else if (canSponsor) {
+      sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button">\ud83d\udca7 Activate Splash</button>`;
+      sponsorDiv.querySelector('.ski-detail-sponsor-set')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.disabled = true; btn.textContent = 'Activating\u2026';
+        try {
+          // Use live account, or silent-connect to get one
+          let account = (w.accounts[0] as WalletAccount | undefined);
+          if (!account && 'standard:connect' in w.features) {
+            const cf = w.features['standard:connect'] as {
+              connect: (i?: { silent?: boolean }) => Promise<{ accounts: readonly WalletAccount[] }>;
+            };
+            const { accounts } = await cf.connect({ silent: true });
+            account = accounts[0] as WalletAccount | undefined;
+          }
+          if (!account) throw new Error('No account available');
+          await activateSponsor(w, account);
+          showToast('\ud83d\udca7 Splash active \u00b7 7 days');
+          render();
+          if (detailEl) showWalletDetail(w, detailEl, connectedAddr);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          btn.disabled = false; btn.textContent = '\ud83d\udca7 Activate Splash';
+        }
+      });
+    }
+
+    if (sponsorDiv.innerHTML) detailEl.appendChild(sponsorDiv);
+  }
+
   // Resolve SuiNS names for all displayed addresses
   displayAddrs.forEach((addr: string, ai: number) => {
     const renderName = (name: string) => {
@@ -648,7 +723,7 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
         const pfpEl = wrap?.querySelector('.ski-key-pfp');
         if (pfpEl && !pfpEl.classList.contains('ski-key-pfp--blue')) {
           const tmp = document.createElement('div');
-          tmp.innerHTML = keyPfpHtml(ai, true);
+          tmp.innerHTML = keyPfpHtml(ai, name);
           const newPfp = tmp.firstElementChild;
           if (newPfp) pfpEl.replaceWith(newPfp);
         }
@@ -670,10 +745,20 @@ function walletListShape(w: Wallet): string {
   })();
   const hasSuins = addrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
   const hasAddrs = addrs.length > 0;
+
+  // Show sui-drop overlay when this wallet is a Splash beneficiary (not the sponsor)
+  const splashState = getSponsorState();
+  const isBeneficiary = addrs.some(
+    (addr) => isSponsoredAddress(addr) && splashState.auth?.address !== addr,
+  );
+  const dropOverlay = isBeneficiary
+    ? `<span class="splash-drop-badge"><img src="./assets/sui-drop.svg" class="splash-drop-img" alt=""></span>`
+    : '';
+
   if (hasSuins) {
-    return `<span class="ski-list-shape ski-list-shape--blue"><img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-img"></span>`;
+    return `<span class="ski-list-shape ski-list-shape--blue"><img src="./assets/sui-drop.svg" alt="" class="ski-list-shape-img">${dropOverlay}</span>`;
   } else if (hasAddrs) {
-    return `<span class="ski-list-shape ski-list-shape--diamond"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg></span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</span>`;
   }
   return `<span class="ski-list-shape ski-list-shape--green"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg></span>`;
 }
@@ -1044,6 +1129,66 @@ function renderSignStage() {
 
   els.signStage.style.display = '';
 
+  // ─── Splash card ─────────────────────────────────────────────────────
+  const sponsorState = getSponsorState();
+  const isActiveSponsor = isSponsorActive() && sponsorState.auth?.address === ws.address;
+  const hasOtherSponsor = isSponsorActive() && sponsorState.auth?.address !== ws.address;
+
+  let sponsorCardHtml = '';
+  if (isActiveSponsor) {
+    const activeList = getActiveSponsoredList();
+
+    const listRowsHtml = activeList.map((e) => {
+      const label = e.suinsName ?? truncAddr(e.address);
+      const expiry = fmtTimeLeft(e.expiresAt);
+      return `<div class="splash-list-item" data-entry-addr="${esc(e.address)}">
+        <span class="splash-list-name">${esc(label)}</span>
+        <span class="splash-list-expiry">${esc(expiry)}</span>
+        <button class="splash-list-remove" type="button" data-remove-addr="${esc(e.address)}">Remove</button>
+      </div>`;
+    }).join('');
+
+    const emptyHint = activeList.length === 0
+      ? `<div class="splash-list-empty">No restrictions — any wallet may use Splash.</div>`
+      : '';
+
+    sponsorCardHtml = `
+      <div class="splash-card splash-card--active">
+        <div class="splash-header-row">
+          <span class="splash-icon">💧</span>
+          <span class="splash-title">Splash</span>
+          <button class="splash-btn splash-btn--deactivate" id="splash-deactivate-btn" type="button">Deactivate</button>
+        </div>
+        <div class="splash-list">
+          ${emptyHint}
+          ${listRowsHtml}
+        </div>
+        <div class="splash-add-row">
+          <input
+            id="splash-add-input"
+            class="splash-input"
+            type="text"
+            placeholder="add .sui name or address\u2026"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="splash-btn splash-btn--add" id="splash-add-btn" type="button">+ Add</button>
+        </div>
+      </div>`;
+  } else if (hasOtherSponsor) {
+    // Beneficiary view — omit the card entirely
+    sponsorCardHtml = '';
+  } else {
+    // No active sponsor — offer to activate Splash.
+    sponsorCardHtml = `
+      <div class="splash-card splash-card--inactive">
+        <span class="splash-icon">💧</span>
+        <span class="splash-title">Splash</span>
+        <button class="splash-btn splash-btn--activate" id="splash-activate-btn" type="button">Activate &middot; 7 days</button>
+      </div>`;
+  }
+
+  // ─── Sign message card ───────────────────────────────────────────────
   const resultHtml = lastSignResult
     ? `<div class="sign-result">
         <div class="sign-result-label">Signature</div>
@@ -1052,6 +1197,7 @@ function renderSignStage() {
     : '';
 
   els.signStage.innerHTML = `
+    ${sponsorCardHtml}
     <div class="sign-card">
       <textarea class="sign-textarea" id="sign-msg-input" rows="2" spellcheck="false">${esc(signMessageText)}</textarea>
       <div class="sign-action-row">
@@ -1060,6 +1206,64 @@ function renderSignStage() {
       </div>
     </div>`;
 
+  // ─── Splash button bindings ───────────────────────────────────────────
+  document.getElementById('splash-deactivate-btn')?.addEventListener('click', () => {
+    deactivateSponsor();
+    showToast('Splash deactivated');
+    render();
+  });
+
+  // Per-entry remove buttons
+  els.signStage.querySelectorAll<HTMLButtonElement>('.splash-list-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const addr = btn.getAttribute('data-remove-addr') ?? '';
+      if (addr) {
+        removeSponsoredEntry(addr);
+        showToast('Removed from Splash list');
+      }
+    });
+  });
+
+  document.getElementById('splash-add-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const input = document.getElementById('splash-add-input') as HTMLInputElement | null;
+    const raw = input?.value.trim() ?? '';
+    if (!raw) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Resolving\u2026';
+    try {
+      const entry = await addSponsoredEntry(raw);
+      const label = entry.suinsName ?? truncAddr(entry.address);
+      showToast(`\ud83d\udca7 Added ${label} to Splash`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      btn.disabled = false;
+      btn.textContent = '+ Add';
+    }
+  });
+
+  document.getElementById('splash-activate-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = 'Activating\u2026';
+    try {
+      const { wallet, account } = getState();
+      if (!wallet || !account) throw new Error('No wallet connected');
+      await activateSponsor(wallet, account);
+      showToast('\ud83d\udca7 Splash active \u00b7 7 days');
+      render();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      btn.disabled = false;
+      btn.textContent = 'Activate \u00b7 7 days';
+      renderSignStage();
+    }
+  });
+
+  // ─── Sign message bindings ───────────────────────────────────────────
   document.getElementById('sign-msg-input')?.addEventListener('input', (e) => {
     signMessageText = (e.target as HTMLTextAreaElement).value;
   });
@@ -1299,6 +1503,9 @@ export function initUI() {
 
     render();
   });
+
+  // Re-render when sponsor state changes (badge, sign-stage card)
+  subscribeSponsor(() => render());
 
   // Re-render when new wallets are installed
   onWalletsChanged(() => {

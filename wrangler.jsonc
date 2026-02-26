@@ -21,6 +21,10 @@
       {
         "name": "SessionAgent",
         "class_name": "SessionAgent"
+      },
+      {
+        "name": "SponsorAgent",
+        "class_name": "SponsorAgent"
       }
     ]
   },
@@ -29,6 +33,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SessionAgent"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SponsorAgent"]
     }
   ]
 }

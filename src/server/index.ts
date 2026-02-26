@@ -11,5 +11,6 @@ app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
 
 export default app;
 
-// Export the SessionAgent class so wrangler can bind it as a Durable Object
+// Export Durable Object classes for Wrangler binding
 export { SessionAgent } from './agents/session.js';
+export { SponsorAgent } from './agents/sponsor.js';

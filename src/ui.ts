@@ -277,11 +277,11 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     } catch {}
   }
 
-  // Use live accounts if available, otherwise fall back to stored keys
+  // Always show the full merged set — stored includes all previously seen addresses
   const storedAddrs: string[] = (() => {
     try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]'); } catch { return []; }
   })();
-  let displayAddrs = liveAddrs.length ? liveAddrs : storedAddrs;
+  let displayAddrs = storedAddrs.length ? storedAddrs : liveAddrs;
 
   // Float the currently connected address to the top
   if (connectedAddr && displayAddrs.includes(connectedAddr)) {

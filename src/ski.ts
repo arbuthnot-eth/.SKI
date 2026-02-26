@@ -8,7 +8,7 @@
  *   4. POST to session agent (Cloudflare Durable Object)
  */
 
-import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect, reconnectWallet } from './wallet.js';
+import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
 import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState } from './ui.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
@@ -178,10 +178,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
           () => signIn(isReconnect),
         );
       } else {
-        showBackpackLockedToast(async () => {
-          try { await reconnectWallet(); } catch { /* user cancelled popup */ }
-          await signIn(isReconnect);
-        });
+        showBackpackLockedToast();
       }
       return false;
     }

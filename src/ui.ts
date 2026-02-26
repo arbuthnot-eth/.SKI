@@ -130,7 +130,7 @@ export function showToast(msg: string) {
 }
 
 const BACKPACK_CHROME_URL  = 'https://chromewebstore.google.com/detail/backpack/aflkmfhebedbjioipglgcbcmnbpgliof';
-const BACKPACK_IOS_URL     = 'https://apps.apple.com/us/app/backpack-crypto-wallet/id1604379882';
+const BACKPACK_IOS_URL     = 'https://apps.apple.com/us/app/backpack-buy-sol-btc-crypto/id6445964121';
 const BACKPACK_ANDROID_URL = 'https://play.google.com/store/apps/details?id=app.backpack.mobile';
 
 function getBackpackSmartUrl(): string {
@@ -140,7 +140,7 @@ function getBackpackSmartUrl(): string {
   return BACKPACK_CHROME_URL;
 }
 
-export function showBackpackLockedToast(retryFn: () => void) {
+export function showBackpackLockedToast() {
   const walletIcon = getState().walletIcon;
   const smartUrl = getBackpackSmartUrl();
 
@@ -181,7 +181,7 @@ export function showBackpackLockedToast(retryFn: () => void) {
   const body = document.createElement('div');
   body.className = 'app-toast-backpack-body';
   const msg = document.createElement('span');
-  msg.textContent = 'Lock in to Backpack app or extension';
+  msg.textContent = 'Lockin to Backpack app or extension';
   body.appendChild(msg);
   const storeLinks = document.createElement('div');
   storeLinks.className = 'app-toast-store-links';
@@ -203,16 +203,9 @@ export function showBackpackLockedToast(retryFn: () => void) {
   body.appendChild(storeLinks);
   toast.appendChild(body);
 
-  // Try again button
-  const btn = document.createElement('button');
-  btn.className = 'app-toast-retry';
-  btn.textContent = 'Try again';
-  toast.appendChild(btn);
-
   root.appendChild(toast);
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
   const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
-  btn.addEventListener('click', (e) => { e.stopPropagation(); remove(); retryFn(); });
   setTimeout(remove, 12000);
   toast.addEventListener('click', remove);
 }
@@ -1086,7 +1079,7 @@ function renderSignStage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Signing failed';
       if (msg.includes('UserKeyring not found')) {
-        showBackpackLockedToast(doSign);
+        showBackpackLockedToast();
       } else if (!msg.toLowerCase().includes('reject')) {
         showToast(msg);
       } else {

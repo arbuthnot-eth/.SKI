@@ -270,9 +270,17 @@ function renderModal() {
   if (!els.modal) return;
   const connectedName = getState().walletName;
   const wallets = getSuiWallets().slice().sort((a, b) => {
-    const aC = a.name === connectedName ? 2 : (a.accounts.length > 0 ? 1 : 0);
-    const bC = b.name === connectedName ? 2 : (b.accounts.length > 0 ? 1 : 0);
-    return bC - aC;
+    const score = (w: typeof a) => {
+      if (w.name === connectedName) return 3;
+      const addrs: string[] = (() => {
+        try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]'); } catch { return []; }
+      })();
+      const hasSuins = addrs.some((addr) => suinsCache[addr] || !!localStorage.getItem(`ski:suins:${addr}`));
+      if (hasSuins) return 2;
+      if (w.accounts.length > 0) return 1;
+      return 0;
+    };
+    return score(b) - score(a);
   });
 
   if (!modalOpen) {
@@ -351,6 +359,9 @@ function renderModal() {
     });
 
     btn.addEventListener('mouseenter', () => {
+      // Mark active
+      els.modal.querySelectorAll('[data-idx]').forEach((b) => b.classList.remove('active'));
+      (btn as HTMLElement).classList.add('active');
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
       const w = wallets[idx];
       if (!w || !detailEl) return;
@@ -481,6 +492,13 @@ function renderModal() {
     });
 
   });
+
+  // Auto-show detail for connected wallet on open (fall back to first wallet)
+  const defaultIdx = connectedName
+    ? wallets.findIndex((w) => w.name === connectedName)
+    : 0;
+  const autoBtn = els.modal.querySelector(`[data-idx="${defaultIdx >= 0 ? defaultIdx : 0}"]`) as HTMLElement | null;
+  autoBtn?.dispatchEvent(new MouseEvent('mouseenter'));
 }
 
 export function openModal() {

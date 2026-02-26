@@ -25,7 +25,6 @@ import type { Wallet } from '@wallet-standard/base';
 // ─── Assets ──────────────────────────────────────────────────────────
 
 const ASSETS = {
-  logoGreen: './assets/green_dotski.png',
   suiDrop: './assets/sui-drop.svg',
 };
 
@@ -60,7 +59,7 @@ export function updateAppState(patch: Partial<AppState>) {
 const els = {
   widget: document.getElementById('wallet-widget'),
   wk: document.getElementById('wk-widget'),
-  profileBtn: document.getElementById('wallet-profile-btn'),
+  skiBtn: document.getElementById('wallet-ski-btn'),
   menuRoot: document.getElementById('wallet-menu-root'),
   modal: document.getElementById('ski-modal'),
   signStage: document.getElementById('sign-stage'),
@@ -125,19 +124,83 @@ export function showToast(msg: string) {
 // ─── SKI SVG dot variant ─────────────────────────────────────────────
 
 let _skiSvgText: string | null = null;
-fetch('./assets/ski.svg').then((r) => r.text()).then((t) => { _skiSvgText = t; }).catch(() => {});
+fetch('./assets/ski.svg').then((r) => r.text()).then((t) => { _skiSvgText = t; render(); }).catch(() => {});
 
+type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond';
+
+/**
+ * Generic SVG string builder. Renames all internal IDs to `{idPrefix}-*` so
+ * multiple instances of the same SVG can coexist in the DOM without conflicts.
+ * Pre-applies dot variant and lift visibility via string substitution so the
+ * rendered SVG is correct on frame 0 — no post-render DOM swap needed.
+ */
+function _buildSkiSvg(
+  svgId: string,
+  cssClass: string,
+  idPrefix: string,
+  variant: SkiDotVariant,
+  showLift: boolean,
+): string {
+  if (!_skiSvgText) return '';
+
+  let s = _skiSvgText
+    .replace('<svg ', `<svg id="${svgId}" class="${cssClass}" `)
+    .replace('id="ski-lift"',       showLift ? `id="${idPrefix}-lift"` : `id="${idPrefix}-lift" style="display:none"`)
+    .replace('id="ski-dot-outer"',  `id="${idPrefix}-dot-outer"`)
+    .replace('id="ski-dot-inner"',  `id="${idPrefix}-dot-inner"`)
+    .replace('id="ski-dot-circle"', `id="${idPrefix}-dot-circle"`)
+    .replace('id="ski-dot-square"', `id="${idPrefix}-dot-square"`);
+
+  // Crop to the bottom half of the SVG (the lift/slope lives in the top half)
+  if (!showLift) {
+    s = s.replace('viewBox="0 0 1214 847"', 'viewBox="0 460 1214 387"');
+  }
+
+  if (variant === 'green-circle') {
+    s = s
+      .replace(`id="${idPrefix}-dot-outer" fill="#FFFFFF"`,
+        `id="${idPrefix}-dot-outer" style="display:none" fill="#FFFFFF"`)
+      .replace(`id="${idPrefix}-dot-inner" fill="#010101" opacity="1.000000" stroke="none"`,
+        `id="${idPrefix}-dot-inner" style="display:none" fill="#010101" opacity="1.000000" stroke="none"`)
+      .replace(`id="${idPrefix}-dot-circle"`, `id="${idPrefix}-dot-circle" fill="#22c55e"`)
+      .replace(new RegExp(`(<circle id="${idPrefix}-dot-circle"[^>]*?) style="display:none"(/>)`), '$1$2');
+  } else if (variant === 'blue-square') {
+    s = s
+      .replace(`id="${idPrefix}-dot-outer" fill="#FFFFFF"`,
+        `id="${idPrefix}-dot-outer" style="display:none" fill="#FFFFFF"`)
+      .replace(`id="${idPrefix}-dot-inner" fill="#010101" opacity="1.000000" stroke="none"`,
+        `id="${idPrefix}-dot-inner" style="display:none" fill="#010101" opacity="1.000000" stroke="none"`)
+      .replace(`id="${idPrefix}-dot-square"`, `id="${idPrefix}-dot-square" fill="#3b82f6"`)
+      .replace(new RegExp(`(<rect id="${idPrefix}-dot-square"[^>]*?) style="display:none"(/>)`), '$1$2');
+  }
+  // black-diamond: outer/inner visible by default in source; circle/square already hidden
+  return s;
+}
+
+// Modal SVG — uses 'ski' prefix so IDs match what updateSkiDot() looks up
 function getInlineSkiSvg(): string {
-  if (!_skiSvgText) {
+  const ws = getState();
+  const variant: SkiDotVariant = ws.address
+    ? (app.suinsName ? 'blue-square' : 'black-diamond')
+    : 'green-circle';
+  const svg = _buildSkiSvg('ski-modal-svg', 'ski-modal-logo', 'ski', variant, _skiLiftVisible);
+  if (!svg) {
     return `<a href="https://sui.ski" target="_blank" rel="noopener" id="ski-modal-brand-link" class="ski-modal-brand-link">
       <img src="./assets/ski.svg" class="ski-modal-logo" id="ski-modal-svg-fallback">
     </a>`;
   }
-  const svgHtml = _skiSvgText.replace('<svg ', '<svg id="ski-modal-svg" class="ski-modal-logo" ');
-  return `<a href="https://sui.ski" target="_blank" rel="noopener" id="ski-modal-brand-link" class="ski-modal-brand-link">${svgHtml}</a>`;
+  return `<a href="https://sui.ski" target="_blank" rel="noopener" id="ski-modal-brand-link" class="ski-modal-brand-link">${svg}</a>`;
 }
 
-type SkiDotVariant = 'green-circle' | 'blue-square' | 'black-diamond';
+// Pill button SVG — 'ski-pill' prefix, lift always hidden
+function getPillSkiSvg(variant: SkiDotVariant): string {
+  return _buildSkiSvg('ski-pill-svg', 'wk-pill-ski-logo', 'ski-pill', variant, false);
+}
+
+// SKI button SVG — 'ski-btn' prefix, lift always hidden
+function getSkiBtnSvg(variant: SkiDotVariant): string {
+  return _buildSkiSvg('ski-btn-svg', 'wk-ski-btn-logo', 'ski-btn', variant, false);
+}
 
 let _skiLiftVisible = true;
 
@@ -145,6 +208,28 @@ export function setSkiLift(show: boolean) {
   _skiLiftVisible = show;
   const fin = document.getElementById('ski-lift') as SVGElement | null;
   if (fin) fin.style.display = show ? '' : 'none';
+}
+
+// ─── Dynamic favicon ─────────────────────────────────────────────────
+
+let _faviconVariant: SkiDotVariant | null = null;
+
+function updateFavicon(variant: SkiDotVariant) {
+  if (variant === _faviconVariant) return;
+  _faviconVariant = variant;
+
+  let shape: string;
+  if (variant === 'green-circle') {
+    shape = `<circle cx="50" cy="50" r="38" fill="#22c55e" stroke="white" stroke-width="10"/>`;
+  } else if (variant === 'blue-square') {
+    shape = `<rect x="10" y="10" width="80" height="80" fill="#3b82f6" stroke="white" stroke-width="10"/>`;
+  } else {
+    shape = `<polygon points="50,6 94,50 50,94 6,50" fill="#111111" stroke="white" stroke-width="10"/>`;
+  }
+  const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${shape}</svg>`;
+  const url = 'data:image/svg+xml,' + encodeURIComponent(svgStr);
+  const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (link) link.href = url;
 }
 
 function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
@@ -172,6 +257,10 @@ function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
   }
 }
 
+// ─── Hydration guard (suppress disconnected flash on reload) ─────────
+
+let _hydrating = false;
+
 // ─── Wallet Modal ────────────────────────────────────────────────────
 
 let modalOpen = false;
@@ -179,12 +268,42 @@ const suinsCache: Record<string, string> = {}; // address -> name
 
 function renderModal() {
   if (!els.modal) return;
-  const wallets = getSuiWallets().slice().sort((a, b) =>
-    (b.accounts.length > 0 ? 1 : 0) - (a.accounts.length > 0 ? 1 : 0)
-  );
+  const connectedName = getState().walletName;
+  const wallets = getSuiWallets().slice().sort((a, b) => {
+    const aC = a.name === connectedName ? 2 : (a.accounts.length > 0 ? 1 : 0);
+    const bC = b.name === connectedName ? 2 : (b.accounts.length > 0 ? 1 : 0);
+    return bC - aC;
+  });
 
-  if (!modalOpen || !wallets.length) {
+  if (!modalOpen) {
     els.modal.innerHTML = '';
+    return;
+  }
+
+  if (!wallets.length) {
+    els.modal.innerHTML = `
+      <div class="ski-modal-overlay open" id="ski-modal-overlay">
+        <div class="ski-modal" style="animation:ski-modal-in .2s ease">
+          <div class="ski-modal-header">
+            <div class="ski-modal-header-left">
+              ${getInlineSkiSvg()}
+              <div class="ski-modal-titles">
+                <h2 class="ski-modal-title">.Sui Key-In</h2>
+                <p class="ski-modal-tagline">once,<br>everywhere</p>
+              </div>
+            </div>
+            <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
+          </div>
+          <div class="ski-no-wallets">
+            <p class="ski-no-wallets-msg">No Sui wallets detected.</p>
+            <p class="ski-no-wallets-sub">Install a Sui wallet extension to get started.</p>
+          </div>
+        </div>
+      </div>`;
+    document.getElementById('ski-modal-close')?.addEventListener('click', closeModal);
+    document.getElementById('ski-modal-overlay')?.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).id === 'ski-modal-overlay') closeModal();
+    });
     return;
   }
 
@@ -204,7 +323,7 @@ function renderModal() {
         <div class="ski-modal-body">
           <div class="ski-modal-col ski-modal-wallets">
             ${wallets.map((w, i) => `
-              <button class="wk-dd-item" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
+              <button class="wk-dd-item${w.name === connectedName ? ' active' : ''}" data-idx="${i}" style="display:flex;align-items:center;gap:10px">
                 ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:28px;height:28px;border-radius:6px">` : ''}
                 <span>${esc(w.name)}</span>
               </button>
@@ -236,11 +355,27 @@ function renderModal() {
       const w = wallets[idx];
       if (!w || !detailEl) return;
 
-      // Update dot: green = no accounts, blue = has SuiNS, black = connected but no SuiNS
-      if (!w.accounts.length) {
+      // Persist live accounts to storage — merge so previously seen addresses are retained
+      const liveAddrs = w.accounts.map((a) => normalizeSuiAddress(a.address));
+      if (liveAddrs.length) {
+        try {
+          const existing: string[] = JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]');
+          const merged = [...new Set([...existing, ...liveAddrs])];
+          localStorage.setItem(`ski:wallet-keys:${w.name}`, JSON.stringify(merged));
+        } catch {}
+      }
+
+      // Use live accounts if available, otherwise fall back to stored keys
+      const storedAddrs: string[] = (() => {
+        try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]'); } catch { return []; }
+      })();
+      const displayAddrs = liveAddrs.length ? liveAddrs : storedAddrs;
+
+      // Update dot variant
+      if (!displayAddrs.length) {
         updateSkiDot('green-circle');
       } else {
-        const cachedName = w.accounts.map((a) => suinsCache[normalizeSuiAddress(a.address)]).find(Boolean);
+        const cachedName = displayAddrs.map((addr) => suinsCache[addr]).find(Boolean);
         updateSkiDot(cachedName ? 'blue-square' : 'black-diamond', cachedName);
       }
 
@@ -278,9 +413,8 @@ function renderModal() {
         ? `<details class="ski-detail-retired"><summary class="ski-detail-label">Legacy</summary><div class="ski-feature-list">${legacyHtml}</div></details>`
         : '';
 
-      const accountsHtml = w.accounts.length
-        ? w.accounts.map((a, ai) => {
-            const addr = normalizeSuiAddress(a.address);
+      const keysHtml = displayAddrs.length
+        ? displayAddrs.map((addr, ai) => {
             const scanUrl = `https://suiscan.xyz/mainnet/account/${addr}`;
             return `<div class="ski-detail-addr-wrap" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
               <span class="ski-detail-suins-slot"></span>
@@ -295,7 +429,7 @@ function renderModal() {
       detailEl.innerHTML = `
         ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
         <div class="ski-detail-name">${esc(w.name)}</div>
-        <div class="ski-detail-row"><span class="ski-detail-label">Address</span>${accountsHtml}</div>
+        <div class="ski-detail-row"><span class="ski-detail-label">Keys</span>${keysHtml}</div>
         ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
         ${current.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Features</span><div class="ski-feature-list">${currentHtml}</div></div>` : ''}
         ${retiredSection}
@@ -314,9 +448,8 @@ function renderModal() {
         });
       });
 
-      // Resolve SuiNS names: show cached immediately, then refresh
-      w.accounts.forEach((a, ai) => {
-        const addr = normalizeSuiAddress(a.address);
+      // Resolve SuiNS names for all displayed addresses
+      displayAddrs.forEach((addr, ai) => {
         const renderName = (name: string) => {
           const wrap = detailEl.querySelector(`[data-addr-idx="${ai}"]`);
           const slot = wrap?.querySelector('.ski-detail-suins-slot');
@@ -325,14 +458,21 @@ function renderModal() {
             slot.innerHTML = `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-detail-suins">${esc(bare)}</a>`;
           }
         };
-        // Show cached name instantly
-        if (suinsCache[addr]) renderName(suinsCache[addr]);
+        // Show cached name instantly (memory then localStorage)
+        if (suinsCache[addr]) {
+          renderName(suinsCache[addr]);
+        } else {
+          try {
+            const stored = localStorage.getItem(`ski:suins:${addr}`);
+            if (stored) { suinsCache[addr] = stored; renderName(stored); }
+          } catch {}
+        }
         // Always refresh from network
-        lookupSuiNS(a.address).then((name: string | null) => {
+        lookupSuiNS(addr).then((name: string | null) => {
           if (name) {
             suinsCache[addr] = name;
+            try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
             renderName(name);
-            // Upgrade dot to blue square now that SuiNS is confirmed
             updateSkiDot('blue-square', name);
           }
         });
@@ -345,12 +485,13 @@ function renderModal() {
 
 export function openModal() {
   modalOpen = true;
+  els.widget?.classList.add('ski-modal-active');
   renderModal();
-  requestAnimationFrame(() => updateSkiDot('green-circle'));
 }
 
 function closeModal() {
   modalOpen = false;
+  els.widget?.classList.remove('ski-modal-active');
   if (els.modal) els.modal.innerHTML = '';
 }
 
@@ -407,6 +548,7 @@ export async function refreshPortfolio(force = false) {
   if (!force && now - lastPortfolioMs < 25_000) return;
   portfolioInFlight = true;
   lastPortfolioMs = now;
+  const fetchedFor = ws.address; // capture before any await
 
   try {
     const res = await fetch(GRAPHQL_URL, {
@@ -419,10 +561,14 @@ export async function refreshPortfolio(force = false) {
             balance(coinType:"0x2::sui::SUI"){totalBalance}
           }
         }`,
-        variables: { a: ws.address },
+        variables: { a: fetchedFor },
       }),
     });
     const json = await res.json();
+
+    // Wallet switched while fetch was in-flight — discard stale result
+    if (getState().address !== fetchedFor) return;
+
     const addr = json?.data?.address;
     const mist = Number(addr?.balance?.totalBalance || 0);
     app.sui = Number.isFinite(mist) ? mist / 1e9 : 0;
@@ -431,7 +577,7 @@ export async function refreshPortfolio(force = false) {
     const name = addr?.defaultNameRecord?.domain;
     if (name && typeof name === 'string') {
       app.suinsName = name;
-      try { localStorage.setItem('ski:suins-name', name); } catch {}
+      try { localStorage.setItem(`ski:suins:${fetchedFor}`, name); } catch {}
     }
   } catch { /* keep existing */ }
   finally {
@@ -471,7 +617,7 @@ function copyAddress() {
 
 // ─── Profile link ────────────────────────────────────────────────────
 
-function profileHref(): string {
+function skiHref(): string {
   if (app.suinsName) {
     const name = app.suinsName.replace(/\.sui$/, '');
     return 'https://' + encodeURIComponent(name) + '.sui.ski';
@@ -485,14 +631,9 @@ function renderWidget() {
   if (!els.wk) return;
   const ws = getState();
 
-  // Disconnected: green .SKI connect button
+  // Disconnected: hide wk-widget — profile button handles connect
   if (!ws.address) {
-    els.wk.innerHTML = `
-      <div class="wk-widget">
-        <button class="wk-widget-btn" id="wallet-pill-btn" type="button" title="Connect .SKI">
-          <img src="${ASSETS.logoGreen}" class="wk-widget-brand-logo" alt=".SKI" draggable="false">
-        </button>
-      </div>`;
+    els.wk.innerHTML = '';
     return;
   }
 
@@ -540,21 +681,20 @@ function renderWidget() {
 
 // ─── Render: Profile .SKI button ─────────────────────────────────────
 
-function renderProfileButton() {
-  if (!els.profileBtn) return;
+function renderSkiBtn() {
+  if (!els.skiBtn) return;
   const ws = getState();
 
   if (!ws.address) {
-    els.profileBtn.style.display = 'none';
+    els.skiBtn.style.display = '';
+    els.skiBtn.innerHTML = getSkiBtnSvg(_hydrating ? 'black-diamond' : 'green-circle');
     return;
   }
 
   const hasPrimary = !!app.suinsName;
-  els.profileBtn.style.display = '';
-  const img = els.profileBtn.querySelector('img');
-  if (img) {
-    img.src = hasPrimary ? './assets/blue_dotski.png' : './assets/black_dotskitxt.png';
-  }
+  els.skiBtn.style.display = '';
+  els.skiBtn.classList.toggle('menu-open', app.menuOpen);
+  els.skiBtn.innerHTML = getSkiBtnSvg(hasPrimary ? 'blue-square' : 'black-diamond');
 }
 
 // ─── Sign Message ───────────────────────────────────────────────────
@@ -665,27 +805,35 @@ async function handleDisconnect(reopenModal = false) {
 // ─── Master render ───────────────────────────────────────────────────
 
 function render() {
-  // no-op: profile button now uses img swap
   renderWidget();
-  renderProfileButton();
+  renderSkiBtn();
   renderSignStage();
   renderMenu();
+
+  // Update favicon to match current wallet state
+  const ws = getState();
+  updateFavicon(!ws.address ? 'green-circle' : (app.suinsName ? 'blue-square' : 'black-diamond'));
 
   // Bind pill click
   const pill = document.getElementById('wallet-pill-btn');
   pill?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!getState().address) { if (modalOpen) closeModal(); else openModal(); return; }
-    window.open(profileHref(), '_blank', 'noopener,noreferrer');
+    if (modalOpen) { closeModal(); return; }
+    if (!getState().address) { openModal(); return; }
+    window.open(skiHref(), '_blank', 'noopener,noreferrer');
   });
 }
 
 // ─── Global event bindings ───────────────────────────────────────────
 
 function bindEvents() {
-  els.profileBtn?.addEventListener('click', (e) => {
+  els.skiBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!getState().address) return;
+    if (!getState().address) {
+      if (modalOpen) { closeModal(); return; }
+      openModal();
+      return;
+    }
     if (modalOpen) { closeModal(); return; }
     app.menuOpen = !app.menuOpen;
     render();
@@ -693,7 +841,7 @@ function bindEvents() {
 
   document.addEventListener('click', (e) => {
     if (!app.menuOpen) return;
-    if (els.profileBtn?.contains(e.target as Node)) return;
+    if (els.skiBtn?.contains(e.target as Node)) return;
     if (els.menuRoot?.contains(e.target as Node)) return;
     app.menuOpen = false;
     render();
@@ -712,10 +860,25 @@ export function initUI() {
 
   // Subscribe to wallet state changes
   subscribe((ws: WalletState) => {
+    // Only clear hydrating on terminal states
+    if (ws.status === 'connected' || ws.status === 'disconnected') _hydrating = false;
     if (ws.status === 'connected' && ws.address) {
-      // Restore cached SuiNS name instantly (will refresh from network)
+      // Persist this address under the wallet name so it survives disconnect/switch
+      if (ws.walletName) {
+        try {
+          const key = `ski:wallet-keys:${ws.walletName}`;
+          const existing: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+          const normalized = normalizeSuiAddress(ws.address);
+          if (!existing.includes(normalized)) {
+            localStorage.setItem(key, JSON.stringify([...existing, normalized]));
+          }
+        } catch {}
+      }
+      // Always clear first so a previously connected wallet's name never bleeds through
+      app.suinsName = '';
+      // Restore this address's cached SuiNS name instantly (will refresh from network)
       try {
-        const cached = localStorage.getItem('ski:suins-name');
+        const cached = localStorage.getItem(`ski:suins:${ws.address}`);
         if (cached) app.suinsName = cached;
       } catch {}
 
@@ -736,7 +899,7 @@ export function initUI() {
       app.ikaWalletId = '';
       app.menuOpen = false;
       app.copied = false;
-      try { localStorage.removeItem('ski:suins-name'); localStorage.removeItem('ski:session'); } catch {}
+      // Keep ski:suins-name and ski:session so data persists through disconnect
 
       window.dispatchEvent(new CustomEvent('ski:wallet-disconnected'));
     }
@@ -749,9 +912,18 @@ export function initUI() {
     if (modalOpen) renderModal();
   });
 
+  // Suppress disconnected flash if a wallet was previously connected
+  try {
+    if (localStorage.getItem('mysten-dapp-kit:selected-wallet-and-address')) {
+      _hydrating = true;
+    }
+  } catch {}
+
   // Initial render
   render();
 
   // Auto-reconnect to last wallet
   autoReconnect().catch(() => {});
+  // Safety: clear hydrating after 1.5 s in case subscribe never fires
+  setTimeout(() => { if (_hydrating) { _hydrating = false; render(); } }, 1500);
 }

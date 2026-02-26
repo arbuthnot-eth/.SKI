@@ -45,10 +45,13 @@ function storeSession(s: StoredSession) {
 
 // ─── Sign-in message builder ─────────────────────────────────────────
 
-function buildSignMessage(address: string, domain: string): { message: string; expiresAt: string } {
+const TTL_DEFAULT_MS  = 7 * 24 * 60 * 60 * 1000; //  7 days  — software wallets
+const TTL_KEYSTONE_MS = 1 * 24 * 60 * 60 * 1000; // 24 hours — hardware wallet (QR sign once / day)
+
+function buildSignMessage(address: string, domain: string, ttlMs = TTL_DEFAULT_MS): { message: string; expiresAt: string } {
   const nonce = crypto.randomUUID();
   const issuedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
 
   const message = [
     `${domain} wants you to .SKI`,
@@ -117,7 +120,9 @@ export async function signIn(isReconnect = false): Promise<boolean> {
   }
 
   // Fresh connection — need to sign
-  const { message, expiresAt } = buildSignMessage(address, window.location.host);
+  const isKeystone = /keystone/i.test(ws.walletName);
+  const ttlMs = isKeystone ? TTL_KEYSTONE_MS : TTL_DEFAULT_MS;
+  const { message, expiresAt } = buildSignMessage(address, window.location.host, ttlMs);
   const messageBytes = new TextEncoder().encode(message);
 
   try {
@@ -134,7 +139,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 
     await establishSession(address, signature, bytes, visitorId);
 
-    if (!isReconnect) showToast('.SKI session active');
+    if (!isReconnect) showToast(isKeystone ? 'Keystone session active — valid 24 h' : '.SKI session active');
     console.log('[.SKI] Session established for', address, '| device:', visitorId.slice(0, 8));
     return true;
   } catch (err) {
@@ -153,8 +158,12 @@ export async function signIn(isReconnect = false): Promise<boolean> {
           await disconnect();
           await connect(keystone);
           return signIn(isReconnect);
-        } catch { /* fall through to generic error handling */ }
+        } catch { /* fall through to user-friendly message */ }
       }
+      // No Keystone extension found, or the fallback itself failed.
+      // Give the user an actionable message instead of the raw invariant UUID.
+      showToast('Backpack lost your Keystone device. Re-import it in Backpack, or install the Keystone extension.');
+      return false;
     }
 
     if (!msg.toLowerCase().includes('reject')) {
@@ -173,10 +182,20 @@ export { forgetDevice, disconnectSession } from './client/session.js';
 window.addEventListener('ski:wallet-connected', async (e) => {
   const detail = (e as CustomEvent).detail;
   if (!detail?.address) return;
-  // Only restore an existing signed session — don't prompt for a new signature on connect.
-  // Signing will be triggered explicitly when the session agent backend is available.
+
   const hasStored = !!localStorage.getItem('ski:session');
-  if (hasStored) await signIn(/* isReconnect */ true);
+  if (hasStored) {
+    // Restore an already-signed session without re-prompting.
+    await signIn(/* isReconnect */ true);
+    return;
+  }
+
+  // Keystone Pro: QR-sign once, cache for 24 h.
+  // Auto-prompt on fresh connect so the user does not need to click SKI again.
+  const ws = getState();
+  if (ws.wallet && /keystone/i.test(ws.wallet.name)) {
+    await signIn();
+  }
 });
 
 window.addEventListener('ski:wallet-disconnected', () => {

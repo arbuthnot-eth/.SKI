@@ -756,7 +756,7 @@ body {
 .ski-detail-active-key {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 6px;
   min-width: 0;
 }
@@ -782,7 +782,6 @@ body {
   width: 24px;
   height: 24px;
   border-radius: 5px;
-  margin-top: 2px;
 }
 
 /* Black diamond variant — transparent bg, SVG provides the shape */
@@ -830,7 +829,7 @@ body {
 .ski-detail-addr-wrap {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 6px;
 }
 

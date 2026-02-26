@@ -267,6 +267,15 @@ let modalOpen = false;
 const suinsCache: Record<string, string> = {}; // address -> name
 let detailGeneration = 0; // incremented on each showWalletDetail call to cancel stale async lookups
 
+/** Profile-picture indicator for a key: black diamond (no SuiNS) or blue square with sui-drop (has SuiNS). */
+function keyPfpHtml(ai: number, hasSuins: boolean): string {
+  if (hasSuins) {
+    return `<div class="ski-key-pfp ski-key-pfp--blue"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></div>`;
+  }
+  const svg = _buildSkiSvg(`ski-kpfp-${ai}`, 'ski-key-pfp-ski', `kpfp${ai}`, 'black-diamond', false);
+  return `<div class="ski-key-pfp ski-key-pfp--diamond">${svg || `<img src="./assets/ski.svg" class="ski-key-pfp-ski" alt="">`}</div>`;
+}
+
 function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
   const gen = ++detailGeneration;
   // Persist live accounts to storage — merge so previously seen addresses are retained
@@ -335,24 +344,38 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
     ? `<details class="ski-detail-retired"><summary class="ski-detail-label">Legacy</summary><div class="ski-feature-list">${legacyHtml}</div></details>`
     : '';
 
-  const keysHtml = displayAddrs.length
-    ? displayAddrs.map((addr: string, ai: number) => {
-        const isConnected = addr === activeAddr;
-        const scanUrl = `https://suiscan.xyz/mainnet/account/${addr}`;
-        return `<div class="ski-detail-addr-wrap${isConnected ? ' connected-key' : ''}" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
-          <span class="ski-detail-suins-slot"></span>
-          <div class="ski-detail-addr-row">
-            <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
-            <button class="ski-copy-btn" title="Copy address">\u2398</button>
-          </div>
-        </div>`;
-      }).join('')
+  // Build a key card (used for both the active key and secondary keys)
+  const keyCardHtml = (addr: string, ai: number): string => {
+    const hasSuins = !!(suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })());
+    const scanUrl = `https://suiscan.xyz/mainnet/account/${esc(addr)}`;
+    const cls = ai === 0 ? 'ski-detail-active-key' : 'ski-detail-addr-wrap';
+    return `<div class="${cls}" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
+      ${keyPfpHtml(ai, hasSuins)}
+      <div class="ski-detail-key-text">
+        <span class="ski-detail-suins-slot"></span>
+        <div class="ski-detail-addr-row">
+          <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(addr)}">${esc(truncAddr(addr))}</a>
+          <button class="ski-copy-btn" title="Copy address">\u2398</button>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  const activeKeyHtml = displayAddrs.length
+    ? keyCardHtml(displayAddrs[0], 0)
     : '<div class="ski-detail-addr muted">Connect to reveal</div>';
 
+  const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
+
   detailEl.innerHTML = `
-    ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
-    <div class="ski-detail-name">${esc(w.name)}</div>
-    <div class="ski-detail-row"><span class="ski-detail-label">Keys</span>${keysHtml}</div>
+    <div class="ski-detail-header">
+      <div class="ski-detail-wallet-col">
+        ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
+        <div class="ski-detail-name">${esc(w.name)}</div>
+      </div>
+      ${activeKeyHtml}
+    </div>
+    ${otherKeysHtml ? `<div class="ski-detail-row"><span class="ski-detail-label">Other Keys</span>${otherKeysHtml}</div>` : ''}
     ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
     ${current.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Features</span><div class="ski-feature-list">${currentHtml}</div></div>` : ''}
     ${retiredSection}
@@ -394,9 +417,17 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
         suinsCache[addr] = name;
         try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
         renderName(name);
+        // Upgrade pfp from diamond to blue-square now that we have a SuiNS name
+        const wrap = detailEl.querySelector(`[data-addr-idx="${ai}"]`);
+        const pfpEl = wrap?.querySelector('.ski-key-pfp');
+        if (pfpEl && !pfpEl.classList.contains('ski-key-pfp--blue')) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = keyPfpHtml(ai, true);
+          const newPfp = tmp.firstElementChild;
+          if (newPfp) pfpEl.replaceWith(newPfp);
+        }
         updateSkiDot('blue-square', name);
       } else if (name) {
-        // Still cache the result even if the panel has moved on
         suinsCache[addr] = name;
         try { localStorage.setItem(`ski:suins:${addr}`, name); } catch {}
       }

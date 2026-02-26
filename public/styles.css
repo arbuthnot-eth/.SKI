@@ -552,7 +552,7 @@ body {
 .wk-popout-actions {
   display: flex;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .wk-popout-actions .wk-dd-item {

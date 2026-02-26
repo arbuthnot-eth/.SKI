@@ -21,6 +21,12 @@ import {
   type WalletState,
 } from './wallet.js';
 import type { Wallet } from '@wallet-standard/base';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
+
+const grpcClient = new SuiGrpcClient({
+  network: 'mainnet',
+  baseUrl: 'https://fullnode.mainnet.sui.io:443',
+});
 
 // ─── Assets ──────────────────────────────────────────────────────────
 
@@ -837,9 +843,10 @@ async function selectWallet(wallet: Wallet) {
   }
 }
 
-// ─── Portfolio (GraphQL balance fetch) ───────────────────────────────
+// ─── Portfolio (gRPC balance fetch + GraphQL SuiNS) ──────────────────
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+const USDC_TYPE   = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 
 function normalizeSuiAddress(addr: string): string {
   let hex = addr.startsWith('0x') ? addr.slice(2) : addr;
@@ -880,36 +887,25 @@ export async function refreshPortfolio(force = false) {
   const fetchedFor = ws.address; // capture before any await
 
   try {
-    const res = await fetch(GRAPHQL_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: `query($a:SuiAddress!){
-          address(address:$a){
-            defaultNameRecord{domain}
-            balance(coinType:"0x2::sui::SUI"){totalBalance}
-            usdc:balance(coinType:"0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"){totalBalance}
-          }
-        }`,
-        variables: { a: fetchedFor },
-      }),
-    });
-    const json = await res.json();
+    // gRPC for balances — addressBalance is the accumulator-tracked balance
+    const [suiResult, usdcResult, suinsName] = await Promise.all([
+      grpcClient.core.getBalance({ owner: fetchedFor }).catch(() => null),
+      grpcClient.core.getBalance({ owner: fetchedFor, coinType: USDC_TYPE }).catch(() => null),
+      lookupSuiNS(fetchedFor),
+    ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
     if (getState().address !== fetchedFor) return;
 
-    const addr = json?.data?.address;
-    const mist = Number(addr?.balance?.totalBalance || 0);
-    app.sui = Number.isFinite(mist) ? mist / 1e9 : 0;
-    const usdcRaw = Number(addr?.usdc?.totalBalance || 0);
+    const suiMist = Number(suiResult?.balance?.balance ?? 0);
+    app.sui = Number.isFinite(suiMist) ? suiMist / 1e9 : 0;
+
+    const usdcRaw = Number(usdcResult?.balance?.balance ?? 0);
     app.stableUsd = Number.isFinite(usdcRaw) ? usdcRaw / 1e6 : 0;
 
-    // SuiNS reverse lookup
-    const name = addr?.defaultNameRecord?.domain;
-    if (name && typeof name === 'string') {
-      app.suinsName = name;
-      try { localStorage.setItem(`ski:suins:${fetchedFor}`, name); } catch {}
+    if (suinsName) {
+      app.suinsName = suinsName;
+      try { localStorage.setItem(`ski:suins:${fetchedFor}`, suinsName); } catch {}
     }
   } catch { /* keep existing */ }
   finally {

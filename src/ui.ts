@@ -129,8 +129,21 @@ export function showToast(msg: string) {
   toast.addEventListener('click', remove);
 }
 
+const BACKPACK_CHROME_URL  = 'https://chromewebstore.google.com/detail/backpack/aflkmfhebedbjioipglgcbcmnbpgliof';
+const BACKPACK_IOS_URL     = 'https://apps.apple.com/us/app/backpack-crypto-wallet/id1604379882';
+const BACKPACK_ANDROID_URL = 'https://play.google.com/store/apps/details?id=app.backpack.mobile';
+
+function getBackpackSmartUrl(): string {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/i.test(ua)) return BACKPACK_IOS_URL;
+  if (/Android/i.test(ua)) return BACKPACK_ANDROID_URL;
+  return BACKPACK_CHROME_URL;
+}
+
 export function showBackpackLockedToast(retryFn: () => void) {
   const walletIcon = getState().walletIcon;
+  const smartUrl = getBackpackSmartUrl();
+
   let root = document.getElementById('app-toast-root-top');
   if (!root) {
     root = document.createElement('div');
@@ -138,32 +151,69 @@ export function showBackpackLockedToast(retryFn: () => void) {
     root.className = 'app-toast-root app-toast-root--top';
     document.body.appendChild(root);
   }
+
   const toast = document.createElement('div');
   const id = 'app-toast-' + ++toastSeq;
-  toast.className = 'app-toast app-toast--action';
+  toast.className = 'app-toast app-toast--action app-toast--backpack';
   toast.id = id;
   toast.setAttribute('role', 'status');
+
+  // Logo — smart-routes to the right store for this device
   if (walletIcon) {
+    const link = document.createElement('a');
+    link.href = smartUrl;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.className = 'app-toast-wallet-icon-link';
+    link.title = 'Get Backpack';
+    link.addEventListener('click', (e) => e.stopPropagation());
     const img = document.createElement('img');
     img.className = 'app-toast-wallet-icon';
     img.src = walletIcon;
     img.alt = 'Backpack';
     img.width = 47;
     img.height = 47;
-    toast.appendChild(img);
+    link.appendChild(img);
+    toast.appendChild(link);
   }
-  const textSpan = document.createElement('span');
-  textSpan.textContent = 'Lock in to Backpack to continue';
-  toast.appendChild(textSpan);
+
+  // Body: message + store links
+  const body = document.createElement('div');
+  body.className = 'app-toast-backpack-body';
+  const msg = document.createElement('span');
+  msg.textContent = 'Lock in to Backpack app or extension';
+  body.appendChild(msg);
+  const storeLinks = document.createElement('div');
+  storeLinks.className = 'app-toast-store-links';
+  const stores = [
+    { label: 'Chrome', url: BACKPACK_CHROME_URL },
+    { label: 'App Store', url: BACKPACK_IOS_URL },
+    { label: 'Google Play', url: BACKPACK_ANDROID_URL },
+  ];
+  stores.forEach(({ label, url }) => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.className = 'app-toast-store-link';
+    a.textContent = label;
+    a.addEventListener('click', (e) => e.stopPropagation());
+    storeLinks.appendChild(a);
+  });
+  body.appendChild(storeLinks);
+  toast.appendChild(body);
+
+  // Try again button
   const btn = document.createElement('button');
   btn.className = 'app-toast-retry';
   btn.textContent = 'Try again';
   toast.appendChild(btn);
+
   root.appendChild(toast);
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
   const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
   btn.addEventListener('click', (e) => { e.stopPropagation(); remove(); retryFn(); });
-  setTimeout(remove, 10000);
+  setTimeout(remove, 12000);
   toast.addEventListener('click', remove);
 }
 

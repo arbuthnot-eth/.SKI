@@ -9,10 +9,10 @@ One-button Sui wallet sign-in. Connect once, authenticate everywhere.
 
 .SKI adds a two-button wallet widget to any Sui dApp:
 
-- **Left pill** — shows the connected wallet icon, SuiNS name or address, and SUI balance
-- **.SKI button** — opens the Key-In modal
+- **Left pill** — shows the connected wallet icon, SuiNS name or address, and balance
+- **.SKI button** — opens the .SKI modal
 
-The **Key-In modal** lists all installed Sui wallet extensions. For each one it shows every key that has ever connected through that extension (with SuiNS names resolved), the active networks, and supported features. The currently connected wallet and address are pre-selected when the modal opens.
+The **.Sui Key-In modal** lists all installed Sui wallet extensions. For each one it shows every key that has ever connected through that extension (with SuiNS names resolved), the active networks, and supported features. The currently connected wallet and address are pre-selected when the modal opens.
 
 After the user picks a wallet and connects, .SKI requests a personal message signature to prove key ownership, then binds the proof to a device fingerprint. The signed session persists across reloads. No backend required for the core flow.
 

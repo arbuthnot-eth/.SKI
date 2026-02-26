@@ -18,7 +18,7 @@ body {
     radial-gradient(80% 60% at 50% -10%, rgba(59, 130, 246, 0.18), transparent 65%),
     radial-gradient(55% 45% at 10% 100%, rgba(14, 165, 233, 0.08), transparent 70%),
     var(--bg);
-  min-height: 100vh;
+  min-height: 100dvh;
   padding: 24px;
 }
 
@@ -155,6 +155,10 @@ body {
   position: relative;
 }
 
+.wallet-widget.ski-modal-active {
+  z-index: 13001;
+}
+
 .wk-widget {
   position: relative;
   display: inline-block;
@@ -197,12 +201,13 @@ body {
   margin: 0 -7px;
 }
 
+
 .wk-widget-btn.connected {
   background: linear-gradient(135deg, rgba(8, 8, 14, 0.72), rgba(16, 16, 24, 0.68));
   border-color: rgba(100, 110, 135, 0.32);
   color: #c8cde0;
   max-width: 520px;
-  padding: 6px 10px;
+  padding: 3px 8px;
 }
 
 .wk-widget-btn.connected:hover {
@@ -227,6 +232,32 @@ body {
   border-radius: 5px;
 }
 
+.wk-pill-ski-logo {
+  height: 36px;
+  width: auto;
+  display: block;
+  flex-shrink: 0;
+}
+
+.wk-widget-btn.connected .wk-pill-ski-logo {
+  height: 26px;
+  opacity: 0.9;
+}
+
+/* Connected pill: wallet icon 30x30 */
+.wk-widget-btn.connected .wk-widget-method-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.wk-widget-btn.connected .wk-widget-method-icon img {
+  width: 30px;
+  height: 30px;
+  border-radius: 0;
+}
+
 .wk-widget-method-dual {
   display: inline-flex;
   align-items: center;
@@ -241,8 +272,8 @@ body {
 
 .wk-widget-title {
   display: block;
-  font-size: 0.8rem;
-  color: #e8ecf4;
+  font-size: 0.92rem;
+  color: #ffffff;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -258,7 +289,7 @@ body {
 }
 
 .wk-widget-primary-name {
-  color: #c8d0e0;
+  color: #ffffff;
 }
 
 .wk-widget-balance-wrap {
@@ -388,7 +419,8 @@ body {
   cursor: pointer;
 }
 
-.wk-dd-item:hover {
+.wk-dd-item:hover,
+.wk-dd-item.active {
   border-color: rgba(59, 130, 246, 0.86);
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
@@ -466,8 +498,8 @@ body {
   color: #e4efff;
 }
 
-.wallet-profile-btn {
-  min-height: 32px;
+.wallet-ski-btn {
+  min-height: 26px;
   border-radius: 10px;
   display: inline-flex;
   align-items: center;
@@ -476,13 +508,14 @@ body {
   border: 1.5px solid rgba(148, 163, 184, 0.42);
   cursor: pointer;
   transition: all 0.2s ease;
-  padding: 4px 10px;
+  padding: 3px 7px;
   box-shadow:
     0 10px 22px rgba(2, 6, 23, 0.45),
     0 0 0 1px rgba(148, 163, 184, 0.14) inset;
 }
 
-.wallet-profile-btn:hover {
+.wallet-ski-btn:hover,
+.wallet-ski-btn.menu-open {
   transform: translateY(-1px);
   border-color: rgba(59, 130, 246, 0.86);
   box-shadow:
@@ -490,11 +523,12 @@ body {
     0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
 
-.wallet-profile-btn img {
-  height: 22px;
+.wallet-ski-btn img,
+.wallet-ski-btn svg,
+.wk-ski-btn-logo {
+  height: 31px;
   width: auto;
   display: block;
-  object-fit: contain;
 }
 
 .wallet-widget.has-black-diamond .wk-widget-btn.connected {
@@ -572,8 +606,8 @@ body {
 }
 
 @keyframes ski-modal-in {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  from { opacity: 0; transform: translateX(-50%) scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
 }
 
 .ski-modal-body {
@@ -777,6 +811,24 @@ body {
   margin-top: 4px;
 }
 
+.ski-no-wallets {
+  padding: 8px 16px 24px;
+  text-align: center;
+}
+
+.ski-no-wallets-msg {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #e6ebf5;
+  margin: 0 0 6px;
+}
+
+.ski-no-wallets-sub {
+  font-size: 0.76rem;
+  color: #555d6e;
+  margin: 0;
+}
+
 .ski-modal-header {
   display: flex;
   justify-content: space-between;
@@ -826,17 +878,3 @@ body {
   line-height: 1.25;
 }
 
-@media (max-width: 780px) {
-  body {
-    padding: 14px;
-  }
-
-  .demo-stage {
-    justify-content: center;
-  }
-
-  #wallet-menu-root {
-    right: 0;
-    left: auto;
-  }
-}

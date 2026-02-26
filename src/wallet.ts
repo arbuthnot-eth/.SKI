@@ -165,10 +165,9 @@ export async function disconnect(): Promise<void> {
     walletChangeUnsub = null;
   }
 
-  try {
-    localStorage.removeItem('ski:last-wallet');
-    localStorage.removeItem('ski:last-address');
-  } catch { /* */ }
+  // Remove last-wallet so autoReconnect won't fire after an intentional disconnect.
+  // Keep last-address (display data) so it survives through disconnect.
+  try { localStorage.removeItem('ski:last-wallet'); } catch { /* */ }
 
   setState({
     status: 'disconnected',

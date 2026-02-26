@@ -16,7 +16,7 @@
         "hono-agents": "^3.0.6",
       },
       "devDependencies": {
-        "@cloudflare/workers-types": "^4.20260304.0",
+        "@cloudflare/workers-types": "^4.20260305.0",
         "potrace": "^2.1.8",
         "typescript": "^5.9.3",
         "wrangler": "^4.68.1",

@@ -1,0 +1,58 @@
+name: Publish npm Package
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run build
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump package version
+        run: npm version patch --no-git-tag-version
+
+      - name: Read version
+        id: version
+        run: |
+          echo "value=$(npm pkg get version | tr -d '"')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+      - name: Commit version bump and tag
+        run: |
+          git add package.json bun.lock
+          git commit -m "chore(release): v${{ steps.version.outputs.value }} [skip ci]"
+          git tag "v${{ steps.version.outputs.value }}"
+          git push origin HEAD:master --follow-tags

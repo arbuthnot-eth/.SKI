@@ -1,46 +1,138 @@
-# .SKI
+# .SKI — .Sui Key-In
 
-Standalone two-button wallet controls using real Sui wallet runtime.
+One-button Sui wallet sign-in. Connect once, authenticate everywhere.
 
-## Includes
-- Left pill button with connected state (name/address, SUI, USD)
-- Right `.SKI` menu button with dropdown under it
-- Local signed `.SKI` session layer (message-sign + expiry, no backend required)
-- Real wallet modal via `SuiWalletKit.renderModal(...)`
-- Extension wallet detection + WaaP support
+[![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
+[![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
 
-## Run
+## What it does
+
+.SKI adds a two-button wallet widget to any Sui dApp:
+
+- **Left pill** — shows the connected wallet icon, SuiNS name or address, and SUI balance
+- **.SKI button** — opens the Key-In modal
+
+The **Key-In modal** lists all installed Sui wallet extensions. For each one it shows every key that has ever connected through that extension (with SuiNS names resolved), the active networks, and supported features. The currently connected wallet and address are pre-selected when the modal opens.
+
+After the user picks a wallet and connects, .SKI requests a personal message signature to prove key ownership, then binds the proof to a device fingerprint. The signed session persists across reloads. No backend required for the core flow.
+
+## Install
+
 ```bash
-cd /home/brandon/Dev/workspace/wallet-buttons-product
-python3 -m http.server 4173 -d public
+npm install sui.ski
+# or
+bun add sui.ski
 ```
 
-Open: `http://localhost:4173/`
+## Embed via script tag (CDN)
 
-## Cloudflare Worker Deploy
-This repo is configured for Cloudflare Worker static assets with `wrangler.jsonc`.
+Add the stylesheet and module to your `<head>`:
+
+```html
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sui.ski/public/styles.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/sui.ski/public/dist/ski.js"></script>
+```
+
+Then add the widget markup anywhere in your `<body>`:
+
+```html
+<div class="wallet-widget" id="wallet-widget">
+  <div id="wk-widget"></div>
+  <button class="wallet-ski-btn" id="wallet-ski-btn" style="display:none"></button>
+  <div id="wallet-menu-root"></div>
+</div>
+<div id="ski-modal-root"></div>
+```
+
+The script auto-initializes on load — no further JS required.
+
+## Embed via bundler
+
+```ts
+import 'sui.ski';
+```
+
+Same DOM markup as above is required.
+
+## Events
+
+Listen for wallet connection state changes:
+
+```ts
+window.addEventListener('ski:wallet-connected', (e: CustomEvent) => {
+  const { address, walletName } = e.detail;
+  // user is now connected — address is the Sui address, walletName is e.g. "Phantom"
+});
+
+window.addEventListener('ski:wallet-disconnected', () => {
+  // user disconnected or session expired
+});
+```
+
+## Opening the Key-In modal programmatically
+
+The `.SKI` button opens the modal automatically. To open it from your own code:
+
+```ts
+// The modal is exported from the module entry point
+window.dispatchEvent(new CustomEvent('ski:open-modal'));
+```
+
+Or if you're importing the module directly and have access to the export:
+
+```ts
+import { openModal } from 'sui.ski/src/ui.js';
+openModal();
+```
+
+The modal:
+- Pre-populates with the currently connected wallet's detail on open
+- Shows all keys ever seen through each wallet extension (SuiNS names resolved)
+- Floats the active key to the top of the key list
+- Lets users switch wallets with one click
+- Handles race conditions — fast switching between wallets won't bleed SuiNS names across panels
+
+## Session layer
+
+Once connected and signed, .SKI stores a session in `localStorage` under `ski:session`. On reload it automatically attempts to restore the session silently. If the session has expired (24h default), it prompts for a new signature.
+
+Session key format: `deviceFingerprint:walletAddress` — ties the proof to both the device and the key.
+
+The included Cloudflare Durable Object session agent (`src/server/agents/session.ts`) can be used to verify sessions server-side if you deploy your own worker.
+
+## Supported wallets
+
+Any wallet implementing the [Sui Wallet Standard](https://docs.sui.io/standards/wallet-standard):
+
+- Phantom
+- Backpack
+- Slush
+- Suiet
+- Any other Sui Wallet Standard extension
+
+## Self-hosting / Cloudflare Worker deploy
+
+This package includes the full Cloudflare Worker source. Deploy your own instance:
 
 ```bash
-cd /home/brandon/Dev/workspace/wallet-buttons-product
 bun install
-bunx wrangler login
-bunx wrangler dev
+npx wrangler login
+bun run deploy   # builds + deploys in one step
 ```
 
-Deploy:
+`bun run deploy` runs `bun run build` (compiles `src/ski.ts` → `public/dist/ski.js`) then `npx wrangler deploy`.
+
+## Local development
 
 ```bash
-bunx wrangler deploy
+bun install
+bun run dev          # watches src/ski.ts and rebuilds on change
+# in a second terminal:
+bun run dev:wrangler # wrangler dev with hot reload
 ```
 
-Important: do not open the app via `file://...`; use `http://localhost` (or deployed `https://...`) so wallet/session behavior has a valid origin.
+Open `http://localhost:8787` — always use `http://localhost` (not `file://`) so wallet extensions have a valid origin.
 
-## Transport
-- App-level read queries in `public/app.js` use Sui `GraphQL` (`https://graphql.mainnet.sui.io/graphql`).
-- Wallet modal/runtime code in `public/generated/wallet-runtime.js` is generated from upstream wallet kit modules and may still include internal RPC client paths.
+## License
 
-## Notes
-- Browser wallet connections work without backend APIs.
-- `.SKI` standard mode is local-first and does not require `/api/wallet/*` endpoints.
-- If you want server-trusted or cross-subdomain sessions, implement your own backend/session layer separately.
-- Use the wallet dropdown action `Activate .SKI` to create a signed local session; use `Sign Out .SKI` to clear it.
+MIT

@@ -1,16 +1,49 @@
 {
-  "name": "dotski",
-  "private": true,
-  "version": "2.0.0",
+  "name": "sui.ski",
+  "version": "0.1.1",
+  "description": ".SKI — One-button Sui wallet sign-in. Connect once, authenticate everywhere.",
+  "type": "module",
+  "main": "public/dist/ski.js",
+  "module": "public/dist/ski.js",
+  "exports": {
+    ".": "./public/dist/ski.js",
+    "./styles": "./public/styles.css",
+    "./assets/*": "./public/assets/*"
+  },
+  "files": [
+    "public/dist",
+    "public/styles.css",
+    "public/assets",
+    "public/index.html",
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "sui",
+    "wallet",
+    "web3",
+    "sign-in",
+    "suins",
+    "wallet-standard",
+    "dapp",
+    "cloudflare-workers"
+  ],
+  "license": "MIT",
+  "homepage": "https://sui.ski",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arbuthnot-eth/.SKI"
+  },
   "scripts": {
     "build": "bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm",
     "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm",
     "dev:wrangler": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "deploy": "bun run build && npx wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260304.0",
+    "@cloudflare/workers-types": "^4.20260305.0",
     "potrace": "^2.1.8",
     "typescript": "^5.9.3",
     "wrangler": "^4.68.1"

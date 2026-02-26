@@ -8,7 +8,7 @@
  *   4. POST to session agent (Cloudflare Durable Object)
  */
 
-import { getState, signPersonalMessage } from './wallet.js';
+import { getState, signPersonalMessage, getSuiWallets, connect, disconnect } from './wallet.js';
 import { initUI, showToast, updateAppState } from './ui.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
@@ -139,6 +139,24 @@ export async function signIn(isReconnect = false): Promise<boolean> {
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Signing failed';
+
+    // Backpack throws this invariant when its internal Keystone hardware-wallet
+    // keyring is missing (e.g. device was re-paired or keyring was reset).
+    // Fall back to the Keystone wallet if it is registered in the browser,
+    // but only if we are not already using it (guards against infinite retry).
+    if (msg.includes('UserKeyring not found')) {
+      const currentWallet = getState().wallet;
+      const keystone = getSuiWallets().find((w) => /keystone/i.test(w.name));
+      if (keystone && keystone !== currentWallet) {
+        showToast('Switching to Keystone…');
+        try {
+          await disconnect();
+          await connect(keystone);
+          return signIn(isReconnect);
+        } catch { /* fall through to generic error handling */ }
+      }
+    }
+
     if (!msg.toLowerCase().includes('reject')) {
       showToast(msg);
     }

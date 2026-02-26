@@ -474,6 +474,93 @@ body {
   color: #93c5fd;
 }
 
+/* ─── Big Popout (blue-square / SuiNS profile card) ──────────────── */
+
+.wk-dropdown--large {
+  width: 296px;
+  padding: 12px;
+}
+
+.wk-popout-name-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  margin-bottom: 8px;
+}
+
+.wk-popout-name-text {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #93c5fd;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wk-popout-name-tld {
+  color: rgba(147, 197, 253, 0.6);
+  font-weight: 400;
+}
+
+.wk-popout-name-link {
+  color: #60a5fa;
+  text-decoration: none;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.wk-popout-name-link:hover {
+  color: #93c5fd;
+}
+
+.wk-popout-balance {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 8px;
+}
+
+.wk-popout-balance-sui {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #e4efff;
+}
+
+.wk-popout-balance-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.wk-popout-balance-usd {
+  font-size: 0.78rem;
+  color: #9ca7bb;
+  margin-left: auto;
+}
+
+.wk-popout-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wk-popout-actions .wk-dd-item {
+  flex: 1;
+  margin-top: 0;
+  text-align: center;
+}
+
 .wk-waap-clear-btn {
   position: fixed;
   top: 10px;
@@ -635,18 +722,17 @@ body {
 /* Detail header: wallet identity + active key side-by-side */
 .ski-detail-header {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: flex-start;
-  gap: 14px;
+  gap: 6px;
   width: 100%;
 }
 
-.ski-detail-wallet-col {
+.ski-detail-icon-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 8px;
 }
 
 /* Active key card shown in header */
@@ -696,13 +782,16 @@ body {
 /* Blue square variant — solid blue with white sui-drop inside */
 .ski-key-pfp--blue {
   background: #3b82f6;
+  margin-top: 5px;
+  outline: 2px solid #ffffff;
 }
 
 .ski-key-pfp--blue .ski-key-pfp-drop {
-  width: 65%;
-  height: 65%;
+  width: 85%;
+  height: 85%;
   object-fit: contain;
   filter: brightness(0) invert(1);
+  transform: translate(0, 0);
 }
 
 /* Text block inside each key card */
@@ -729,8 +818,8 @@ body {
 }
 
 .ski-detail-icon {
-  width: 36px;
-  height: 36px;
+  width: 47px;
+  height: 47px;
   border-radius: 8px;
 }
 

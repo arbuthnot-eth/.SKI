@@ -268,12 +268,12 @@ const suinsCache: Record<string, string> = {}; // address -> name
 let detailGeneration = 0; // incremented on each showWalletDetail call to cancel stale async lookups
 
 /** Profile-picture indicator for a key: black diamond (no SuiNS) or blue square with sui-drop (has SuiNS). */
-function keyPfpHtml(ai: number, hasSuins: boolean): string {
-  if (hasSuins) {
-    return `<div class="ski-key-pfp ski-key-pfp--blue"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></div>`;
+function keyPfpHtml(_ai: number, suinsName: string | null): string {
+  if (suinsName) {
+    const bare = suinsName.replace(/\.sui$/, '');
+    return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--blue" title="${esc(bare)}.sui.ski"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></a>`;
   }
-  const svg = _buildSkiSvg(`ski-kpfp-${ai}`, 'ski-key-pfp-ski', `kpfp${ai}`, 'black-diamond', false);
-  return `<div class="ski-key-pfp ski-key-pfp--diamond">${svg || `<img src="./assets/ski.svg" class="ski-key-pfp-ski" alt="">`}</div>`;
+  return `<a href="https://sui.ski" target="_blank" rel="noopener" class="ski-key-pfp ski-key-pfp--diamond" title="sui.ski"><svg class="ski-key-pfp-ski" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="50,5 95,50 50,95 5,50" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg></a>`;
 }
 
 function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) {
@@ -346,11 +346,11 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   // Build a key card (used for both the active key and secondary keys)
   const keyCardHtml = (addr: string, ai: number): string => {
-    const hasSuins = !!(suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })());
+    const suinsName: string | null = suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })() || null;
     const scanUrl = `https://suiscan.xyz/mainnet/account/${esc(addr)}`;
     const cls = ai === 0 ? 'ski-detail-active-key' : 'ski-detail-addr-wrap';
     return `<div class="${cls}" data-addr-idx="${ai}" data-full-addr="${esc(addr)}">
-      ${keyPfpHtml(ai, hasSuins)}
+      ${keyPfpHtml(ai, suinsName)}
       <div class="ski-detail-key-text">
         <span class="ski-detail-suins-slot"></span>
         <div class="ski-detail-addr-row">
@@ -369,11 +369,11 @@ function showWalletDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: strin
 
   detailEl.innerHTML = `
     <div class="ski-detail-header">
-      <div class="ski-detail-wallet-col">
+      <div class="ski-detail-icon-row">
         ${w.icon ? `<img src="${esc(w.icon)}" alt="" class="ski-detail-icon">` : ''}
-        <div class="ski-detail-name">${esc(w.name)}</div>
+        ${activeKeyHtml}
       </div>
-      ${activeKeyHtml}
+      <div class="ski-detail-name">${esc(w.name)}</div>
     </div>
     ${otherKeysHtml ? `<div class="ski-detail-row"><span class="ski-detail-label">Other Keys</span>${otherKeysHtml}</div>` : ''}
     ${networks.length ? `<div class="ski-detail-row"><span class="ski-detail-label">Networks</span><div class="ski-feature-list">${networksHtml}</div></div>` : ''}
@@ -829,20 +829,52 @@ function renderMenu() {
     return;
   }
 
-  const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
   const scanUrl = `https://suiscan.xyz/mainnet/account/${ws.address}`;
 
-  els.menuRoot.innerHTML = `
-    <div class="wk-dropdown open">
-      <div class="wk-dd-address-row">
-        <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
-          <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
-        </button>
-        <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
-      </div>
-      <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
-      <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
-    </div>`;
+  // Blue-square state (SuiNS name) — big profile popout
+  if (app.suinsName) {
+    const bare = app.suinsName.replace(/\.sui$/, '');
+    const suiText = fmtSui(app.sui);
+    const usdText = fmtUsd(app.usd);
+    const addrShort = truncAddr(ws.address);
+
+    els.menuRoot.innerHTML = `
+      <div class="wk-dropdown wk-dropdown--large open">
+        <div class="wk-popout-name-badge">
+          <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#3b82f6"/></svg>
+          <span class="wk-popout-name-text">${esc(bare)}<span class="wk-popout-name-tld">.sui</span></span>
+          <a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="wk-popout-name-link" title="View .ski profile">\u2197</a>
+        </div>
+        ${(suiText || usdText) ? `<div class="wk-popout-balance">
+          ${suiText ? `<span class="wk-popout-balance-sui">${esc(suiText)}</span><img src="${ASSETS.suiDrop}" class="wk-popout-balance-icon" alt="SUI">` : ''}
+          ${usdText ? `<span class="wk-popout-balance-usd">${esc(usdText)}</span>` : ''}
+        </div>` : ''}
+        <div class="wk-dd-address-row">
+          <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
+            <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
+          </button>
+          <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
+        </div>
+        <div class="wk-popout-actions">
+          <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
+          <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+        </div>
+      </div>`;
+  } else {
+    // Black-diamond state — compact dropdown
+    const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
+    els.menuRoot.innerHTML = `
+      <div class="wk-dropdown open">
+        <div class="wk-dd-address-row">
+          <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
+            <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
+          </button>
+          <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
+        </div>
+        <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
+        <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+      </div>`;
+  }
 
   document.getElementById('wk-dd-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
   document.getElementById('wk-dd-switch')?.addEventListener('click', () => {

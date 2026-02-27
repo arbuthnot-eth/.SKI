@@ -1132,6 +1132,31 @@ body {
   .ski-modal-right-col {
     flex: 1 1 100%;
   }
+  /* Stack header vertically so #ski-connected-key sits full-width above the legend */
+  .ski-modal-header {
+    flex-direction: column;
+  }
+  .ski-modal-header-key-col {
+    border-right: none;
+    border-bottom: 1px solid rgba(160, 200, 240, 0.08);
+    width: 100%;
+  }
+  .ski-modal-header-key-col .ski-detail-header--keyed {
+    width: 100%;
+  }
+  .ski-modal-header-balance {
+    border-right: none;
+    border-bottom: 1px solid rgba(160, 200, 240, 0.08);
+    width: 100%;
+    align-items: flex-start;
+    padding: 8px 14px;
+  }
+  .ski-modal-header-brand {
+    width: 100%;
+  }
+  .ski-modal-header-key-col:empty ~ .ski-modal-header-brand {
+    width: 100%;
+  }
 }
 
 .ski-modal-col {
@@ -2152,9 +2177,13 @@ body {
   border-color: rgba(239, 68, 68, 0.5);
 }
 
-/* Limit the keyed blue card to half the key-col width */
+/* Limit the keyed blue card to half the key-col width, strip card styling in header */
 .ski-modal-header-key-col .ski-detail-header--keyed {
   width: 50%;
+  border: none;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
 }
 
 .ski-modal-header-left {
@@ -2305,3 +2334,61 @@ body {
   flex-shrink: 0;
 }
 
+
+/* WaaP social provider badge in showKeyDetail */
+.ski-detail-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+
+/* Long-press lock: amber ring on locked row */
+.ski-legend-row--locked {
+  box-shadow: inset 0 0 0 2px rgba(251, 191, 36, 0.55);
+  border-radius: 6px;
+}
+.wk-dd-item--locked {
+  box-shadow: inset 0 0 0 2px rgba(251, 191, 36, 0.55);
+}
+
+/* Prevent text selection during long-press */
+.ski-legend-row,
+.wk-dd-item {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Modal header middle column: address balance */
+.ski-modal-header-balance {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 16px;
+  border-right: 1px solid rgba(160, 200, 240, 0.08);
+  flex-shrink: 0;
+  gap: 2px;
+  min-width: 80px;
+}
+.ski-header-bal-sui {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.ski-header-bal-unit {
+  font-size: 0.68rem;
+  font-weight: 400;
+  color: #94a3b8;
+}
+.ski-header-bal-usd,
+.ski-header-bal-stable {
+  font-size: 0.7rem;
+  color: #64748b;
+  white-space: nowrap;
+}

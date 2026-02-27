@@ -60,12 +60,42 @@ const SOCIAL_ICON_GOOGLE = `<svg width="38" height="38" viewBox="0 0 38 38" xmln
 /** Discord — blurple rounded-square, white Clyde icon */
 const SOCIAL_ICON_DISCORD = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" ${_fca} aria-label="Discord"><rect width="38" height="38" rx="8" fill="#5865F2"/><svg x="4" y="8" width="30" height="22" viewBox="0 0 127.14 96.36"><path fill="#fff" d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/></svg></svg>`;
 
+/** Email — dark rounded-square, white envelope */
+const SOCIAL_ICON_EMAIL = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" ${_fca} aria-label="Email"><rect width="38" height="38" rx="8" fill="#1e293b"/><svg x="7" y="10" width="24" height="18" viewBox="0 0 24 18"><rect x="0.75" y="0.75" width="22.5" height="16.5" rx="1.5" fill="none" stroke="#fff" stroke-width="1.5"/><polyline points="0.75,0.75 12,10 23.25,0.75" fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg></svg>`;
+
 /** Map a wallet name to its social provider inline SVG, or null for standard wallets. */
 function socialIconSvg(walletName: string): string | null {
   if (/waap/i.test(walletName)) return SOCIAL_ICON_X;
   if (/google/i.test(walletName)) return SOCIAL_ICON_GOOGLE;
   if (/discord/i.test(walletName)) return SOCIAL_ICON_DISCORD;
   return null;
+}
+
+/** Detect which social provider a WaaP account used from its label string. */
+function detectWaapProvider(label: string): 'google' | 'x' | 'email' | null {
+  if (!label) return null;
+  if (/google/i.test(label) || /@gmail\./i.test(label)) return 'google';
+  if (/^@/.test(label.trim()) || /x\.com/i.test(label)) return 'x';
+  if (/@/.test(label)) return 'email';
+  return null;
+}
+
+/** Persist the detected WaaP social provider for a given address. */
+function storeWaapProvider(address: string, provider: 'google' | 'x' | 'email' | null): void {
+  if (!provider || !address) return;
+  try { localStorage.setItem(`ski:waap-provider:${address}`, provider); } catch {}
+}
+
+/** Return the social provider icon SVG for a WaaP address; falls back to X. */
+function waapProviderIcon(address: string | null): string {
+  if (address) {
+    try {
+      const stored = localStorage.getItem(`ski:waap-provider:${address}`);
+      if (stored === 'google') return SOCIAL_ICON_GOOGLE;
+      if (stored === 'email') return SOCIAL_ICON_EMAIL;
+    } catch {}
+  }
+  return SOCIAL_ICON_X;
 }
 
 // ─── App-level state (beyond wallet connection) ──────────────────────
@@ -648,6 +678,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
               ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="./assets/sui-drop.svg" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
             </div>`;
           })() : ''}
+          ${/waap/i.test(w.name) && addr0 ? `<span class="ski-detail-provider-badge">${waapProviderIcon(addr0)}</span>` : ''}
           <div class="ski-detail-key-column">
             ${activePfpHtml}
           </div>
@@ -864,60 +895,6 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
     });
   }
 
-  // ─── Sponsor section (appended below wallet detail) ──────────────────
-  {
-    const sponsorAuth = getSponsorState().auth;
-    const isThisWalletSponsor = !!(
-      sponsorAuth?.walletName === w.name &&
-      new Date(sponsorAuth.expiresAt).getTime() > Date.now()
-    );
-    const canSponsor = 'sui:signPersonalMessage' in w.features;
-    const sponsorDiv = document.createElement('div');
-    sponsorDiv.className = 'ski-detail-sponsor-row';
-
-    if (isThisWalletSponsor) {
-      const msLeft = new Date(sponsorAuth!.expiresAt).getTime() - Date.now();
-      const daysLeft = Math.max(1, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
-      sponsorDiv.innerHTML = `
-        <span class="ski-detail-sponsor-active"><img src="./assets/sui-drop.svg" class="splash-inline-drop" aria-hidden="true"> Splash active &middot; ${daysLeft}d left</span>
-        <button class="ski-detail-sponsor-revoke" type="button">Revoke</button>`;
-      sponsorDiv.querySelector('.ski-detail-sponsor-revoke')?.addEventListener('click', () => {
-        deactivateSponsor();
-        showToast('Splash deactivated');
-        render();
-        renderModal();
-      });
-    } else if (canSponsor && w.name === getState().walletName && !isSponsoredAddress(addr0)) {
-      sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button"><img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash</button>`;
-      sponsorDiv.querySelector('.ski-detail-sponsor-set')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget as HTMLButtonElement;
-        btn.disabled = true; btn.textContent = 'Activating\u2026';
-        try {
-          // Use live account, or silent-connect to get one
-          let account = (w.accounts[0] as WalletAccount | undefined);
-          if (!account && 'standard:connect' in w.features) {
-            const cf = w.features['standard:connect'] as {
-              connect: (i?: { silent?: boolean }) => Promise<{ accounts: readonly WalletAccount[] }>;
-            };
-            const { accounts } = await cf.connect({ silent: true });
-            account = accounts[0] as WalletAccount | undefined;
-          }
-          if (!account) throw new Error('No account available');
-          await activateSponsor(w, account);
-          showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash active &middot; 7 days', true);
-          render();
-          if (detailEl) showKeyDetail(w, detailEl, connectedAddr);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Failed';
-          if (!msg.toLowerCase().includes('reject')) showToast(msg);
-          btn.disabled = false; btn.innerHTML = '<img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash';
-        }
-      });
-    }
-
-    if (sponsorDiv.innerHTML) (detailEl.querySelector('.ski-detail-header') ?? detailEl).appendChild(sponsorDiv);
-  }
-
   // Resolve SuiNS names for all displayed addresses
   displayAddrs.forEach((addr: string, ai: number) => {
     const renderName = (name: string) => {
@@ -1030,9 +1007,13 @@ function walletListShape(w: Wallet): string {
   } else if (hasAddrs) {
     return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
-  // Green circle — no known addresses. WaaP green: wrap with social X badge.
+  // WaaP: always black diamond even before first connect
+  if (/waap/i.test(w.name)) {
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+  }
+  // Green circle — no known addresses. Google/Discord: wrap with social X badge.
   const greenSvg = `<svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
-  if (/waap/i.test(w.name) || /google/i.test(w.name) || /discord/i.test(w.name)) {
+  if (/google/i.test(w.name) || /discord/i.test(w.name)) {
     return `<span class="ski-list-shape-group"><span class="ski-waap-x ski-list-shape-x" aria-hidden="true">𝕏</span><span class="ski-list-shape ski-list-shape--green${deviceClass}">${greenSvg}${hoverDrop}</span></span>`;
   }
   return `<span class="ski-list-shape ski-list-shape--green${deviceClass}">${greenSvg}${hoverDrop}</span>`;
@@ -1068,7 +1049,8 @@ function buildSplashLegend(): string {
       const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
       const addrs = [...new Set([...liveAddrs, ...stored])];
       if (addrs.length === 0) {
-        entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier: 2 });
+        const tier: 0 | 2 = /waap/i.test(w.name) ? 0 : 2;
+        entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier });
       } else {
         for (const addr of addrs) {
           const suinsName = suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })() || null;
@@ -1086,20 +1068,22 @@ function buildSplashLegend(): string {
     const rows = entries.map((e) => {
       const shapeHtml = e.tier === 0 ? LEGEND_DIAMOND : e.tier === 1 ? LEGEND_BLUE : LEGEND_GREEN;
       const social = socialIconSvg(e.walletName);
-      // Col 2: SuiNS name link, or for WaaP/social green circle put X badge, else empty
+      // Col 2: SuiNS name link, or for non-WaaP social green circle put X badge, else empty
       const nameHtml = e.suinsName
         ? (() => { const bare = e.suinsName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
-        : (social && !e.address)
+        : (social && !e.address && !/waap/i.test(e.walletName))
           ? `<span class="ski-waap-x ski-legend-social-badge" aria-hidden="true">𝕏</span>`
           : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
-      // Col 3: address link or wallet name (without redundant X, since it's in col2)
+      // Col 3: address link or wallet name
       const addrCell = e.address
         ? `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`
         : `<span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(e.walletName)}</span>`;
-      // Col 4: social provider icon replaces wallet logo for social-login wallets
-      const iconCell = social
-        ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
-        : (e.icon ? `<img class="ski-legend-wallet-icon" src="${esc(e.icon)}" alt="${esc(e.walletName)}">` : `<span></span>`);
+      // Col 4: WaaP with known address → per-address provider icon; other social → social SVG; else wallet logo
+      const iconCell = /waap/i.test(e.walletName) && e.address
+        ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${waapProviderIcon(e.address)}</span>`
+        : social
+          ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
+          : (e.icon ? `<img class="ski-legend-wallet-icon" src="${esc(e.icon)}" alt="${esc(e.walletName)}">` : `<span></span>`);
       const addrAttr = e.address ? ` data-legend-addr="${esc(e.address)}"` : '';
       return `<div class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
     }).join('');
@@ -1109,7 +1093,7 @@ function buildSplashLegend(): string {
   }
 
   // Splash active — green-circle rows appended at bottom of legend (unconnected wallets only)
-  const greenWallets = allWallets.filter(isGreen).sort((a, b) => {
+  const greenWallets = allWallets.filter(w => isGreen(w) && !/waap/i.test(w.name)).sort((a, b) => {
     const aW = /waap/i.test(a.name) ? 0 : 1;
     const bW = /waap/i.test(b.name) ? 0 : 1;
     if (aW !== bW) return aW - bW;
@@ -1193,8 +1177,20 @@ function buildSplashLegend(): string {
 }
 
 let activeLegendIdx = -1;
+// Long-press detail lock: when true, hover doesn't update the right pane
+let detailLocked = false;
+let lockedWallet: Wallet | null = null;
 
-function activateLegendRow(idx: number) {
+function activateLegendRow(idx: number, fromHover = false) {
+  // Respect lock: on passive hover, highlight the row but leave right pane alone
+  if (fromHover && detailLocked) {
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
+    rows.forEach((r) => { r.classList.remove('active'); r.setAttribute('aria-selected', 'false'); });
+    rows[idx]?.classList.add('active');
+    rows[idx]?.setAttribute('aria-selected', 'true');
+    activeLegendIdx = idx;
+    return;
+  }
   const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
   rows.forEach((r) => { r.classList.remove('active'); r.setAttribute('aria-selected', 'false'); });
   const row = rows[idx];
@@ -1227,6 +1223,20 @@ function activateLegendRow(idx: number) {
     const wallet = getSuiWallets().find((w) => w.name === walletName);
     if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
   }
+}
+
+/** Middle column of the modal header: current address balance. */
+function buildHeaderBalanceHtml(): string {
+  const ws = getState();
+  if (!ws.address) return '';
+  const suiText = fmtSui(app.sui);
+  const usdText = fmtUsd(app.usd);
+  const stableText = app.stableUsd > 0 ? fmtStable(app.stableUsd) : '';
+  return `
+    <div class="ski-header-bal-sui">${esc(suiText)}<span class="ski-header-bal-unit"> SUI</span></div>
+    ${usdText ? `<div class="ski-header-bal-usd">${esc(usdText)}</div>` : ''}
+    ${stableText ? `<div class="ski-header-bal-stable">${esc(stableText)}</div>` : ''}
+  `;
 }
 
 function renderModal(): void {
@@ -1330,6 +1340,7 @@ function renderModal(): void {
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
           <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col"></div>
+          ${ws.address ? `<div class="ski-modal-header-balance" id="ski-modal-header-balance">${buildHeaderBalanceHtml()}</div>` : ''}
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
               <div class="ski-modal-header-left">
@@ -1403,7 +1414,7 @@ function renderModal(): void {
   });
 
   if (layout === 'splash') {
-    // Activate the legend row for the connected wallet (or first row as fallback)
+    // Activate the legend row for the connected wallet (or first row) and show detail immediately
     requestAnimationFrame(() => {
       const rows = Array.from(document.querySelectorAll<HTMLElement>('.ski-legend-row'));
       if (!rows.length) return;
@@ -1413,9 +1424,21 @@ function renderModal(): void {
         if (found >= 0) targetIdx = found;
       }
       activateLegendRow(targetIdx);
+      // Populate right pane immediately — no "Hover a key" on open
+      const detailEl = document.getElementById('ski-modal-detail');
+      if (detailEl) {
+        const targetRow = rows[targetIdx];
+        const wName = targetRow?.dataset.legendWallet;
+        const w = wName ? getSuiWallets().find((w) => w.name === wName) : null;
+        if (w && wName !== connectedName) showKeyDetail(w, detailEl, getState().address);
+        else if (connectedName) {
+          const cw = getSuiWallets().find((w) => w.name === connectedName);
+          if (cw) showKeyDetail(cw, detailEl, getState().address);
+        }
+      }
     });
   } else {
-    // List layout: show the connected wallet's detail immediately
+    // List / layout2: show the connected wallet's detail immediately
     requestAnimationFrame(() => {
       const detailEl = document.getElementById('ski-modal-detail');
       const first = connectedName
@@ -1442,6 +1465,8 @@ export function openModal(focusFirst = false) {
 
 function closeModal() {
   modalOpen = false;
+  detailLocked = false;
+  lockedWallet = null;
   els.widget?.classList.remove('ski-modal-active');
   if (els.modal) els.modal.innerHTML = '';
 }
@@ -1964,6 +1989,10 @@ function render() {
   const ws = getState();
   updateFavicon(!ws.address ? 'green-circle' : (app.suinsName ? 'blue-square' : 'black-diamond'));
 
+  // Live-update modal header balance without full re-render
+  const modalBalEl = document.getElementById('ski-modal-header-balance');
+  if (modalBalEl) modalBalEl.innerHTML = buildHeaderBalanceHtml();
+
   // Bind pill click
   const pill = document.getElementById('wallet-pill-btn');
   pill?.addEventListener('click', (e) => {
@@ -2048,6 +2077,10 @@ export function initUI() {
             localStorage.setItem(key, JSON.stringify([...existing, normalized]));
           }
         } catch {}
+        // Detect and store WaaP social provider from account label
+        if (/waap/i.test(ws.walletName) && ws.account?.label) {
+          storeWaapProvider(ws.address, detectWaapProvider(ws.account.label));
+        }
       }
       // Always clear first so a previously connected wallet's name never bleeds through
       app.suinsName = '';
@@ -2097,30 +2130,78 @@ export function initUI() {
     }
   });
 
-  // Delegated: legend row mouseover → highlight + show key detail
+  // Delegated: legend row mouseover → highlight + show key detail (respects lock)
   els.modal?.addEventListener('mouseover', (e) => {
     if (!modalOpen) return;
     const row = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
     if (!row) return;
     const idx = parseInt(row.dataset.legendIdx || '-1', 10);
-    if (idx >= 0) activateLegendRow(idx);
+    if (idx >= 0) activateLegendRow(idx, true);
   });
 
-  // Delegated: wallet-list row hover → show key detail
+  // Delegated: wallet-list row hover → show key detail (respects lock)
   els.modal?.addEventListener('mouseover', (e) => {
     if (!modalOpen) return;
     const btn = (e.target as HTMLElement).closest<HTMLElement>('.wk-dd-item[data-wallet-name]');
     if (!btn) return;
     document.querySelectorAll('.wk-dd-item').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
+    if (detailLocked) return;
     const wallet = getSuiWallets().find((w) => w.name === btn.dataset.walletName);
     const detailEl = document.getElementById('ski-modal-detail');
     if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
   });
 
+  // Long-press (2200ms) on any row to lock/unlock the detail pane
+  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  let longPressX = 0;
+  let longPressY = 0;
+  let longPressFired = false; // suppresses the click that fires after pointerup
+
+  els.modal?.addEventListener('pointerdown', (e) => {
+    longPressFired = false;
+    const row = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row, .wk-dd-item[data-wallet-name]');
+    if (!row) return;
+    longPressX = e.clientX; longPressY = e.clientY;
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      longPressFired = true;
+      const wName = row.dataset.legendWallet ?? row.dataset.walletName ?? null;
+      const wallet = wName ? (getSuiWallets().find((w) => w.name === wName) ?? null) : null;
+      const clearLocked = () => {
+        document.querySelectorAll<HTMLElement>('.ski-legend-row--locked, .wk-dd-item--locked').forEach((el) => {
+          el.classList.remove('ski-legend-row--locked', 'wk-dd-item--locked');
+        });
+      };
+      if (detailLocked && lockedWallet === wallet) {
+        detailLocked = false; lockedWallet = null; clearLocked();
+      } else {
+        detailLocked = true; lockedWallet = wallet; clearLocked();
+        row.classList.add(row.classList.contains('wk-dd-item') ? 'wk-dd-item--locked' : 'ski-legend-row--locked');
+        if (wallet) {
+          const detailEl = document.getElementById('ski-modal-detail');
+          if (detailEl) showKeyDetail(wallet, detailEl, getState().address);
+        }
+      }
+    }, 2200);
+  });
+
+  const cancelLongPress = (e: PointerEvent) => {
+    if (!longPressTimer) return;
+    if (e.type === 'pointermove') {
+      const d = Math.sqrt((e.clientX - longPressX) ** 2 + (e.clientY - longPressY) ** 2);
+      if (d < 5) return;
+    }
+    clearTimeout(longPressTimer); longPressTimer = null;
+  };
+  els.modal?.addEventListener('pointerup', cancelLongPress as EventListener);
+  els.modal?.addEventListener('pointermove', cancelLongPress as EventListener);
+  els.modal?.addEventListener('pointercancel', cancelLongPress as EventListener);
+
   // Delegated: legend row click → connect (skip anchor clicks)
   // Also handles wallet-list row clicks
   els.modal?.addEventListener('click', (e) => {
+    if (longPressFired) { longPressFired = false; return; } // long-press consumed this click
     if ((e.target as HTMLElement).closest('a')) return;
     const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
     if (legendRow?.dataset.legendWallet) {

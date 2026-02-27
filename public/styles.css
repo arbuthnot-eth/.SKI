@@ -2419,3 +2419,22 @@ body {
   width: 11px;
   height: 11px;
 }
+
+/* Inline balance cycler in key detail card */
+.ski-detail-balance-cycler {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: opacity 0.1s;
+  margin-left: auto;
+}
+.ski-detail-balance-cycler:hover { opacity: 0.75; }
+.ski-detail-balance-cycler:active { opacity: 0.5; }

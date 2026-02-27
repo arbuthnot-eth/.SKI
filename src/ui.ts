@@ -658,7 +658,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
 
   const isConnected = displayAddrs[0] === connectedAddr;
-  const stableBal = isConnected ? fmtStable(app.stableUsd) : '';
+  const balanceCyclerHtml = isConnected ? buildDetailBalanceCyclerHtml() : '';
 
   detailEl.innerHTML = `
     <div class="ski-detail-header${addr0 ? ' ski-detail-header--keyed' : ''}">
@@ -682,7 +682,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
           <div class="ski-detail-key-column">
             ${activePfpHtml}
           </div>
-          ${stableBal ? `<span class="ski-detail-stable-bal">${esc(stableBal)}</span>` : ''}
+          ${balanceCyclerHtml}
         </div>
         ${activeTextHtml}
       </div>
@@ -1226,18 +1226,25 @@ function activateLegendRow(idx: number, fromHover = false) {
 }
 
 /** Middle column of the modal header: current address balance. */
-function buildHeaderBalanceHtml(): string {
-  const ws = getState();
-  if (!ws.address) return '';
+// Shared inner content for both the header balance column and the detail card cycler
+function buildBalanceCyclerRows(): string {
   const suiText = fmtSui(app.sui);
   const usdText = fmtUsd(app.usd);
-  const suiRow = `<div class="ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`;
-  const usdRow = usdText ? `<div class="ski-header-bal-usd">${esc(usdText)}</div>` : '';
-  const [primary, secondary] = balView === 'usd' && usdText
-    ? [`<div class="ski-header-bal-primary ski-header-bal-usd">${esc(usdText)}</div>`, `<div class="ski-header-bal-secondary ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`]
-    : [`<div class="ski-header-bal-primary ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`, usdRow ? `<div class="ski-header-bal-secondary ski-header-bal-usd">${esc(usdText)}</div>` : ''];
-  void suiRow; // used above via destructure
-  return `${primary}${secondary}`;
+  const suiEl = (cls: string) => `<div class="${cls} ski-header-bal-sui">${esc(suiText)}<img src="./assets/sui-drop.svg" class="ski-header-bal-sui-icon" alt="SUI" aria-label="SUI"></div>`;
+  const usdEl = (cls: string) => `<div class="${cls} ski-header-bal-usd">${esc(usdText)}</div>`;
+  if (balView === 'usd' && usdText) {
+    return usdEl('ski-header-bal-primary') + suiEl('ski-header-bal-secondary');
+  }
+  return suiEl('ski-header-bal-primary') + (usdText ? usdEl('ski-header-bal-secondary') : '');
+}
+
+function buildHeaderBalanceHtml(): string {
+  if (!getState().address) return '';
+  return buildBalanceCyclerRows();
+}
+
+function buildDetailBalanceCyclerHtml(): string {
+  return `<button type="button" id="ski-detail-balance-cycler" class="ski-detail-balance-cycler" title="Toggle SUI / USD">${buildBalanceCyclerRows()}</button>`;
 }
 
 function renderModal(): void {
@@ -2017,9 +2024,11 @@ function render() {
   const ws = getState();
   updateFavicon(!ws.address ? 'green-circle' : (app.suinsName ? 'blue-square' : 'black-diamond'));
 
-  // Live-update modal header balance without full re-render
+  // Live-update balance cyclers without full re-render
   const modalBalEl = document.getElementById('ski-modal-header-balance');
   if (modalBalEl) modalBalEl.innerHTML = buildHeaderBalanceHtml();
+  const detailCyclerEl = document.getElementById('ski-detail-balance-cycler');
+  if (detailCyclerEl) detailCyclerEl.innerHTML = buildBalanceCyclerRows();
 
   // Bind pill click
   const pill = document.getElementById('wallet-pill-btn');
@@ -2236,12 +2245,15 @@ export function initUI() {
     if (longPressFired) { longPressFired = false; return; } // long-press consumed this click
     if ((e.target as HTMLElement).closest('a')) return;
 
-    // Balance column toggle: switch between SUI-primary and USD-primary
-    if ((e.target as HTMLElement).closest('#ski-modal-header-balance')) {
+    // Balance cycler toggle: switch between SUI-primary and USD-primary
+    if ((e.target as HTMLElement).closest('#ski-modal-header-balance') ||
+        (e.target as HTMLElement).closest('#ski-detail-balance-cycler')) {
       balView = balView === 'sui' ? 'usd' : 'sui';
       try { localStorage.setItem('ski:bal-pref', balView); } catch {}
       const balEl = document.getElementById('ski-modal-header-balance');
       if (balEl) balEl.innerHTML = buildHeaderBalanceHtml();
+      const cyclerEl = document.getElementById('ski-detail-balance-cycler');
+      if (cyclerEl) cyclerEl.innerHTML = buildBalanceCyclerRows();
       return;
     }
 

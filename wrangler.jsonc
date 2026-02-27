@@ -25,6 +25,10 @@
       {
         "name": "SponsorAgent",
         "class_name": "SponsorAgent"
+      },
+      {
+        "name": "SplashDeviceAgent",
+        "class_name": "SplashDeviceAgent"
       }
     ]
   },
@@ -37,6 +41,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["SponsorAgent"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["SplashDeviceAgent"]
     }
   ]
 }

@@ -23,6 +23,7 @@
 
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { SuinsClient } from '@mysten/suins';
 import type { Wallet, WalletAccount } from '@wallet-standard/base';
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -333,6 +334,9 @@ export async function restoreSponsor(registeredWallets: Wallet[]): Promise<boole
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
+const _suinsGrpcClient = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' });
+const _suinsClient = new SuinsClient({ client: _suinsGrpcClient as never, network: 'mainnet' });
+
 /** Truncate a Sui address for display: 0x3ca0...5222b */
 function truncAddr(addr: string): string {
   if (addr.length <= 14) return addr;
@@ -373,25 +377,26 @@ async function resolveAddressToName(address: string): Promise<string | null> {
 }
 
 /**
- * Resolve a SuiNS name to a Sui address.
+ * Resolve a SuiNS name to a Sui address via SuinsClient over gRPC.
  * Returns null if the name is not registered.
+ * Throws a descriptive error on network/timeout failure.
  */
 export async function resolveNameToAddress(name: string): Promise<string | null> {
   const n = name.endsWith('.sui') ? name : `${name}.sui`;
   try {
-    const res = await fetch(GRAPHQL_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: `query($name:String!){ resolveNameServiceAddress(name:$name){ address } }`,
-        variables: { name: n },
-      }),
-    });
-    const json = await res.json() as {
-      data?: { resolveNameServiceAddress?: { address: string } | null };
-    };
-    return json?.data?.resolveNameServiceAddress?.address ?? null;
-  } catch { return null; }
+    const record = await _suinsClient.getNameRecord(n);
+    return record?.targetAddress ?? null;
+  } catch (err) {
+    if (err instanceof Error) {
+      const msg = err.message;
+      if (msg.includes('does not exist') || msg.includes('not found')) return null;
+      if (msg.includes('abort') || msg.includes('timeout')) {
+        throw new Error(`SuiNS lookup timed out — check your connection and try again`);
+      }
+      throw new Error(`SuiNS lookup failed — ${msg}`);
+    }
+    throw new Error(`SuiNS lookup failed — network error`);
+  }
 }
 
 /**
@@ -407,7 +412,7 @@ export async function resolveEntry(
   }
   const name = trimmed.endsWith('.sui') ? trimmed : `${trimmed}.sui`;
   const address = await resolveNameToAddress(name);
-  if (!address) throw new Error(`Could not resolve "${name}" — name not registered`);
+  if (!address) throw new Error(`"${name}" is not registered`);
   return { address, suinsName: name };
 }
 

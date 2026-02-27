@@ -10,7 +10,7 @@
 
 import { Transaction } from '@mysten/sui/transactions';
 import { getState, signPersonalMessage, signAndExecuteTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
-import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient } from './ui.js';
+import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses } from './ui.js';
 import { restoreSponsor, isSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
@@ -72,6 +72,24 @@ function buildSignMessage(address: string, ttlMs = TTL_DEFAULT_MS): { message: s
   return { message, expiresAt };
 }
 
+// ─── Splash drop (device-level sponsor badge) ────────────────────────
+//
+// Activated automatically once the user signs in and a FingerprintJS
+// visitorId is available — no extra signature required.
+// Stored in SplashDeviceAgent (keyed by visitorId) so the drop persists
+// across browser sessions and incognito windows on the same device.
+
+async function ensureSplashDrop(address: string, visitorId: string): Promise<void> {
+  const { checkDeviceSplash, activateDeviceSplash } = await import('./client/splash.js');
+  const already = await checkDeviceSplash(visitorId);
+  if (already) {
+    updateAppState({ splashSponsor: true });
+    return;
+  }
+  const ok = await activateDeviceSplash(visitorId, address);
+  if (ok) updateAppState({ splashSponsor: true });
+}
+
 // ─── Sign-in flow ────────────────────────────────────────────────────
 
 async function establishSession(address: string, signature: string, bytes: string, visitorId: string) {
@@ -118,6 +136,8 @@ export async function signIn(isReconnect = false): Promise<boolean> {
   if (stored) {
     console.log('[.SKI] Restoring session for', address);
     await establishSession(address, stored.signature, stored.bytes, stored.visitorId);
+    // Ensure splash drop on session restore (non-blocking)
+    ensureSplashDrop(address, stored.visitorId).catch(() => {});
     return true;
   }
 
@@ -150,6 +170,10 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 
     if (!isReconnect) showToast(isKeystone ? 'Keystone session active — valid 24 h' : '.SKI session active');
     console.log('[.SKI] Session established for', address, '| device:', visitorId.slice(0, 8));
+
+    // Activate device splash drop now that we have a session + fingerprint
+    if (!isReconnect) ensureSplashDrop(address, visitorId).catch(() => {});
+
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Signing failed';
@@ -228,6 +252,7 @@ window.addEventListener('ski:wallet-connected', async (e) => {
 
 window.addEventListener('ski:wallet-disconnected', () => {
   disconnectSession();
+  updateAppState({ splashSponsor: false });
 });
 
 window.addEventListener('ski:request-signin', async () => {
@@ -326,6 +351,8 @@ setTimeout(() => {
       console.log('[.SKI] Splash sponsor restored');
       const { wallet, account } = getSponsorState();
       if (wallet && account) initSplashDO(wallet, account).catch(() => {});
+      // Auto-cover every remembered address as a beneficiary
+      enrollAllKnownAddresses();
     }
   }).catch(() => {});
 }, 3000);

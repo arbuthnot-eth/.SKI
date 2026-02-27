@@ -14,3 +14,4 @@ export default app;
 // Export Durable Object classes for Wrangler binding
 export { SessionAgent } from './agents/session.js';
 export { SponsorAgent } from './agents/sponsor.js';
+export { SplashDeviceAgent } from './agents/splash.js';

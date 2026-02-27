@@ -865,7 +865,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         render();
         renderModal();
       });
-    } else if (canSponsor && !isSponsoredAddress(addr0)) {
+    } else if (canSponsor && w.name === getState().walletName && !isSponsoredAddress(addr0)) {
       sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button"><img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash</button>`;
       sponsorDiv.querySelector('.ski-detail-sponsor-set')?.addEventListener('click', async (e) => {
         const btn = e.currentTarget as HTMLButtonElement;

@@ -976,6 +976,16 @@ function buildSplashLegend(): string {
   const LEGEND_BLUE    = `<svg width="13" height="13" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="43" height="43" rx="6" fill="#3b82f6" stroke="#ffffff" stroke-width="5"/></svg>`;
   const LEGEND_GREEN   = `<svg width="13" height="13" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
 
+  const allWallets = getSuiWallets();
+
+  // Build address → wallet map for icon lookup
+  const addrToWallet = new Map<string, Wallet>();
+  for (const w of allWallets) {
+    for (const acc of w.accounts) addrToWallet.set(acc.address, w);
+    const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
+    for (const addr of stored) { if (!addrToWallet.has(addr)) addrToWallet.set(addr, w); }
+  }
+
   const list = (auth.sponsoredList ?? []).filter((e) => new Date(e.expiresAt).getTime() > Date.now());
 
   type LegendEntry = { entry: typeof list[0]; primaryName: string | null; tier: 0 | 1 | 2 };
@@ -990,7 +1000,7 @@ function buildSplashLegend(): string {
   annotated.sort((a, b) => a.tier - b.tier);
 
   // Green-circle wallets: detected extensions with no accounts or stored keys
-  const greenWallets = getSuiWallets().filter((w) => {
+  const greenWallets = allWallets.filter((w) => {
     const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
     return w.accounts.length === 0 && stored.length === 0;
   });
@@ -1000,14 +1010,21 @@ function buildSplashLegend(): string {
     const nameHtml = primaryName
       ? (() => { const bare = primaryName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
       : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
-    return `<span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`;
+    const wIcon = addrToWallet.get(e.address);
+    const addrCell = `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`;
+    const iconCell = wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`;
+    return `<span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}`;
   }).join('');
 
-  const walletRows = greenWallets.map((w) =>
-    `<button class="ski-legend-shape ski-legend-connect-btn" data-legend-wallet="${esc(w.name)}" type="button" title="Connect ${esc(w.name)}">${LEGEND_GREEN}</button>` +
-    `<button class="ski-legend-name ski-legend-name--wallet ski-legend-connect-btn" data-legend-wallet="${esc(w.name)}" type="button">${esc(w.name)}</button>` +
-    `<span></span>`
-  ).join('');
+  const walletRows = greenWallets.map((w) => {
+    const iconCell = w.icon ? `<img class="ski-legend-wallet-icon ski-legend-connect-btn" src="${esc(w.icon)}" data-legend-wallet="${esc(w.name)}" alt="${esc(w.name)}">` : `<span></span>`;
+    return (
+      `<button class="ski-legend-shape ski-legend-connect-btn" data-legend-wallet="${esc(w.name)}" type="button" title="Connect ${esc(w.name)}">${LEGEND_GREEN}</button>` +
+      `<span class="ski-legend-name ski-legend-name--empty"></span>` +
+      `<button class="ski-legend-name ski-legend-name--wallet ski-legend-connect-btn ski-legend-addr--right" data-legend-wallet="${esc(w.name)}" type="button">${esc(w.name)}</button>` +
+      iconCell
+    );
+  }).join('');
 
   const targetsHtml = annotated.length === 0 && greenWallets.length === 0
     ? `<span class="ski-legend-target ski-legend-target--open">all keys</span>`

@@ -1366,7 +1366,7 @@ body {
 }
 .ski-legend-targets {
   display: grid;
-  grid-template-columns: 13px auto auto;
+  grid-template-columns: 13px auto auto 13px;
   column-gap: 6px;
   row-gap: 2px;
   padding-left: 15px;
@@ -1380,6 +1380,7 @@ body {
 }
 .ski-legend-target {
   grid-column: 1 / -1;
+  justify-self: start;
   background: rgba(59, 130, 246, 0.12);
   border: 1px solid rgba(59, 130, 246, 0.25);
   border-radius: 4px;
@@ -1435,12 +1436,25 @@ body {
   align-items: center;
   justify-content: center;
 }
+.ski-legend-wallet-icon {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  display: block;
+}
+.ski-legend-addr--right {
+  text-align: right;
+  justify-self: end;
+}
 .ski-legend-addr {
   font-size: 0.68rem;
   color: #ffffff;
   font-family: monospace;
   white-space: nowrap;
   text-decoration: none;
+  justify-self: end;
+  text-align: right;
 }
 .ski-legend-addr:hover {
   text-decoration: underline;

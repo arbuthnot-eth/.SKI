@@ -998,19 +998,46 @@ function walletListShape(w: Wallet): string {
   return `<span class="ski-list-shape ski-list-shape--green${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>${hoverDrop}</span>`;
 }
 
-/** Legend shown at the bottom-left of the modal: sponsor → covered keys. */
+/** Legend shown at the bottom-left of the modal: sponsor → covered keys.
+ *  When no Splash is active, shows unconnected wallet options for discovery. */
 function buildSplashLegend(): string {
   const auth = getSponsorState().auth;
-  if (!auth || new Date(auth.expiresAt).getTime() <= Date.now()) return '';
-
-  const name = suinsCache[auth.address] || (() => { try { return localStorage.getItem(`ski:suins:${auth.address}`); } catch { return null; } })();
-  const sponsorDisplay = name ?? truncAddr(auth.address);
+  const splashActive = !!(auth && new Date(auth.expiresAt).getTime() > Date.now());
 
   const LEGEND_DIAMOND = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="5"/></svg>`;
   const LEGEND_BLUE    = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="43" height="43" rx="6" fill="#3b82f6" stroke="#ffffff" stroke-width="5"/></svg>`;
   const LEGEND_GREEN   = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
 
   const allWallets = getSuiWallets();
+
+  // Green-circle wallets: detected wallets with no accounts or stored keys (always shown for discovery)
+  const greenWallets = allWallets.filter((w) => {
+    const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
+    return w.accounts.length === 0 && stored.length === 0;
+  });
+
+  // Nothing to show when no Splash and no unconnected wallets
+  if (!splashActive && !greenWallets.length) return '';
+
+  // Wallet rows are always built for discovery (shown in both splash and no-splash states)
+  let rowIdx = 0;
+  const walletRows = greenWallets.map((w) => {
+    const iconCell = w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`;
+    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-name ski-legend-name--empty"></span><span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(w.name)}</span>${iconCell}</div>`;
+    rowIdx++;
+    return html;
+  }).join('');
+
+  // Without Splash: show only the wallet picker rows
+  if (!splashActive) {
+    return `<div class="ski-splash-legend">
+    <div class="ski-legend-targets">${walletRows}</div>
+  </div>`;
+  }
+
+  // Splash is active — build full legend with sponsor header and covered addresses
+  const name = suinsCache[auth!.address] || (() => { try { return localStorage.getItem(`ski:suins:${auth!.address}`); } catch { return null; } })();
+  const sponsorDisplay = name ?? truncAddr(auth!.address);
 
   // Build address → wallet map for icon lookup
   const addrToWallet = new Map<string, Wallet>();
@@ -1020,7 +1047,7 @@ function buildSplashLegend(): string {
     for (const addr of stored) { if (!addrToWallet.has(addr)) addrToWallet.set(addr, w); }
   }
 
-  const list = (auth.sponsoredList ?? []).filter((e) => new Date(e.expiresAt).getTime() > Date.now());
+  const list = (auth!.sponsoredList ?? []).filter((e) => new Date(e.expiresAt).getTime() > Date.now());
 
   type LegendEntry = { entry: typeof list[0]; primaryName: string | null; tier: 0 | 1 | 2 };
   const annotated: LegendEntry[] = list.map((e) => {
@@ -1033,13 +1060,6 @@ function buildSplashLegend(): string {
   });
   annotated.sort((a, b) => a.tier - b.tier);
 
-  // Green-circle wallets: detected extensions with no accounts or stored keys
-  const greenWallets = allWallets.filter((w) => {
-    const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
-    return w.accounts.length === 0 && stored.length === 0;
-  });
-
-  let rowIdx = 0;
   const sponsoredRows = annotated.map(({ entry: e, primaryName, tier }) => {
     const shapeHtml = tier === 2 ? LEGEND_GREEN : tier === 1 ? LEGEND_BLUE : LEGEND_DIAMOND;
     const nameHtml = primaryName
@@ -1050,13 +1070,6 @@ function buildSplashLegend(): string {
     const iconCell = wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`;
     const walletAttr = wIcon ? ` data-legend-wallet="${esc(wIcon.name)}"` : '';
     const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
-    rowIdx++;
-    return html;
-  }).join('');
-
-  const walletRows = greenWallets.map((w) => {
-    const iconCell = w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`;
-    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-name ski-legend-name--empty"></span><span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(w.name)}</span>${iconCell}</div>`;
     rowIdx++;
     return html;
   }).join('');

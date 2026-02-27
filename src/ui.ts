@@ -796,7 +796,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         deactivateSponsor();
         showToast('Splash revoked');
         render();
-        if (detailEl) showKeyDetail(w, detailEl, connectedAddr);
+        renderModal();
         return;
       }
 
@@ -863,7 +863,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         deactivateSponsor();
         showToast('Splash deactivated');
         render();
-        if (detailEl) showKeyDetail(w, detailEl, connectedAddr);
+        renderModal();
       });
     } else if (canSponsor && !isSponsoredAddress(addr0)) {
       sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button"><img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash</button>`;
@@ -1618,6 +1618,7 @@ function renderSignStage() {
     deactivateSponsor();
     showToast('Splash deactivated');
     render();
+    renderModal();
   });
 
   // Per-entry remove buttons

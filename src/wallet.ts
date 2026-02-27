@@ -100,12 +100,45 @@ export async function connect(wallet: Wallet): Promise<WalletAccount> {
     let { accounts } = await connectFeature.connect({ silent: true });
 
     if (accounts.length === 0) {
-      // Request user authorization
-      ({ accounts } = await connectFeature.connect());
-    }
+      // Request user authorization — race connect() against the wallet's own
+      // change event so OAuth-redirect flows (e.g. WaaP + X) that resolve
+      // connect() with empty accounts but later fire change with real accounts
+      // still complete successfully.  Times out after 5 minutes so the UI can
+      // never get permanently stuck.
+      accounts = await new Promise<readonly WalletAccount[]>((resolve, reject) => {
+        let settled = false;
+        let changeUnsub: (() => void) | null = null;
 
-    if (accounts.length === 0) {
-      throw new Error('No accounts authorized');
+        const done = (accs: readonly WalletAccount[]) => {
+          if (settled) return;
+          settled = true;
+          if (changeUnsub) { changeUnsub(); changeUnsub = null; }
+          resolve(accs);
+        };
+        const fail = (err: unknown) => {
+          if (settled) return;
+          settled = true;
+          if (changeUnsub) { changeUnsub(); changeUnsub = null; }
+          reject(err);
+        };
+
+        // Watch for accounts via change event (async OAuth flows)
+        if ('standard:events' in wallet.features) {
+          const eventsFeature = wallet.features['standard:events'] as {
+            on: (event: 'change', listener: (e: { accounts?: readonly WalletAccount[] }) => void) => () => void;
+          };
+          changeUnsub = eventsFeature.on('change', (event) => {
+            if (event.accounts && event.accounts.length > 0) done(event.accounts);
+          });
+        }
+
+        connectFeature.connect()
+          .then(({ accounts: a }) => { if (a.length > 0) done(a); })
+          .catch(fail);
+
+        // 5-minute safety timeout — prevents permanent overlay lock
+        setTimeout(() => fail(new Error('No accounts authorized')), 5 * 60 * 1000);
+      });
     }
 
     const account = accounts[0];
@@ -146,6 +179,13 @@ export async function connect(wallet: Wallet): Promise<WalletAccount> {
 
     return account;
   } catch (err) {
+    // Tell the wallet to clean up its own UI (closes WaaP Lit overlay etc.)
+    if ('standard:disconnect' in wallet.features) {
+      try {
+        (wallet.features['standard:disconnect'] as { disconnect: () => Promise<void> })
+          .disconnect().catch(() => {});
+      } catch { /* best effort */ }
+    }
     setState({
       status: 'disconnected',
       wallet: null,

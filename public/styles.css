@@ -463,8 +463,9 @@ body {
   background: linear-gradient(135deg, rgba(8, 8, 14, 0.72), rgba(16, 16, 24, 0.68));
   border-color: rgba(100, 110, 135, 0.32);
   color: #c8cde0;
-  max-width: 520px;
-  padding: 3px 8px;
+  max-width: 560px;
+  padding: 3px 10px 3px 6px;
+  min-height: 38px;
 }
 
 .wk-widget-btn.connected:hover {
@@ -507,12 +508,25 @@ body {
   height: 30px;
   border-radius: 7px;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .wk-widget-btn.connected .wk-widget-method-icon img {
   width: 30px;
   height: 30px;
   border-radius: 0;
+  display: block;
+}
+
+/* Social badge sits as a flex sibling of the wallet icon span */
+.wk-widget-social-badge {
+  flex-shrink: 0;
+}
+
+/* Pill auto-expands — remove max-width cap so both icons show unconstrained */
+.wk-widget-btn.connected {
+  max-width: none;
+  width: max-content;
 }
 
 .wk-widget-method-dual {
@@ -1045,6 +1059,8 @@ body {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   z-index: 13000;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
 }
 
 .ski-modal-overlay.open {
@@ -1055,7 +1071,7 @@ body {
   background: linear-gradient(180deg, #141820, #0e1118 50%, #101520);
   border: 1px solid rgba(160, 200, 240, 0.12);
   border-radius: 12px;
-  max-width: 820px;
+  max-width: 620px;
   width: calc(100% - 20px);
   max-height: calc(100vh - 32px);
   overflow: hidden;
@@ -1065,6 +1081,10 @@ body {
   left: 50%;
   transform: translateX(-50%);
   box-shadow: 0 28px 84px rgba(2, 6, 23, 0.82), 0 0 38px rgba(180, 210, 240, 0.1);
+  /* Prevent OS brightness adaptation and forced-color override */
+  color-scheme: dark;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
 }
 
 @keyframes ski-modal-in {
@@ -1097,9 +1117,6 @@ body {
 }
 .ski-modal-connected-key:empty {
   display: none;
-}
-.ski-modal-connected-key:not(:empty) {
-  border-bottom: 1px solid rgba(160, 200, 240, 0.08);
 }
 @media (max-width: 560px) {
   .ski-modal-legend-col {
@@ -1154,13 +1171,14 @@ body {
   color: #e2e8f0;
 }
 
-/* Settings strip — layout toggle at bottom of right col */
+/* Settings strip — full-width bar at bottom of modal */
 .ski-modal-settings-strip {
-  padding: 6px 10px 8px;
+  padding: 6px 14px 8px;
   border-top: 1px solid rgba(160, 200, 240, 0.06);
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  width: 100%;
 }
 .ski-layout-toggle {
   display: flex;
@@ -1292,6 +1310,8 @@ body {
   align-items: center;
   justify-content: center;
   border: none;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
   padding: 0;
   cursor: pointer;
   display: flex;
@@ -1520,6 +1540,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
 }
 .ski-legend-target {
   grid-column: 1 / -1;
@@ -1596,6 +1618,59 @@ body {
 .ski-legend-addr:hover {
   text-decoration: underline;
   color: #e2e8f0;
+}
+
+/* Social provider X badge — 30×30 block used in pill, legend col-2, and list shapes */
+.ski-waap-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  color: #fff;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-style: normal;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+
+/* In the legend col-2 position (next to the shape) */
+.ski-legend-social-badge {
+  align-self: center;
+}
+
+/* Wrapper for social wallet in list-mode shape column (X badge + green circle) */
+.ski-list-shape-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.ski-list-shape-group .ski-list-shape {
+  margin-left: 0;
+}
+/* Smaller X in the list shape context */
+.ski-list-shape-x {
+  width: 22px;
+  height: 22px;
+  font-size: 0.95rem;
+}
+
+/* Social icon in legend col-4 — inline SVG replaces wallet img */
+.ski-legend-social-icon {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
 }
 
 .ski-detail-icon-wrap {
@@ -1975,16 +2050,117 @@ body {
 
 .ski-modal-header {
   display: flex;
-  justify-content: space-between;
+  align-items: stretch;
+  border-bottom: 1px solid rgba(160, 200, 240, 0.08);
+}
+
+/* Left column: connected key identity (ski-detail-header--keyed only) */
+.ski-modal-header-key-col {
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid rgba(160, 200, 240, 0.08);
+}
+.ski-modal-header-key-col:empty {
+  display: none;
+}
+/* Suppress the border-bottom that was for body positioning */
+.ski-modal-header-key-col.ski-modal-connected-key:not(:empty) {
+  border-bottom: none;
+}
+/* Hide everything except the detail header inside the header slot */
+.ski-modal-header-key-col .ski-detail-row,
+.ski-modal-header-key-col .ski-gear-row,
+.ski-modal-header-key-col .ski-gear-sections {
+  display: none;
+}
+.ski-modal-header-key-col .ski-detail-header {
+  margin-bottom: 0;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* Right column: SKI brand + Splash toggle stacked vertically */
+.ski-modal-header-brand {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 14px 14px 0 12px;
+  gap: 0;
+}
+.ski-modal-header-key-col:empty ~ .ski-modal-header-brand {
+  flex: 1;
+}
+
+/* Top row inside brand column: logo + titles + close */
+.ski-modal-header-brand-top {
+  display: flex;
   align-items: flex-start;
-  padding: 16px 16px 8px;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding-bottom: 10px;
+}
+
+/* Splash button in brand column header */
+.ski-header-splash {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 6px;
+  border-top: 1px solid rgba(160, 200, 240, 0.06);
+}
+.ski-header-splash--on {
+  border-top-color: rgba(59, 130, 246, 0.2);
+}
+.ski-header-splash-drop {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.ski-header-splash--on .ski-header-splash-drop {
+  opacity: 1;
+}
+.ski-header-splash-days {
+  font-size: 0.7rem;
+  color: #64748b;
+  flex: 1;
+}
+.ski-header-splash-btn {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-header-splash-btn:hover {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+.ski-header-splash--on .ski-header-splash-btn {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+.ski-header-splash--on .ski-header-splash-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* Limit the keyed blue card to half the key-col width */
+.ski-modal-header-key-col .ski-detail-header--keyed {
+  width: 50%;
 }
 
 .ski-modal-header-left {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  flex: 1;
 }
 
 .ski-modal-brand-link {

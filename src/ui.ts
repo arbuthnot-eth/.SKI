@@ -46,6 +46,28 @@ const ASSETS = {
   suiDrop: './assets/sui-drop.svg',
 };
 
+// ─── Social provider icons (inline SVG, ships in the bundle) ─────────
+// Used in legend col-4 to replace wallet logos for social-login wallets.
+
+const _fca = `style="forced-color-adjust:none;-webkit-forced-color-adjust:none"`;
+
+/** X (Twitter) — black rounded-square, white X path */
+const SOCIAL_ICON_X = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" ${_fca} aria-label="X"><rect width="38" height="38" rx="8" fill="#000"/><svg x="7" y="7" width="24" height="24" viewBox="0 0 24 24"><path fill="#fff" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.747l7.73-8.835-8.162-10.665h7.555l4.259 5.63 4.115-5.63zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></svg>`;
+
+/** Google — white rounded-square, four-color G */
+const SOCIAL_ICON_GOOGLE = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" ${_fca} aria-label="Google"><rect width="38" height="38" rx="8" fill="#fff"/><svg x="7" y="7" width="24" height="24" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg></svg>`;
+
+/** Discord — blurple rounded-square, white Clyde icon */
+const SOCIAL_ICON_DISCORD = `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg" ${_fca} aria-label="Discord"><rect width="38" height="38" rx="8" fill="#5865F2"/><svg x="4" y="8" width="30" height="22" viewBox="0 0 127.14 96.36"><path fill="#fff" d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/></svg></svg>`;
+
+/** Map a wallet name to its social provider inline SVG, or null for standard wallets. */
+function socialIconSvg(walletName: string): string | null {
+  if (/waap/i.test(walletName)) return SOCIAL_ICON_X;
+  if (/google/i.test(walletName)) return SOCIAL_ICON_GOOGLE;
+  if (/discord/i.test(walletName)) return SOCIAL_ICON_DISCORD;
+  return null;
+}
+
 // ─── App-level state (beyond wallet connection) ──────────────────────
 
 export interface AppState {
@@ -366,7 +388,7 @@ function buildDiamondPng(): string {
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
   const half = size / 2;
-  ctx.fillStyle = '#111111';
+  ctx.fillStyle = '#000000';
   ctx.beginPath();
   ctx.moveTo(half, 8);
   ctx.lineTo(size - 8, half);
@@ -393,7 +415,7 @@ function updateFavicon(variant: SkiDotVariant) {
   } else if (variant === 'blue-square') {
     shape = `<rect x="0" y="0" width="100" height="100" rx="12" fill="#3b82f6" stroke="white" stroke-width="8"/><g transform="translate(22,14) scale(0.1875)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
   } else {
-    shape = `<polygon points="50,6 94,50 50,94 6,50" fill="#111111" stroke="white" stroke-width="10"/>`;
+    shape = `<polygon points="50,6 94,50 50,94 6,50" fill="#000000" stroke="white" stroke-width="10"/>`;
   }
   const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${shape}</svg>`;
   const url = 'data:image/svg+xml,' + encodeURIComponent(svgStr);
@@ -477,7 +499,7 @@ function keyPfpHtml(addr: string, suinsName: string | null): string {
     return `<button type="button" class="ski-key-pfp ski-key-pfp--blue${splashClass}" data-splash-addr="${escaped}" title="${splashTitle} for ${esc(bare)}.sui"><img src="./assets/sui-drop.svg" class="ski-key-pfp-drop" alt=""></button>`;
   }
   const dropOverlay = splashOn ? `<img src="./assets/sui-drop.svg" class="ski-key-pfp-splash-drop" alt="" aria-hidden="true">` : '';
-  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
+  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
 }
 
 /** Subname creator column rendered inside each secondary key card. */
@@ -993,9 +1015,14 @@ function walletListShape(w: Wallet): string {
   if (hasSuins) {
     return `<span class="ski-list-shape ski-list-shape--blue${sponsorClass}${deviceClass}">${hoverDrop}${dropOverlay}</span>`;
   } else if (hasAddrs) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
-  return `<span class="ski-list-shape ski-list-shape--green${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>${hoverDrop}</span>`;
+  // Green circle — no known addresses. WaaP green: wrap with social X badge.
+  const greenSvg = `<svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
+  if (/waap/i.test(w.name) || /google/i.test(w.name) || /discord/i.test(w.name)) {
+    return `<span class="ski-list-shape-group"><span class="ski-waap-x ski-list-shape-x" aria-hidden="true">𝕏</span><span class="ski-list-shape ski-list-shape--green${deviceClass}">${greenSvg}${hoverDrop}</span></span>`;
+  }
+  return `<span class="ski-list-shape ski-list-shape--green${deviceClass}">${greenSvg}${hoverDrop}</span>`;
 }
 
 /** Legend shown at the bottom-left of the modal: sponsor → covered keys.
@@ -1004,36 +1031,89 @@ function buildSplashLegend(): string {
   const auth = getSponsorState().auth;
   const splashActive = !!(auth && new Date(auth.expiresAt).getTime() > Date.now());
 
-  const LEGEND_DIAMOND = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#111827" stroke="#ffffff" stroke-width="5"/></svg>`;
-  const LEGEND_BLUE    = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="43" height="43" rx="6" fill="#3b82f6" stroke="#ffffff" stroke-width="5"/></svg>`;
-  const LEGEND_GREEN   = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
+  const LEGEND_DIAMOND = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="5"/></svg>`;
+  const LEGEND_BLUE    = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><rect x="2" y="2" width="43" height="43" rx="6" fill="#3b82f6" stroke="#ffffff" stroke-width="5"/></svg>`;
+  const LEGEND_GREEN   = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
 
   const allWallets = getSuiWallets();
+  if (!allWallets.length) return '';
 
-  // Green-circle wallets: detected wallets with no accounts or stored keys (always shown for discovery)
-  const greenWallets = allWallets.filter((w) => {
+  const isGreen = (w: Wallet) => {
     const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
     return w.accounts.length === 0 && stored.length === 0;
-  });
+  };
 
-  // Nothing to show when no Splash and no unconnected wallets
-  if (!splashActive && !greenWallets.length) return '';
-
-  // Wallet rows are always built for discovery (shown in both splash and no-splash states)
   let rowIdx = 0;
+
+  // Without Splash: one row per stored address (with SuiNS + hex), green circle for unused wallets.
+  // Sorted: diamond (addr, no SuiNS) → blue square (addr + SuiNS) → green circle (never used).
+  if (!splashActive) {
+    type Entry = { walletName: string; icon: string; address: string | null; suinsName: string | null; tier: 0 | 1 | 2 };
+    const entries: Entry[] = [];
+    for (const w of allWallets) {
+      const liveAddrs = (w.accounts as unknown as { address: string }[]).map((a) => a.address);
+      const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
+      const addrs = [...new Set([...liveAddrs, ...stored])];
+      if (addrs.length === 0) {
+        entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier: 2 });
+      } else {
+        for (const addr of addrs) {
+          const suinsName = suinsCache[addr] || (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })() || null;
+          entries.push({ walletName: w.name, icon: w.icon || '', address: addr, suinsName, tier: suinsName ? 1 : 0 });
+        }
+      }
+    }
+    entries.sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      const aW = /waap/i.test(a.walletName) ? 0 : 1;
+      const bW = /waap/i.test(b.walletName) ? 0 : 1;
+      if (aW !== bW) return aW - bW;
+      return a.walletName.localeCompare(b.walletName);
+    });
+    const rows = entries.map((e) => {
+      const shapeHtml = e.tier === 0 ? LEGEND_DIAMOND : e.tier === 1 ? LEGEND_BLUE : LEGEND_GREEN;
+      const social = socialIconSvg(e.walletName);
+      // Col 2: SuiNS name link, or for WaaP/social green circle put X badge, else empty
+      const nameHtml = e.suinsName
+        ? (() => { const bare = e.suinsName.replace(/\.sui$/, ''); return `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-legend-name">${esc(bare)}</a>`; })()
+        : (social && !e.address)
+          ? `<span class="ski-waap-x ski-legend-social-badge" aria-hidden="true">𝕏</span>`
+          : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
+      // Col 3: address link or wallet name (without redundant X, since it's in col2)
+      const addrCell = e.address
+        ? `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`
+        : `<span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(e.walletName)}</span>`;
+      // Col 4: social provider icon replaces wallet logo for social-login wallets
+      const iconCell = social
+        ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
+        : (e.icon ? `<img class="ski-legend-wallet-icon" src="${esc(e.icon)}" alt="${esc(e.walletName)}">` : `<span></span>`);
+      const addrAttr = e.address ? ` data-legend-addr="${esc(e.address)}"` : '';
+      return `<div class="ski-legend-row" data-legend-idx="${rowIdx++}" data-legend-wallet="${esc(e.walletName)}"${addrAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
+    }).join('');
+    return `<div class="ski-splash-legend">
+    <div class="ski-legend-targets">${rows}</div>
+  </div>`;
+  }
+
+  // Splash active — green-circle rows appended at bottom of legend (unconnected wallets only)
+  const greenWallets = allWallets.filter(isGreen).sort((a, b) => {
+    const aW = /waap/i.test(a.name) ? 0 : 1;
+    const bW = /waap/i.test(b.name) ? 0 : 1;
+    if (aW !== bW) return aW - bW;
+    return a.name.localeCompare(b.name);
+  });
   const walletRows = greenWallets.map((w) => {
-    const iconCell = w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`;
-    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-name ski-legend-name--empty"></span><span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(w.name)}</span>${iconCell}</div>`;
+    const social = socialIconSvg(w.name);
+    const col2 = social
+      ? `<span class="ski-waap-x ski-legend-social-badge" aria-hidden="true">𝕏</span>`
+      : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
+    const iconCell = social
+      ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
+      : (w.icon ? `<img class="ski-legend-wallet-icon" src="${esc(w.icon)}" alt="${esc(w.name)}">` : `<span></span>`);
+    const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(w.name)}" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span>${col2}<span class="ski-legend-name ski-legend-name--wallet ski-legend-addr--right">${esc(w.name)}</span>${iconCell}</div>`;
     rowIdx++;
     return html;
   }).join('');
-
-  // Without Splash: show only the wallet picker rows
-  if (!splashActive) {
-    return `<div class="ski-splash-legend">
-    <div class="ski-legend-targets">${walletRows}</div>
-  </div>`;
-  }
 
   // Splash is active — build full legend with sponsor header and covered addresses
   const name = suinsCache[auth!.address] || (() => { try { return localStorage.getItem(`ski:suins:${auth!.address}`); } catch { return null; } })();
@@ -1058,7 +1138,15 @@ function buildSplashLegend(): string {
     const tier: 0 | 1 | 2 = !e.address ? 2 : primaryName ? 1 : 0;
     return { entry: e, primaryName, tier };
   });
-  annotated.sort((a, b) => a.tier - b.tier);
+  annotated.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    // Within same tier: WaaP-associated entries first
+    const aWallet = addrToWallet.get(a.entry.address);
+    const bWallet = addrToWallet.get(b.entry.address);
+    const aW = aWallet && /waap/i.test(aWallet.name) ? 0 : 1;
+    const bW = bWallet && /waap/i.test(bWallet.name) ? 0 : 1;
+    return aW - bW;
+  });
 
   const sponsoredRows = annotated.map(({ entry: e, primaryName, tier }) => {
     const shapeHtml = tier === 2 ? LEGEND_GREEN : tier === 1 ? LEGEND_BLUE : LEGEND_DIAMOND;
@@ -1067,7 +1155,10 @@ function buildSplashLegend(): string {
       : `<span class="ski-legend-name ski-legend-name--empty"></span>`;
     const wIcon = addrToWallet.get(e.address);
     const addrCell = `<a href="https://suiscan.xyz/mainnet/account/${esc(e.address)}" target="_blank" rel="noopener" class="ski-legend-addr">${esc(truncAddr(e.address))}</a>`;
-    const iconCell = wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`;
+    const social = wIcon ? socialIconSvg(wIcon.name) : null;
+    const iconCell = social
+      ? `<span class="ski-legend-wallet-icon ski-legend-social-icon">${social}</span>`
+      : (wIcon?.icon ? `<img class="ski-legend-wallet-icon" src="${esc(wIcon.icon)}" alt="${esc(wIcon.name)}">` : `<span></span>`);
     const walletAttr = wIcon ? ` data-legend-wallet="${esc(wIcon.name)}"` : '';
     const html = `<div class="ski-legend-row" data-legend-idx="${rowIdx}" data-legend-addr="${esc(e.address)}"${walletAttr} tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${shapeHtml}</span>${nameHtml}${addrCell}${iconCell}</div>`;
     rowIdx++;
@@ -1134,7 +1225,12 @@ function renderModal(): void {
     return;
   }
 
-  const wallets = getSuiWallets();
+  const wallets = getSuiWallets().sort((a, b) => {
+    const aW = /waap/i.test(a.name) ? 0 : 1;
+    const bW = /waap/i.test(b.name) ? 0 : 1;
+    if (aW !== bW) return aW - bW;
+    return a.name.localeCompare(b.name);
+  });
 
   if (!wallets.length) {
     els.modal.innerHTML = `
@@ -1171,11 +1267,17 @@ function renderModal(): void {
         </div>`
     : `<div class="ski-modal-legend-col ski-modal-legend-col--live">
           <div class="ski-modal-wallets">
-            ${wallets.map((w) => `<button class="wk-dd-item${w.name === connectedName ? ' active' : ''}" data-wallet-name="${esc(w.name)}" type="button">
-              ${w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:38px;height:38px;border-radius:8px;flex-shrink:0">` : '<span style="width:38px;height:38px;flex-shrink:0"></span>'}
+            ${wallets.map((w) => {
+              const social = socialIconSvg(w.name);
+              const iconHtml = social
+                ? `<span style="width:38px;height:38px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center">${social}</span>`
+                : (w.icon ? `<img src="${esc(w.icon)}" alt="" style="width:38px;height:38px;border-radius:8px;flex-shrink:0">` : '<span style="width:38px;height:38px;flex-shrink:0"></span>');
+              return `<button class="wk-dd-item${w.name === connectedName ? ' active' : ''}" data-wallet-name="${esc(w.name)}" type="button">
+              ${iconHtml}
               <span class="ski-walletlist-name">${esc(w.name)}</span>
               ${walletListShape(w)}
-            </button>`).join('')}
+            </button>`;
+            }).join('')}
           </div>
         </div>`;
 
@@ -1187,29 +1289,56 @@ function renderModal(): void {
       </label>
     </div>`;
 
+  // Splash button for the brand column header (activate / deactivate)
+  const ws = getState();
+  const sponsorAuth = getSponsorState().auth;
+  const isActiveSponsor = isSponsorActive() && sponsorAuth?.address === ws.address;
+  let headerSplashHtml = '';
+  if (ws.walletName) {
+    if (isActiveSponsor) {
+      const msLeft = new Date(sponsorAuth!.expiresAt).getTime() - Date.now();
+      const daysLeft = Math.max(1, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
+      headerSplashHtml = `<div class="ski-header-splash ski-header-splash--on">
+          <img src="./assets/sui-drop.svg" class="ski-header-splash-drop" aria-hidden="true">
+          <span class="ski-header-splash-days">${daysLeft}d left</span>
+          <button class="ski-header-splash-btn" id="ski-header-splash-off" type="button">Revoke</button>
+        </div>`;
+    } else if (!isSponsorActive()) {
+      headerSplashHtml = `<div class="ski-header-splash">
+          <img src="./assets/sui-drop.svg" class="ski-header-splash-drop" aria-hidden="true">
+          <button class="ski-header-splash-btn" id="ski-header-splash-on" type="button">Splash</button>
+        </div>`;
+    }
+  }
+
   els.modal.innerHTML = `
     <div class="ski-modal-overlay open" id="ski-modal-overlay">
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
-          <div class="ski-modal-header-left">
-            ${getInlineSkiSvg()}
-            <div class="ski-modal-titles">
-              <h2 class="ski-modal-title">.Sui Key-In</h2>
-              <p class="ski-modal-tagline">once,<br>everywhere</p>
+          <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col"></div>
+          <div class="ski-modal-header-brand">
+            <div class="ski-modal-header-brand-top">
+              <div class="ski-modal-header-left">
+                ${getInlineSkiSvg()}
+                <div class="ski-modal-titles">
+                  <h2 class="ski-modal-title">.Sui Key-In</h2>
+                  <p class="ski-modal-tagline">once,<br>everywhere</p>
+                </div>
+              </div>
+              <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
             </div>
+            ${headerSplashHtml}
           </div>
-          <button id="ski-modal-close" style="background:none;border:none;color:#9ca7bb;font-size:1.4rem;cursor:pointer;padding:4px 8px;line-height:1">&times;</button>
         </div>
         <div class="ski-modal-body">
           ${leftColHtml}
           <div class="ski-modal-right-col">
-            <div id="ski-connected-key" class="ski-modal-connected-key"></div>
             <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail">
               <div class="ski-detail-empty">Hover a key<br>for details</div>
             </div>
-            ${settingsStrip}
           </div>
         </div>
+        ${settingsStrip}
       </div>
     </div>
   `;
@@ -1230,6 +1359,32 @@ function renderModal(): void {
   document.getElementById('ski-layout-check')?.addEventListener('change', (e) => {
     const splash = (e.target as HTMLInputElement).checked;
     try { localStorage.setItem('ski:modal-layout', splash ? 'splash' : 'list'); } catch {}
+    renderModal();
+  });
+
+  // Header Splash button — activate
+  document.getElementById('ski-header-splash-on')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true; btn.textContent = 'Activating\u2026';
+    try {
+      const { wallet, account } = getState();
+      if (!wallet || !account) throw new Error('No wallet connected');
+      await activateSponsor(wallet, account);
+      showToast('<img src="./assets/sui-drop.svg" class="toast-drop" aria-hidden="true"> Splash active &middot; 7 days', true);
+      render();
+      renderModal();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      btn.disabled = false; btn.textContent = 'Splash';
+    }
+  });
+
+  // Header Splash button — revoke
+  document.getElementById('ski-header-splash-off')?.addEventListener('click', () => {
+    deactivateSponsor();
+    showToast('Splash deactivated');
+    render();
     renderModal();
   });
 
@@ -1442,10 +1597,12 @@ function renderWidget() {
   const label = hasSuins ? app.suinsName.replace(/\.sui$/, '') : truncAddr(ws.address);
   const labelClass = hasSuins ? 'wk-widget-title' : 'wk-widget-title is-address';
 
-  // Wallet icon
+  // Wallet icon + optional social badge (badge is a sibling, not inside the clipped icon span)
   let iconHtml = '';
   if (ws.walletIcon) {
-    iconHtml = `<span class="wk-widget-method-icon"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>`;
+    const social = socialIconSvg(ws.walletName);
+    const xBadge = social ? `<span class="ski-waap-x wk-widget-social-badge">𝕏</span>` : '';
+    iconHtml = `<span class="wk-widget-method-icon${social ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${xBadge}`;
   }
 
   // Ika cross-chain badge

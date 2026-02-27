@@ -1153,6 +1153,7 @@ body {
   }
   .ski-modal-header-brand {
     width: 100%;
+    order: -1;
   }
   .ski-modal-header-key-col:empty ~ .ski-modal-header-brand {
     width: 100%;

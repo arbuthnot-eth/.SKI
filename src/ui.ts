@@ -865,7 +865,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         render();
         if (detailEl) showKeyDetail(w, detailEl, connectedAddr);
       });
-    } else if (canSponsor) {
+    } else if (canSponsor && !isSponsoredAddress(addr0)) {
       sponsorDiv.innerHTML = `<button class="ski-detail-sponsor-set" type="button"><img src="./assets/sui-drop.svg" class="splash-inline-drop splash-inline-drop--blue" aria-hidden="true"> Splash</button>`;
       sponsorDiv.querySelector('.ski-detail-sponsor-set')?.addEventListener('click', async (e) => {
         const btn = e.currentTarget as HTMLButtonElement;
@@ -1318,7 +1318,7 @@ export function enrollAllKnownAddresses(): number {
   const sponsorAddr = getSponsorState().auth!.address;
   const seen = new Set<string>();
   for (const w of getSuiWallets()) {
-    const live = (w.accounts as { address: string }[]).map((a) => a.address);
+    const live = (w.accounts as unknown as { address: string }[]).map((a) => a.address);
     const remembered: string[] = (() => {
       try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]'); } catch { return []; }
     })();

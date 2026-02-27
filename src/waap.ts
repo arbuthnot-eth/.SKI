@@ -26,6 +26,22 @@ export function registerWaaP(): void {
     // Override the built-in icon with our custom branded SVG
     Object.defineProperty(wallet, 'icon', { value: WAAP_ICON, writable: false, enumerable: true, configurable: true });
     registerWallet(wallet as unknown as Parameters<typeof registerWallet>[0]);
+
+    // After OAuth redirect, WaaP may leave its iframe container visible even
+    // though auth succeeded.  Collapse it once accounts arrive so the page
+    // is not permanently blocked by the overlay.
+    if ('standard:events' in wallet.features) {
+      const eventsFeature = wallet.features['standard:events'] as {
+        on: (event: 'change', listener: (e: { accounts?: readonly unknown[] }) => void) => () => void;
+      };
+      const unsub = eventsFeature.on('change', (event) => {
+        if (event.accounts && (event.accounts as unknown[]).length > 0) {
+          unsub();
+          const container = document.getElementById('waap-wallet-iframe-container');
+          if (container) container.style.display = 'none';
+        }
+      });
+    }
   } catch (err) {
     console.warn('[.SKI] WaaP registration failed:', err);
   }

@@ -5,6 +5,8 @@ One-button Sui wallet sign-in. Connect once, authenticate everywhere.
 [![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
 [![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
 
+<a href="https://sui.ski"><img src="public/assets/sui-ski-qr.svg" width="160" alt="sui.ski QR code"></a>
+
 ---
 
 ## What it does

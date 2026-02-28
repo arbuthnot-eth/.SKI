@@ -1285,6 +1285,15 @@ body {
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
+/* In the detail pane, the keyed header is clickable to sign */
+#ski-modal-detail .ski-detail-header--keyed {
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+#ski-modal-detail .ski-detail-header--keyed:hover {
+  border-color: rgba(96, 165, 250, 1);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35) inset, 0 0 12px rgba(59, 130, 246, 0.18);
+}
 
 .ski-detail-icon-row {
   display: flex;

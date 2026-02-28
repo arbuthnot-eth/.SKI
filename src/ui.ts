@@ -1292,6 +1292,29 @@ export function mountBalanceCycler(el: HTMLElement): () => void {
   };
 }
 
+async function lockInIdentity(): Promise<void> {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) return;
+  const name = app.suinsName
+    ? app.suinsName.replace(/\.sui$/, '') + '.sui'
+    : truncAddr(ws.address);
+  const message = [
+    `Lock in ${name}`,
+    '',
+    ws.address,
+    '',
+    `Nonce: ${crypto.randomUUID()}`,
+    `Issued At: ${new Date().toISOString()}`,
+  ].join('\n');
+  try {
+    await signPersonalMessage(new TextEncoder().encode(message));
+    showToast(`Locked in as ${esc(name)}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    if (!msg.toLowerCase().includes('reject')) showToast(msg || 'Signing failed');
+  }
+}
+
 function renderModal(): void {
   if (!els.modal) return;
   const connectedName = getState().walletName;
@@ -1419,9 +1442,7 @@ function renderModal(): void {
         <div class="ski-modal-body">
           ${leftColHtml}
           <div class="ski-modal-right-col">
-            <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail">
-              <div class="ski-detail-empty">Hover a key<br>for details</div>
-            </div>
+            <div class="ski-modal-col ski-modal-detail" id="ski-modal-detail"></div>
           </div>
         </div>
         ${settingsStrip}
@@ -1457,12 +1478,12 @@ function renderModal(): void {
     }
   });
 
-  // Populate the connected key slot at the top of the legend
+  // Populate both detail slots immediately — no placeholder flash
+  const connectedWallet = connectedName ? getSuiWallets().find((w) => w.name === connectedName) : null;
   const connectedKeyEl = document.getElementById('ski-connected-key');
-  if (connectedKeyEl && connectedName) {
-    const wallet = getSuiWallets().find((w) => w.name === connectedName);
-    if (wallet) showKeyDetail(wallet, connectedKeyEl, getState().address);
-  }
+  if (connectedKeyEl && connectedWallet) showKeyDetail(connectedWallet, connectedKeyEl, getState().address);
+  const initialDetailEl = document.getElementById('ski-modal-detail');
+  if (initialDetailEl && connectedWallet) showKeyDetail(connectedWallet, initialDetailEl, getState().address);
 
   // Layout toggle — persists preference and re-renders
   document.getElementById('ski-layout-check')?.addEventListener('change', (e) => {
@@ -2324,6 +2345,14 @@ export function initUI() {
   els.modal?.addEventListener('click', (e) => {
     if (longPressFired) { longPressFired = false; return; } // long-press consumed this click
     if ((e.target as HTMLElement).closest('a')) return;
+
+    // Detail pane keyed header click → sign "Lock in {name/address}"
+    const clickedDetailHeader = (e.target as HTMLElement).closest<HTMLElement>('.ski-detail-header--keyed');
+    const detailPane = document.getElementById('ski-modal-detail');
+    if (clickedDetailHeader && detailPane?.contains(clickedDetailHeader)) {
+      void lockInIdentity();
+      return;
+    }
 
     // Balance cycler toggle: switch between SUI-primary and USD-primary
     if ((e.target as HTMLElement).closest('#ski-detail-balance-cycler')) {

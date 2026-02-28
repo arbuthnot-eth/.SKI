@@ -35,8 +35,8 @@
     "url": "https://github.com/arbuthnot-eth/.SKI"
   },
   "scripts": {
-    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm",
-    "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm",
+    "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --splitting --format esm --loader .svg:text",
+    "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm --loader .svg:text",
     "dev:wrangler": "wrangler dev",
     "deploy": "bun run build && npx wrangler deploy",
     "typecheck": "tsc --noEmit",

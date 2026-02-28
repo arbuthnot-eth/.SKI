@@ -44,6 +44,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260305.0",
+    "@types/qrcode": "^1.5.6",
     "potrace": "^2.1.8",
     "typescript": "^5.9.3",
     "wrangler": "^4.69.0"
@@ -60,6 +61,7 @@
     "agents": "^0.6.0",
     "hono": "^4.12.2",
     "hono-agents": "^3.0.6",
-    "kumo-ui": "^0.2.1"
+    "kumo-ui": "^0.2.1",
+    "qrcode": "^1.5.4"
   }
 }

@@ -516,6 +516,18 @@ function fmtTimeLeft(expiresAt: string): string {
   return hrs > 0 ? `${hrs}h` : '< 1h';
 }
 
+/** Generate (or return cached) QR SVG for a URL. Stored in localStorage. */
+async function getQrSvg(url: string): Promise<string> {
+  const key = `ski:qr:${url}`;
+  try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
+  const mod = await import('qrcode');
+  const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
+  const svg = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
+    .toString(url, { type: 'svg', margin: 1, color: { dark: '#60a5fa', light: '#0d1117' }, errorCorrectionLevel: 'M' });
+  try { localStorage.setItem(key, svg); } catch {}
+  return svg;
+}
+
 /** Profile-picture indicator for a key. Clicking toggles Splash gas sponsorship for that address.
  *  - Blue square (has SuiNS): amber glow ring when Splash is active for this address.
  *  - Black diamond (no SuiNS): white sui-drop appears inside when Splash is active.
@@ -903,7 +915,15 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       const slot = wrap?.querySelector('.ski-detail-suins-slot');
       if (slot) {
         const bare = name.replace(/\.sui$/, '');
-        slot.innerHTML = `<a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="ski-detail-suins">${esc(bare)}</a>`;
+        const suiSkiUrl = `https://${bare}.sui.ski`;
+        slot.innerHTML = `<span class="ski-suins-qr-wrap"><a href="${esc(suiSkiUrl)}" target="_blank" rel="noopener" class="ski-detail-suins">${esc(bare)}</a><span class="ski-suins-qr-popup" hidden></span></span>`;
+        const qrPopup = slot.querySelector<HTMLElement>('.ski-suins-qr-popup');
+        if (qrPopup) {
+          getQrSvg(suiSkiUrl).then((svg) => { qrPopup.innerHTML = svg; }).catch(() => {});
+          const qrWrap = qrPopup.parentElement!;
+          qrWrap.addEventListener('mouseenter', () => qrPopup.removeAttribute('hidden'));
+          qrWrap.addEventListener('mouseleave', () => qrPopup.setAttribute('hidden', ''));
+        }
       }
     };
     if (suinsCache[addr]) {
@@ -1204,14 +1224,16 @@ function activateLegendRow(idx: number, fromHover = false) {
   const connKey = document.getElementById('ski-connected-key');
 
   if (walletName === getState().walletName) {
-    // Connected wallet row: hide right-pane header, highlight matching addr in connected key
-    if (detailEl) detailEl.classList.add('ski-detail--key-hover');
+    // Connected wallet row: highlight matching addr in header + show its wallet in right pane
     const addr = row.dataset.legendAddr;
     if (connKey) {
       connKey.querySelectorAll<HTMLElement>('[data-full-addr]').forEach((el) => {
         el.classList.toggle('ski-detail-addr--highlighted', !!addr && el.dataset.fullAddr === addr);
       });
     }
+    if (detailEl) detailEl.classList.remove('ski-detail--key-hover');
+    const wallet = getSuiWallets().find((w) => w.name === walletName);
+    if (wallet && detailEl) showKeyDetail(wallet, detailEl, getState().address);
     return;
   }
 
@@ -1416,7 +1438,6 @@ function renderModal(): void {
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
           <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col"></div>
-          ${ws.address ? `<div id="ski-modal-header-balance" class="ski-modal-header-balance ski-balance-cycler"></div>` : ''}
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
               <div class="ski-modal-header-left">
@@ -1654,7 +1675,7 @@ let suiPriceCache: { price: number; fetchedAt: number } | null = null;
 
 // Balance display preference: 'sui' shows SUI primary, 'usd' shows USD primary
 let balView: 'sui' | 'usd' = (() => {
-  try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'sui'; } catch { return 'sui'; }
+  try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'usd'; } catch { return 'usd'; }
 })();
 
 async function fetchSuiPrice(): Promise<number | null> {

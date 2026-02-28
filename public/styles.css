@@ -1388,9 +1388,10 @@ body {
 
 /* Blue square variant — solid blue with white sui-drop inside */
 .ski-key-pfp--blue {
-  background: #3b82f6;
+  background: transparent;
   margin-top: 5px;
   outline: 2px solid #ffffff;
+  transition: background 0.15s;
 }
 
 .ski-key-pfp--blue .ski-key-pfp-drop {
@@ -1502,9 +1503,10 @@ body {
 }
 
 .ski-list-shape--blue {
-  background: #3b82f6;
+  background: transparent;
   border-radius: 5px;
   outline: 2px solid #ffffff;
+  transition: background 0.15s;
 }
 
 .ski-list-shape-hover-drop {
@@ -2199,7 +2201,7 @@ body {
 .ski-modal-header-left {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 5px;
 }
 
 .ski-modal-brand-link {
@@ -2225,9 +2227,12 @@ body {
 
 .ski-modal-title {
   color: #ffffff;
-  font-size: 1rem;
+  font-size: 1.5rem;
+  font-weight: 700;
   margin: 0;
-  line-height: 1.2;
+  line-height: 1.15;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .ski-modal-tagline {
@@ -2235,6 +2240,41 @@ body {
   font-size: 0.62rem;
   margin: 1px 0 0;
   line-height: 1.25;
+  text-align: right;
+}
+
+/* Brand column: grid replaces flex so SVG + titles align precisely */
+.ski-modal-header-brand .ski-modal-header-left {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 2px;
+  row-gap: 0;
+  align-items: end;
+}
+/* SVG button wrap spans both text rows, bottom-anchored */
+.ski-modal-header-brand .ski-logo-btn-wrap {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  align-self: end;
+}
+/* Dissolve the titles wrapper so h2 and p sit in separate grid rows */
+.ski-modal-header-brand .ski-modal-titles {
+  display: contents;
+}
+/* Title: row 1, 1px left-pad → 2px column-gap + 1px = 3px from SVG */
+.ski-modal-header-brand .ski-modal-title {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  padding-left: 1px;
+}
+/* Tagline: row 2, left-justified, 2px from SVG via column-gap */
+.ski-modal-header-brand .ski-modal-tagline {
+  grid-column: 2;
+  grid-row: 2;
+  text-align: left;
+  align-self: start;
+  margin-top: 1px;
 }
 
 /* ─── Subname Creator (secondary key cards) ────────────────────────── */
@@ -2445,6 +2485,37 @@ body {
   margin-left: auto;
 }
 
+/* Header key-col balance: merged single instance, large hero number */
+.ski-modal-header-key-col #ski-detail-balance-cycler {
+  padding: 0 4px;
+}
+.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-sui,
+.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-usd {
+  font-size: 4rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #f1f5f9;
+}
+.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary .ski-header-bal-sui-icon {
+  width: 28px;
+  height: 28px;
+}
+.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-secondary.ski-header-bal-sui,
+.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-secondary.ski-header-bal-usd {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: #475569;
+}
+.ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-secondary .ski-header-bal-sui-icon {
+  width: 10px;
+  height: 10px;
+}
+
+/* Remove black background from the icon-row div inside the header key-col */
+#ski-connected-key > .ski-detail-header.ski-detail-header--keyed > div {
+  background: none;
+}
+
 /* Modal header balance column (mountBalanceCycler instance) */
 .ski-modal-header-balance {
   display: flex;
@@ -2503,3 +2574,86 @@ body {
   color: #60a5fa;
   letter-spacing: 0.03em;
 }
+
+/* ── Shape fill: outline-only default, color fill on hover/active ─── */
+
+/* Legend row shapes — default: transparent fill, outline only */
+.ski-legend-row .ski-list-shape--diamond polygon {
+  fill: transparent;
+  transition: fill 0.15s;
+}
+.ski-legend-row .ski-list-shape--green circle {
+  fill: transparent;
+  transition: fill 0.15s;
+}
+
+/* Legend row shapes — hover/active: filled with shape color */
+.ski-legend-row:hover .ski-list-shape--diamond polygon,
+.ski-legend-row.active .ski-list-shape--diamond polygon {
+  fill: #111111;
+}
+.ski-legend-row:hover .ski-list-shape--blue,
+.ski-legend-row.active .ski-list-shape--blue {
+  background: #3b82f6;
+}
+.ski-legend-row:hover .ski-list-shape--green circle,
+.ski-legend-row.active .ski-list-shape--green circle {
+  fill: #22c55e;
+}
+
+/* Key PFP shapes — default: transparent fill, outline only */
+.ski-key-pfp--diamond polygon {
+  fill: transparent;
+  transition: fill 0.15s;
+}
+.ski-key-pfp--green-circle circle {
+  fill: transparent;
+  transition: fill 0.15s;
+}
+
+/* Key PFP shapes — hover over the button or parent detail header: filled */
+.ski-key-pfp--diamond:hover polygon,
+.ski-detail-header--keyed:hover .ski-key-pfp--diamond polygon {
+  fill: #111111;
+}
+.ski-key-pfp--blue:hover,
+.ski-detail-header--keyed:hover .ski-key-pfp--blue {
+  background: #3b82f6;
+}
+.ski-key-pfp--green-circle:hover circle,
+.ski-detail-header--keyed:hover .ski-key-pfp--green-circle circle {
+  fill: #22c55e;
+}
+
+/* ── SuiNS name QR popup (key detail card) ──────────────────────────── */
+
+.ski-suins-qr-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ski-suins-qr-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  background: #0d1117;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 10px;
+  padding: 8px;
+  width: 128px;
+  height: 128px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+}
+
+.ski-suins-qr-popup svg {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  display: block;
+}
+
+.ski-suins-qr-popup[hidden] { display: none; }

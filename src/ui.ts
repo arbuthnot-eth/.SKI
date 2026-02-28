@@ -691,9 +691,9 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
                 <svg width="34" height="34" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="3" y1="3" x2="19" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/><line x1="19" y1="3" x2="3" y2="19" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round"/></svg>
               </div>
               ${activated ? `<div class="ski-revoke-tooltip" aria-hidden="true">Withdraw <span class="ski-revoke-tooltip-name">${esc(w.name)}</span> Splash <img src="./assets/sui-drop.svg" class="ski-revoke-tooltip-drop" alt=""></div>` : ''}
+              ${/waap/i.test(w.name) && addr0 ? `<span class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</span>` : ''}
             </div>`;
           })() : ''}
-          ${/waap/i.test(w.name) && addr0 ? `<span class="ski-detail-provider-badge">${waapProviderIcon(addr0)}</span>` : ''}
           <div class="ski-detail-key-column">
             ${activePfpHtml}
           </div>

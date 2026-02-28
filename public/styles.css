@@ -2503,16 +2503,24 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 
 
-/* WaaP social provider badge in showKeyDetail */
+/* WaaP social provider badge — 12px overlay on top-left of wallet icon */
 .ski-detail-provider-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  flex-shrink: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  overflow: hidden;
+  pointer-events: none;
   forced-color-adjust: none;
   -webkit-forced-color-adjust: none;
+  z-index: 1;
+}
+.ski-detail-provider-badge svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* Long-press lock: amber ring on locked row */

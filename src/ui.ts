@@ -361,7 +361,7 @@ function _buildSkiSvg(
         `id="${idPrefix}-dot-outer" style="display:none" fill="#FFFFFF"`)
       .replace(`id="${idPrefix}-dot-inner" fill="#010101" opacity="1.000000" stroke="none"`,
         `id="${idPrefix}-dot-inner" style="display:none" fill="#010101" opacity="1.000000" stroke="none"`)
-      .replace(`id="${idPrefix}-dot-square"`, `id="${idPrefix}-dot-square" fill="#3b82f6"`)
+      .replace(`id="${idPrefix}-dot-square"`, `id="${idPrefix}-dot-square" fill="#4da2ff"`)
       .replace(new RegExp(`(<rect id="${idPrefix}-dot-square"[^>]*?) style="display:none"(/>)`), '$1$2');
   }
   // black-diamond: outer/inner visible by default in source; circle/square already hidden
@@ -443,7 +443,7 @@ function updateFavicon(variant: SkiDotVariant) {
   if (variant === 'green-circle') {
     shape = `<circle cx="50" cy="50" r="38" fill="#22c55e" stroke="white" stroke-width="10"/>`;
   } else if (variant === 'blue-square') {
-    shape = `<rect x="0" y="0" width="100" height="100" rx="12" fill="#3b82f6" stroke="white" stroke-width="8"/><g transform="translate(22,14) scale(0.1875)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
+    shape = `<rect x="0" y="0" width="100" height="100" rx="12" fill="#4da2ff" stroke="white" stroke-width="8"/><g transform="translate(22,14) scale(0.1875)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
   } else {
     shape = `<polygon points="50,6 94,50 50,94 6,50" fill="#000000" stroke="white" stroke-width="10"/>`;
   }
@@ -482,7 +482,7 @@ function updateSkiDot(variant: SkiDotVariant, suinsName?: string) {
   if (square) square.style.display = variant === 'blue-square'   ? '' : 'none';
 
   if (circle && variant === 'green-circle') circle.setAttribute('fill', '#22c55e');
-  if (square && variant === 'blue-square')  square.setAttribute('fill', '#3b82f6');
+  if (square && variant === 'blue-square')  square.setAttribute('fill', '#4da2ff');
 
   if (fin) fin.style.display = _skiLiftVisible ? '' : 'none';
 
@@ -1049,7 +1049,7 @@ function buildSplashLegend(): string {
   const splashActive = !!(auth && new Date(auth.expiresAt).getTime() > Date.now());
 
   const LEGEND_DIAMOND = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="5"/></svg>`;
-  const LEGEND_BLUE    = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><rect x="2" y="2" width="43" height="43" rx="6" fill="#3b82f6" stroke="#ffffff" stroke-width="5"/></svg>`;
+  const LEGEND_BLUE    = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><rect x="2" y="2" width="43" height="43" rx="6" fill="#4da2ff" stroke="#ffffff" stroke-width="5"/></svg>`;
   const LEGEND_GREEN   = `<svg width="38" height="38" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
 
   const allWallets = getSuiWallets();
@@ -2095,7 +2095,7 @@ function renderMenu() {
           <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
         </div>
         <div class="wk-popout-name-badge">
-          <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#3b82f6"/></svg>
+          <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#4da2ff"/></svg>
           <span class="wk-popout-name-text">${esc(bare)}<span class="wk-popout-name-tld">.sui</span></span>
           <a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="wk-popout-name-link" title="View .ski profile">\u2197</a>
         </div>

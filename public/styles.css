@@ -1302,7 +1302,7 @@ body {
 }
 .ski-layout-toggle input:checked + .ski-layout-track .ski-layout-thumb {
   left: 16px;
-  background: #3b82f6;
+  background: #4da2ff;
 }
 
 /* Detail header: wallet identity + active key side-by-side */
@@ -2511,14 +2511,14 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 
 
-/* WaaP social provider badge — covers top-left quarter of wallet icon */
+/* WaaP social provider badge — covers top-right quarter of wallet icon */
 .ski-detail-provider-badge {
   position: absolute;
   top: 0;
-  left: 0;
-  width: 50%;
-  height: 50%;
-  border-radius: 2px 0 2px 0;
+  right: 0;
+  width: 55%;
+  height: 55%;
+  border-radius: 0 2px 0 2px;
   overflow: hidden;
   pointer-events: none;
   forced-color-adjust: none;
@@ -2729,7 +2729,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 .ski-legend-row:hover .ski-list-shape--blue,
 .ski-legend-row.active .ski-list-shape--blue {
-  background: #3b82f6;
+  background: #4da2ff;
 }
 .ski-legend-row:hover .ski-list-shape--green circle,
 .ski-legend-row.active .ski-list-shape--green circle {
@@ -2753,7 +2753,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 .ski-key-pfp--blue:hover,
 .ski-detail-header--keyed:hover .ski-key-pfp--blue {
-  background: #3b82f6;
+  background: #4da2ff;
 }
 .ski-key-pfp--green-circle:hover circle,
 .ski-detail-header--keyed:hover .ski-key-pfp--green-circle circle {

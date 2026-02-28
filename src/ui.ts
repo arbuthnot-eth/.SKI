@@ -500,6 +500,7 @@ let _hydrating = false;
 // ─── Wallet Modal ────────────────────────────────────────────────────
 
 let modalOpen = false;
+let headerCyclerUnmount: (() => void) | null = null;
 const suinsCache: Record<string, string> = {}; // address -> name
 // Per-element generation counter — ensures async DOM updates from showKeyDetail don't
 // stomp each other when multiple detail elements (legend top + right pane) are live.
@@ -1392,10 +1393,19 @@ function renderModal(): void {
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
           <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col"></div>
+          ${ws.address ? `<div id="ski-modal-header-balance" class="ski-modal-header-balance ski-balance-cycler"></div>` : ''}
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
               <div class="ski-modal-header-left">
-                ${getInlineSkiSvg()}
+                <div class="ski-logo-btn-wrap">
+                  <button type="button" id="ski-logo-btn" class="ski-logo-btn" title="Scan to open sui.ski" aria-label="Show QR code for sui.ski">
+                    ${getInlineSkiSvg()}
+                  </button>
+                  <div id="ski-qr-popup" class="ski-qr-popup" hidden>
+                    <img src="./assets/sui-ski-qr.svg" alt="sui.ski QR code" class="ski-qr-img">
+                    <span class="ski-qr-url">sui.ski</span>
+                  </div>
+                </div>
                 <div class="ski-modal-titles">
                   <h2 class="ski-modal-title">.Sui Key-In</h2>
                   <p class="ski-modal-tagline">once,<br>everywhere</p>
@@ -1422,6 +1432,29 @@ function renderModal(): void {
   document.getElementById('ski-modal-close')?.addEventListener('click', closeModal);
   document.getElementById('ski-modal-overlay')?.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).id === 'ski-modal-overlay') closeModal();
+  });
+
+  // Mount balance cycler on the header column (modular instance)
+  headerCyclerUnmount?.();
+  const headerBalEl = document.getElementById('ski-modal-header-balance');
+  if (headerBalEl) headerCyclerUnmount = mountBalanceCycler(headerBalEl);
+
+  // SKI logo → QR popup toggle
+  const logoBtn = document.getElementById('ski-logo-btn');
+  const qrPopup = document.getElementById('ski-qr-popup');
+  logoBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!qrPopup) return;
+    const hidden = qrPopup.hasAttribute('hidden');
+    qrPopup.toggleAttribute('hidden', !hidden);
+  });
+  // Close QR popup on outside click
+  document.addEventListener('click', function closeQr(e) {
+    if (!qrPopup || qrPopup.hasAttribute('hidden')) { document.removeEventListener('click', closeQr); return; }
+    if (!qrPopup.contains(e.target as Node) && e.target !== logoBtn) {
+      qrPopup.setAttribute('hidden', '');
+      document.removeEventListener('click', closeQr);
+    }
   });
 
   // Populate the connected key slot at the top of the legend
@@ -1518,6 +1551,8 @@ function closeModal() {
   modalOpen = false;
   detailLocked = false;
   lockedWallet = null;
+  headerCyclerUnmount?.();
+  headerCyclerUnmount = null;
   els.widget?.classList.remove('ski-modal-active');
   if (els.modal) els.modal.innerHTML = '';
 }

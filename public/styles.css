@@ -1144,6 +1144,13 @@ body {
   .ski-modal-header-key-col .ski-detail-header--keyed {
     width: 100%;
   }
+  .ski-modal-header-balance {
+    border-right: none;
+    border-bottom: 1px solid rgba(160, 200, 240, 0.08);
+    width: 100%;
+    align-items: flex-start;
+    padding: 8px 14px;
+  }
   .ski-modal-header-brand {
     width: 100%;
     order: -1;
@@ -2427,4 +2434,63 @@ body {
 /* Detail card instance: push to right edge */
 #ski-detail-balance-cycler {
   margin-left: auto;
+}
+
+/* Modal header balance column (mountBalanceCycler instance) */
+.ski-modal-header-balance {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 10px 16px;
+  border-right: 1px solid rgba(160, 200, 240, 0.08);
+  flex-shrink: 0;
+  min-width: 80px;
+}
+
+/* SKI logo button + QR popup */
+.ski-logo-btn-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.ski-logo-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  border-radius: 6px;
+  transition: opacity 0.15s;
+}
+.ski-logo-btn:hover  { opacity: 0.8; }
+.ski-logo-btn:active { opacity: 0.55; }
+
+.ski-qr-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: #0d1117;
+  border: 1px solid rgba(160, 200, 240, 0.18);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.65);
+  animation: ski-modal-in 0.15s ease;
+}
+.ski-qr-popup[hidden] { display: none; }
+.ski-qr-img {
+  width: 148px;
+  height: 148px;
+  border-radius: 6px;
+  display: block;
+}
+.ski-qr-url {
+  font-size: 0.78rem;
+  color: #60a5fa;
+  letter-spacing: 0.03em;
 }

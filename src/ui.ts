@@ -16,6 +16,7 @@ import {
   connect,
   disconnect,
   signPersonalMessage,
+  signAndExecuteTransaction,
   autoReconnect,
   onWalletsChanged,
   type WalletState,
@@ -33,7 +34,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, type OwnedDomain } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, type OwnedDomain } from './suins.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -113,7 +114,7 @@ export interface AppState {
   stableUsd: number;
   suinsName: string;
   ikaWalletId: string;
-  menuOpen: boolean;
+  skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
 }
@@ -124,7 +125,7 @@ const app: AppState = {
   stableUsd: 0,
   suinsName: '',
   ikaWalletId: '',
-  menuOpen: false,
+  skiMenuOpen: false,
   copied: false,
   splashSponsor: false,
 };
@@ -141,7 +142,7 @@ const els = {
   widget: document.getElementById('wallet-widget'),
   wk: document.getElementById('wk-widget'),
   skiBtn: document.getElementById('wallet-ski-btn'),
-  menuRoot: document.getElementById('wallet-menu-root'),
+  skiMenu: document.getElementById('ski-menu-root'),
   modal: document.getElementById('ski-modal'),
   signStage: document.getElementById('sign-stage'),
 };
@@ -1346,6 +1347,7 @@ function syncBalanceDisplays() {
   });
   renderSkiBtn();
   renderModalLogo();
+  renderSkiMenu();
 }
 
 // Registry of externally mounted cycler elements
@@ -1534,7 +1536,6 @@ function renderModal(): void {
     <div class="ski-modal-overlay open" id="ski-modal-overlay">
       <div class="ski-modal" style="animation:ski-modal-in .2s ease">
         <div class="ski-modal-header">
-          <div id="ski-connected-key" class="ski-modal-connected-key ski-modal-header-key-col${isWaapHeader ? ' ski-modal-header-key-col--waap' : ''}"></div>
           <div class="ski-modal-header-brand">
             <div class="ski-modal-header-brand-top">
               <div class="ski-modal-header-left">
@@ -1545,7 +1546,7 @@ function renderModal(): void {
                     <button type="button" id="ski-logo-btn" class="ski-logo-btn" title="Scan to open sui.ski" aria-label="Show QR code for sui.ski">
                       ${getInlineSkiSvg()}
                     </button>
-                    <div id="ski-brand-pfp" class="ski-brand-pfp"></div>
+                    <div id="ski-brand-pfp" class="ski-brand-pfp">${ws.address ? keyPfpHtml(ws.address, app.suinsName || null) : ''}</div>
                     <div id="ski-brand-balance" class="ski-brand-balance"></div>
                     <div id="ski-qr-popup" class="ski-qr-popup" hidden>
                       <img src="${SUI_SKI_QR_URI}" alt="sui.ski QR code" class="ski-qr-img">
@@ -1560,6 +1561,16 @@ function renderModal(): void {
               </div>
               <button id="ski-modal-close">&times;</button>
             </div>
+            ${ws.address ? `<div class="ski-detail-addr-main ski-connected-key-addr-row">
+              <div class="ski-detail-key-column ski-detail-key-column--small">${keyPfpHtml(ws.address, app.suinsName || null)}</div>
+              <div class="ski-detail-key-text">
+                ${app.suinsName ? `<span class="ski-detail-suins-slot">${esc(app.suinsName)}</span>` : ''}
+                <div class="ski-detail-addr-row">
+                  <a href="https://suiscan.xyz/mainnet/account/${esc(ws.address)}" target="_blank" rel="noopener" class="ski-detail-addr-text" title="${esc(ws.address)}">${esc(truncAddr(ws.address))}</a>
+                  <button class="ski-copy-btn" id="ski-header-copy" title="Copy address">\u2398</button>
+                </div>
+              </div>
+            </div>` : ''}
           </div>
         </div>
         <div class="ski-modal-body">
@@ -1577,6 +1588,7 @@ function renderModal(): void {
   document.getElementById('ski-modal-overlay')?.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).id === 'ski-modal-overlay') closeModal();
   });
+  document.getElementById('ski-header-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
 
   // Mount balance cycler on the brand balance slot
   headerCyclerUnmount?.();
@@ -1607,13 +1619,8 @@ function renderModal(): void {
     }
   });
 
-  // Populate both detail slots immediately — no placeholder flash
+  // Populate the detail pane immediately — no placeholder flash
   const connectedWallet = connectedName ? getSuiWallets().find((w) => w.name === connectedName) : null;
-  const connectedKeyEl = document.getElementById('ski-connected-key');
-  if (connectedKeyEl && connectedWallet) {
-    showKeyDetail(connectedWallet, connectedKeyEl, getState().address);
-    syncBrandPfp(connectedKeyEl);
-  }
   const initialDetailEl = document.getElementById('ski-modal-detail');
   if (initialDetailEl && connectedWallet) showKeyDetail(connectedWallet, initialDetailEl, getState().address);
 
@@ -1952,7 +1959,7 @@ function _renderSkiBtnEl(el: HTMLElement) {
   }
 
   const hasPrimary = !!app.suinsName;
-  el.classList.toggle('menu-open', app.menuOpen);
+  el.classList.toggle('ski-menu-open', app.skiMenuOpen);
   const showDrop = app.splashSponsor || hasValidSkiSession(ws.address);
 
   if (hasPrimary) {
@@ -1985,9 +1992,9 @@ function renderSkiBtn() {
 }
 
 /**
- * Mount a live SKI wallet button onto any element.
+ * Mount a live SKI button onto any element.
  * The element gets the same styling and behaviour as the built-in SKI button:
- * it shows connection state, balance, and opens the wallet menu on click.
+ * it shows connection state, balance, and opens the SKI menu on click.
  *
  * @returns unmount function — call it to detach and clean up
  */
@@ -2004,14 +2011,8 @@ export function mountSkiButton(el: HTMLElement): () => void {
       return;
     }
     if (modalOpen) { closeModal(); return; }
-    if (app.menuOpen) { app.menuOpen = false; render(); openModal(); return; }
-    if ((e.target as HTMLElement).closest('.ski-btn-dot') && app.suinsName) {
-      balView = balView === 'usd' ? 'sui' : 'usd';
-      try { localStorage.setItem('ski:bal-pref', balView); } catch {}
-      syncBalanceDisplays();
-      return;
-    }
-    app.menuOpen = true;
+    if (app.skiMenuOpen) { app.skiMenuOpen = false; render(); openModal(); return; }
+    app.skiMenuOpen = true;
     render();
   }
 
@@ -2135,6 +2136,11 @@ function renderSignStage() {
         <button class="sign-btn" id="sign-msg-btn" type="button">Sign Message</button>
         ${resultHtml}
       </div>
+    </div>
+    <div class="sign-card">
+      <div class="sign-action-row">
+        <button class="sign-btn sign-btn--ns" id="register-splash-btn" type="button">Register splash.sui &middot; NS</button>
+      </div>
     </div>`;
 
   // ─── Splash button bindings ───────────────────────────────────────────
@@ -2223,43 +2229,74 @@ function renderSignStage() {
   };
 
   document.getElementById('sign-msg-btn')?.addEventListener('click', doSign);
+
+  // ─── Register splash.sui · NS ─────────────────────────────────────────
+  document.getElementById('register-splash-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('register-splash-btn') as HTMLButtonElement;
+    const ws = getState();
+    if (!ws.address) { showToast('Connect a wallet first'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Building tx\u2026'; }
+    try {
+      const tx = await buildRegisterSplashNsTx(ws.address);
+      if (btn) btn.textContent = 'Signing\u2026';
+      const { digest } = await signAndExecuteTransaction(tx);
+      showToast(`splash.sui registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Register splash.sui \u00b7 NS'; }
+    }
+  });
 }
 
-// ─── Render: Dropdown Menu ───────────────────────────────────────────
+// ─── Render: SKI Menu ────────────────────────────────────────────────
 
-function renderMenu() {
-  if (!els.menuRoot) return;
+function renderSkiMenu() {
+  if (!els.skiMenu) return;
   const ws = getState();
 
-  if (!ws.address || !app.menuOpen) {
-    els.menuRoot.innerHTML = '';
+  if (!ws.address || !app.skiMenuOpen) {
+    els.skiMenu.innerHTML = '';
     return;
   }
 
   const scanUrl = `https://suiscan.xyz/mainnet/account/${ws.address}`;
 
+  const suiText = fmtSui(app.sui);
+  const usdText = fmtUsd(app.usd);
+  const addrShort = truncAddr(ws.address);
+
+  const dotSvg = balView === 'usd'
+    ? `<svg class="wk-popout-bal-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg>`
+    : `<img src="${SUI_DROP_URI}" class="wk-popout-bal-icon" alt="SUI" aria-hidden="true">`;
+  const balValHtml = balView === 'usd'
+    ? `<span class="wk-popout-bal-val wk-popout-bal-val--usd">${esc((usdText || '--').replace(/^\$/, ''))}</span>`
+    : `<span class="wk-popout-bal-val wk-popout-bal-val--sui">${esc(suiText || '--')}</span>`;
+  const balToggleHtml = `<div class="wk-popout-balance">
+        <span class="wk-popout-bal-display">${dotSvg}${balValHtml}</span>
+        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI">
+          <input type="checkbox" id="wk-bal-toggle"${balView === 'usd' ? ' checked' : ''}>
+          <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
+        </label>
+      </div>`;
+
   // Blue-square state (SuiNS name) — big profile popout
   if (app.suinsName) {
     const bare = app.suinsName.replace(/\.sui$/, '');
-    const suiText = fmtSui(app.sui);
-    const usdText = fmtUsd(app.usd);
-    const addrShort = truncAddr(ws.address);
 
-    els.menuRoot.innerHTML = `
+    els.skiMenu.innerHTML = `
       <div class="wk-dropdown wk-dropdown--large open">
         <div class="wk-popout-actions">
-          <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
           <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+          <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
         </div>
         <div class="wk-popout-name-badge">
           <svg viewBox="0 0 100 100" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect x="6" y="6" width="88" height="88" rx="10" fill="#4da2ff" stroke="#ffffff" stroke-width="6"/></svg>
           <span class="wk-popout-name-text">${esc(bare)}<span class="wk-popout-name-tld">.sui</span></span>
           <a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" class="wk-popout-name-link" title="View .ski profile">\u2197</a>
         </div>
-        ${(suiText || usdText) ? `<div class="wk-popout-balance">
-          ${suiText ? `<span class="wk-popout-balance-sui">${esc(suiText)}</span><img src="${ASSETS.suiDrop}" class="wk-popout-balance-icon" alt="SUI">` : ''}
-          ${usdText ? `<span class="wk-popout-balance-usd">${esc(usdText)}</span>` : ''}
-        </div>` : ''}
+        ${balToggleHtml}
         <div class="wk-dd-address-row">
           <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
             <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
@@ -2270,12 +2307,13 @@ function renderMenu() {
   } else {
     // Black-diamond state — compact dropdown
     const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
-    els.menuRoot.innerHTML = `
+    els.skiMenu.innerHTML = `
       <div class="wk-dropdown open">
         <div class="wk-popout-actions">
-          <button class="wk-dd-item" id="wk-dd-switch">Switch Wallet</button>
           <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Disconnect</button>
+          <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
         </div>
+        ${balToggleHtml}
         <div class="wk-dd-address-row">
           <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
             <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
@@ -2287,17 +2325,23 @@ function renderMenu() {
 
   document.getElementById('wk-dd-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
   document.getElementById('wk-dd-switch')?.addEventListener('click', () => {
-    app.menuOpen = false;
+    app.skiMenuOpen = false;
     render();
     openModal();
   });
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', () => handleDisconnect(false));
+  document.getElementById('wk-bal-toggle')?.addEventListener('change', (e) => {
+    e.stopPropagation();
+    balView = (e.target as HTMLInputElement).checked ? 'usd' : 'sui';
+    try { localStorage.setItem('ski:bal-pref', balView); } catch {}
+    syncBalanceDisplays();
+  });
 }
 
 // ─── Disconnect handler ──────────────────────────────────────────────
 
 async function handleDisconnect(reopenModal = false) {
-  app.menuOpen = false;
+  app.skiMenuOpen = false;
   app.copied = false;
   closeModal();
   render();
@@ -2318,7 +2362,7 @@ function render() {
   renderWidget();
   renderSkiBtn();
   renderSignStage();
-  renderMenu();
+  renderSkiMenu();
 
   // Update favicon to match current wallet state
   const ws = getState();
@@ -2361,19 +2405,10 @@ function bindEvents() {
       openModal();
       return;
     }
-    // Modal/menu state takes priority over dot cycling
     if (modalOpen) { closeModal(); return; }
-    if (app.menuOpen) { app.menuOpen = false; render(); openModal(); return; }
+    if (app.skiMenuOpen) { app.skiMenuOpen = false; render(); openModal(); return; }
 
-    // Dot click (menu/modal not open) → cycle balance view only
-    if ((e.target as HTMLElement).closest('.ski-btn-dot') && app.suinsName) {
-      balView = balView === 'usd' ? 'sui' : 'usd';
-      try { localStorage.setItem('ski:bal-pref', balView); } catch {}
-      syncBalanceDisplays();
-      return;
-    }
-
-    app.menuOpen = true;
+    app.skiMenuOpen = true;
     render();
   });
 
@@ -2399,10 +2434,10 @@ function bindEvents() {
   });
 
   document.addEventListener('click', (e) => {
-    if (!app.menuOpen) return;
+    if (!app.skiMenuOpen) return;
     if (els.skiBtn?.contains(e.target as Node)) return;
-    if (els.menuRoot?.contains(e.target as Node)) return;
-    app.menuOpen = false;
+    if (els.skiMenu?.contains(e.target as Node)) return;
+    app.skiMenuOpen = false;
     render();
   });
 
@@ -2461,7 +2496,7 @@ export function initUI() {
       app.stableUsd = 0;
       app.suinsName = '';
       app.ikaWalletId = '';
-      app.menuOpen = false;
+      app.skiMenuOpen = false;
       app.copied = false;
       // Keep ski:suins-name and ski:session so data persists through disconnect
 

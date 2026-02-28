@@ -389,6 +389,21 @@ body {
   cursor: default;
 }
 
+.sign-btn--ns {
+  border-color: rgba(168, 85, 247, 0.5);
+  background: linear-gradient(135deg, rgba(88, 28, 135, 0.4), rgba(126, 34, 206, 0.3));
+  color: #d8b4fe;
+}
+.sign-btn--ns:hover {
+  background: linear-gradient(135deg, rgba(88, 28, 135, 0.6), rgba(126, 34, 206, 0.5));
+  border-color: rgba(192, 132, 252, 0.8);
+  color: #ede9fe;
+}
+
+.sign-card + .sign-card {
+  margin-top: 12px;
+}
+
 .sign-result {
   padding: 10px 12px;
   border-radius: 8px;
@@ -604,11 +619,11 @@ body {
   display: block;
 }
 
-#wallet-menu-root {
+#ski-menu-root {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  left: auto;
+  left: 0;
   z-index: 40;
 }
 
@@ -676,21 +691,20 @@ body {
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2) inset;
 }
 
-/* Switch Wallet — always amber (warning) style */
+/* SKI switch button — white style */
 #wk-dd-switch {
-  border-color: rgba(245, 158, 11, 0.45);
-  background: linear-gradient(135deg, rgba(92, 55, 0, 0.52), rgba(60, 35, 0, 0.5));
-  color: #fcd34d;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.18) inset;
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  font-weight: 600;
 }
 
 #wk-dd-switch:hover {
-  border-color: rgba(252, 211, 77, 0.78);
-  background: linear-gradient(135deg, rgba(133, 77, 0, 0.66), rgba(92, 55, 0, 0.62));
-  color: #fef3c7;
-  box-shadow:
-    0 10px 20px rgba(120, 53, 15, 0.28),
-    0 0 0 1px rgba(252, 211, 77, 0.22) inset;
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
 }
 
 .wk-dd-item.disconnect {
@@ -744,7 +758,7 @@ body {
 /* ─── Big Popout (blue-square / SuiNS profile card) ──────────────── */
 
 .wk-dropdown--large {
-  width: 296px;
+  width: 100%;
   padding: 12px;
 }
 
@@ -762,11 +776,7 @@ body {
 .wk-popout-name-text {
   font-size: 0.95rem;
   font-weight: 600;
-  color: #93c5fd;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #ffffff;
   white-space: nowrap;
 }
 
@@ -790,7 +800,8 @@ body {
 .wk-popout-balance {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.03);
@@ -798,6 +809,66 @@ body {
   margin-bottom: 8px;
 }
 
+.wk-popout-bal-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wk-popout-bal-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.wk-popout-bal-val {
+  font-size: 1.05rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wk-popout-bal-val--usd {
+  color: #86efac;
+}
+
+.wk-popout-bal-val--sui {
+  color: #93c5fd;
+}
+
+/* Balance toggle inside SKI menu — higher-specificity overrides base ski-layout-toggle */
+.wk-popout-bal-toggle {
+  flex-shrink: 0;
+}
+
+/* White thumb always */
+.wk-popout-balance .ski-layout-toggle .ski-layout-thumb {
+  background: white;
+}
+
+/* Checked = USD = light green track */
+.wk-popout-balance .ski-layout-toggle input:checked + .ski-layout-track {
+  background: rgba(74, 222, 128, 0.55);
+  border-color: rgba(74, 222, 128, 0.8);
+}
+
+.wk-popout-balance .ski-layout-toggle input:checked + .ski-layout-track .ski-layout-thumb {
+  left: 16px;
+  background: white;
+}
+
+/* Unchecked = SUI = blue track */
+.wk-popout-balance .ski-layout-toggle input:not(:checked) + .ski-layout-track {
+  background: rgba(77, 162, 255, 0.35);
+  border-color: rgba(77, 162, 255, 0.5);
+}
+
+.wk-popout-balance .ski-layout-toggle input:not(:checked) + .ski-layout-track .ski-layout-thumb {
+  left: 2px;
+  background: white;
+}
+
+/* Legacy static balance classes (kept for any external reference) */
 .wk-popout-balance-sui {
   font-size: 1.05rem;
   font-weight: 600;
@@ -924,7 +995,7 @@ body {
 }
 
 .wallet-ski-btn:hover,
-.wallet-ski-btn.menu-open {
+.wallet-ski-btn.ski-menu-open {
   transform: translateY(-1px);
   border-color: rgba(59, 130, 246, 0.86);
   box-shadow:
@@ -2228,17 +2299,15 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
   flex: 1;
 }
 
-/* Right column: SKI brand + Splash toggle stacked vertically */
+/* Brand column now spans the full header */
 .ski-modal-header-brand {
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   padding: 9px 14px 0 12px;
   gap: 0;
-}
-.ski-modal-header-key-col:empty ~ .ski-modal-header-brand {
-  flex: 1;
 }
 
 /* Top row inside brand column: logo + titles stacked above close button */

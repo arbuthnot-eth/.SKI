@@ -9,8 +9,15 @@
  */
 
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { SuiGraphQLClient } from '@mysten/sui/graphql';
+import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+
+const GRPC_URL   = 'https://fullnode.mainnet.sui.io:443';
+const GQL_URL    = 'https://graphql.mainnet.sui.io/graphql';
 
 // ─── Contract constants ────────────────────────────────────────────────
 
@@ -270,4 +277,101 @@ export function buildCreateLeafSubnameTx(
     targetAddress,
     'leaf',
   );
+}
+
+// ─── Register splash.sui via NS payment ──────────────────────────────
+//
+// Builds a PTB that:
+//   1. Looks up NS coins owned by the wallet (gRPC → GraphQL fallback)
+//   2. Adds Pyth price-oracle update for the NS/USD feed
+//   3. Registers "splash.sui" for 1 year, paying with NS
+//   4. Points the name at the wallet address
+//   5. Sets splash.sui as the default reverse-lookup name
+//   6. Transfers the SuinsRegistration NFT to the wallet
+//
+// Transport: tries SuiGrpcClient first; if that throws, retries the
+// coin lookup on SuiGraphQLClient and uses that client for the rest
+// of the PTB build so the two transports are never mixed mid-flow.
+
+type AnyTransportClient = SuiGrpcClient | SuiGraphQLClient;
+
+async function listNsCoins(
+  client: AnyTransportClient,
+  owner: string,
+): Promise<{ objectId: string }[]> {
+  const { objects } = await client.listCoins({
+    owner,
+    coinType: mainPackage.mainnet.coins.NS.type,
+  });
+  return objects;
+}
+
+export async function buildRegisterSplashNsTx(rawAddress: string): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
+
+  // Try gRPC first; on any error fall back to GraphQL for the whole flow.
+  let transport: AnyTransportClient = grpc;
+  let coins: { objectId: string }[];
+
+  try {
+    coins = await listNsCoins(grpc, walletAddress);
+  } catch {
+    transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    coins = await listNsCoins(transport, walletAddress);
+  }
+
+  if (!coins.length) throw new Error('No NS tokens in wallet — acquire NS first');
+
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  const suinsTx = new SuinsTransaction(suinsClient, tx);
+
+  // Add Pyth price-oracle calls to the tx and receive the price-info object IDs.
+  // getPriceInfoObject returns string[] — the on-chain PriceInfo object IDs that
+  // already exist on Sui (updated by the Pyth accumulator moves added above).
+  // Pass tx.gas as feeCoin so Pyth splits its update fee from the gas coin via
+  // splitCoins, avoiding the CoinWithBalance intent that WaaP cannot resolve.
+  const priceInfoIds = await suinsClient.getPriceInfoObject(
+    tx,
+    mainPackage.mainnet.coins.NS.feed,
+    tx.gas,
+  );
+  // priceInfoIds[0] is a string object ID; generateReceipt calls tx.object() on it.
+  const priceInfoObjectId = priceInfoIds[0];
+
+  // Register splash.sui for 1 year, paying with the first NS coin.
+  // maxAmount defaults to MAX_U64 inside handlePayment — no slippage guard needed
+  // for a simple one-shot registration, but you may pass a bigint here if desired.
+  const nft = suinsTx.register({
+    domain: 'splash.sui',
+    years: 1,
+    coinConfig: mainPackage.mainnet.coins.NS,
+    coin: coins[0].objectId,
+    priceInfoObjectId,
+  });
+
+  // Set the name's target address to the connected wallet.
+  suinsTx.setTargetAddress({ nft, address: walletAddress });
+
+  // Set splash.sui as the default reverse-lookup name for the wallet.
+  suinsTx.setDefault('splash.sui');
+
+  // Deliver the SuinsRegistration NFT to the connected wallet.
+  tx.transferObjects([nft], tx.pure.address(walletAddress));
+
+  // Build to BCS bytes using our own transport client.
+  //
+  // WaaP's resolveTransactionBytes internally calls e.build({client}) where the
+  // client it constructs comes from a bundled v1.x-compatible SuiClient whose
+  // CoreClient.resolveTransactionPlugin() returns a v1 resolver (function j6)
+  // that reads transactionData.gasConfig.price.  Our Transaction is @mysten/sui
+  // v2.x which uses gasData, not gasConfig — so gasConfig is undefined and the
+  // read of .price throws "Cannot read properties of undefined (reading 'price')".
+  //
+  // The fix: build to Uint8Array here with our own v2.x client.  WaaP's
+  // resolveTransactionBytes treats a Uint8Array as an immediate pass-through
+  // (its very first branch), so the broken build() path is never entered.
+  return tx.build({ client: transport as never });
 }

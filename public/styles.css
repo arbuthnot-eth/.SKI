@@ -56,6 +56,14 @@ body {
   justify-content: flex-end;
   padding: 16px;
 }
+@media (max-width: 600px) {
+  body { padding: 10px; }
+  .demo-stage { padding: 8px; }
+}
+@media (max-width: 400px) {
+  body { padding: 4px; }
+  .demo-stage { padding: 4px; }
+}
 
 /* ─── Splash Card ─────────────────────────────────────────────────── */
 
@@ -2503,14 +2511,14 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 
 
-/* WaaP social provider badge — 12px overlay on top-left of wallet icon */
+/* WaaP social provider badge — covers top-left quarter of wallet icon */
 .ski-detail-provider-badge {
   position: absolute;
   top: 0;
   left: 0;
-  width: 12px;
-  height: 12px;
-  border-radius: 2px;
+  width: 50%;
+  height: 50%;
+  border-radius: 2px 0 2px 0;
   overflow: hidden;
   pointer-events: none;
   forced-color-adjust: none;

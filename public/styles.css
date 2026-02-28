@@ -1076,6 +1076,8 @@ body {
   max-height: calc(100vh - 32px);
   overflow: hidden;
   overflow-y: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.75) transparent;
+  scrollbar-width: thin;
   position: absolute;
   top: 66px;
   left: 50%;
@@ -1086,6 +1088,11 @@ body {
   forced-color-adjust: none;
   -webkit-forced-color-adjust: none;
 }
+
+.ski-modal::-webkit-scrollbar { width: 6px; background: transparent; }
+.ski-modal::-webkit-scrollbar-track { background: transparent; }
+.ski-modal::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.75); border-radius: 3px; }
+.ski-modal::-webkit-scrollbar-thumb:hover { background: #ffffff; }
 
 @keyframes ski-modal-in {
   from { opacity: 0; transform: translateX(-50%) scale(0.95) translateY(10px); }
@@ -1149,6 +1156,7 @@ body {
   }
   .ski-modal-right-col {
     flex: 1 1 100%;
+    order: -1;
   }
   /* Stack header vertically so #ski-connected-key sits full-width above the legend */
   .ski-modal-header {
@@ -2587,7 +2595,7 @@ table.ski-legend-table col.ski-legend-col-icon-w  { width: 38px; }
 }
 .ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-sui,
 .ski-modal-header-key-col #ski-detail-balance-cycler .ski-header-bal-primary.ski-header-bal-usd {
-  font-size: 2rem;
+  font-size: 1rem;
   font-weight: 700;
   line-height: 1;
   color: #f1f5f9;

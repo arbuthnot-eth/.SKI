@@ -36,7 +36,7 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, type OwnedDomain } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainAvailable, type OwnedDomain } from './suins.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -2137,24 +2137,49 @@ let nsLabel = 'splash';
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
+let nsAvail: null | 'available' | 'taken' = null;
 
 async function fetchAndShowNsPrice(label: string) {
-  if (label.length < 3) { nsPriceUsd = null; nsPriceFetchFor = ''; _patchNsPrice(); return; }
+  if (label.length < 3) {
+    nsPriceUsd = null; nsPriceFetchFor = ''; nsAvail = null;
+    _patchNsPrice(); _patchNsStatus();
+    return;
+  }
   if (label === nsPriceFetchFor && nsPriceUsd != null) return;
   nsPriceFetchFor = label;
-  try {
-    const usd = await fetchDomainPriceUsd(label);
-    if (nsPriceFetchFor !== label) return; // stale
-    nsPriceUsd = usd;
-  } catch {
-    if (nsPriceFetchFor === label) nsPriceUsd = null;
-  }
+  nsAvail = null;
+  _patchNsStatus();
+  const [priceResult, availResult] = await Promise.allSettled([
+    fetchDomainPriceUsd(label),
+    checkDomainAvailable(label),
+  ]);
+  if (nsPriceFetchFor !== label) return; // stale
+  nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
+  nsAvail = availResult.status === 'fulfilled'
+    ? (availResult.value ? 'available' : 'taken')
+    : null;
   _patchNsPrice();
+  _patchNsStatus();
 }
 
 function _patchNsPrice() {
   const chip = document.getElementById('wk-ns-price-chip');
   if (chip) chip.innerHTML = _nsPriceHtml();
+}
+
+function _patchNsStatus() {
+  const icon = document.getElementById('wk-ns-status');
+  if (!icon) return;
+  if (nsLabel.length < 3 || nsAvail === null) {
+    icon.className = 'wk-ns-status wk-ns-status--diamond';
+    icon.textContent = '◆';
+  } else if (nsAvail === 'available') {
+    icon.className = 'wk-ns-status wk-ns-status--available';
+    icon.textContent = '●';
+  } else {
+    icon.className = 'wk-ns-status wk-ns-status--taken';
+    icon.textContent = '■';
+  }
 }
 
 function _nsPriceHtml(): string {
@@ -2388,9 +2413,16 @@ function renderSkiMenu() {
         </label>
       </div>`;
 
+  const _nsStatusClass = nsLabel.length < 3 || nsAvail === null
+    ? 'wk-ns-status--diamond'
+    : nsAvail === 'available' ? 'wk-ns-status--available' : 'wk-ns-status--taken';
+  const _nsStatusChar = nsLabel.length < 3 || nsAvail === null
+    ? '◆'
+    : nsAvail === 'available' ? '●' : '■';
   const nsRowHtml = `
       <div class="wk-dd-ns-section">
         <div class="wk-dd-ns-domain-row">
+          <span id="wk-ns-status" class="wk-ns-status ${_nsStatusClass}">${_nsStatusChar}</span>
           <input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="name">
           <span class="wk-ns-dot-sui">.sui</span>
           <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
@@ -2459,11 +2491,32 @@ function renderSkiMenu() {
   // ─── NS domain row bindings ─────────────────────────────────────────
   const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
   nsInput?.addEventListener('click', (e) => e.stopPropagation());
+  nsInput?.addEventListener('focus', (e) => {
+    e.stopPropagation();
+    const input = e.target as HTMLInputElement;
+    input.value = '';
+    nsLabel = '';
+    nsPriceUsd = null;
+    nsAvail = null;
+    nsPriceFetchFor = '';
+    if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
+    _patchNsPrice();
+    _patchNsStatus();
+  });
+  nsInput?.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('wk-dd-ns-register')?.click();
+    }
+  });
   nsInput?.addEventListener('input', (e) => {
     const val = (e.target as HTMLInputElement).value.trim().toLowerCase();
     nsLabel = val;
     nsPriceUsd = null;
+    nsAvail = null;
     _patchNsPrice();
+    _patchNsStatus();
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     if (val.length >= 3) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
   });

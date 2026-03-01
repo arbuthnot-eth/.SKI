@@ -299,11 +299,36 @@ async function listNsCoins(
   client: AnyTransportClient,
   owner: string,
 ): Promise<{ objectId: string }[]> {
-  const { objects } = await client.listCoins({
-    owner,
-    coinType: mainPackage.mainnet.coins.NS.type,
-  });
-  return objects;
+  const all: { objectId: string }[] = [];
+  let cursor: string | null | undefined;
+  do {
+    const result = await client.listCoins({
+      owner,
+      coinType: mainPackage.mainnet.coins.NS.type,
+      ...(cursor ? { cursor } : {}),
+    });
+    all.push(...result.objects);
+    if (!result.hasNextPage) break;
+    cursor = result.cursor;
+  } while (cursor);
+  return all;
+}
+
+/**
+ * Returns true if the label is available for .sui registration, false if taken.
+ * Falls back to true (assume available) on network error so the UI stays usable.
+ */
+export async function checkDomainAvailable(label: string): Promise<boolean> {
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  try {
+    const record = await suinsClient.getNameRecord(`${label}.sui`);
+    if (!record) return true;
+    if (record.expirationTimestampMs && record.expirationTimestampMs < Date.now()) return true;
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /** Returns the NS-discounted registration price in USD for a `.sui` label (1 year). */
@@ -355,9 +380,16 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   // priceInfoIds[0] is a string object ID; generateReceipt calls tx.object() on it.
   const priceInfoObjectId = priceInfoIds[0];
 
-  // Register domain for 1 year, paying with the first NS coin.
-  // maxAmount defaults to MAX_U64 inside handlePayment — no slippage guard needed
-  // for a simple one-shot registration, but you may pass a bigint here if desired.
+  // If NS is split across multiple coin objects, merge them all into the first
+  // one before registration — otherwise the single-coin balance may be too low.
+  if (coins.length > 1) {
+    tx.mergeCoins(
+      tx.object(coins[0].objectId),
+      coins.slice(1).map((c) => tx.object(c.objectId)),
+    );
+  }
+
+  // Register domain for 1 year, paying with the (merged) NS coin.
   const nft = suinsTx.register({
     domain,
     years: 1,

@@ -769,6 +769,29 @@ body {
   gap: 4px;
 }
 
+.wk-ns-status {
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  line-height: 1;
+  width: 12px;
+  text-align: center;
+  transition: color 0.2s;
+}
+
+.wk-ns-status--diamond {
+  color: #010101;
+  -webkit-text-stroke: 1.5px rgba(255, 255, 255, 0.85);
+  paint-order: stroke fill;
+}
+
+.wk-ns-status--available {
+  color: #22c55e;
+}
+
+.wk-ns-status--taken {
+  color: #60a5fa;
+}
+
 .wk-ns-label-input {
   flex: 1;
   min-width: 0;

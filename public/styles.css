@@ -729,6 +729,10 @@ body {
   align-items: stretch;
 }
 
+.wk-dd-address-row--with-dot {
+  align-items: center;
+}
+
 .wk-dd-address-row .wk-dd-address-banner {
   flex: 1;
   min-width: 0;

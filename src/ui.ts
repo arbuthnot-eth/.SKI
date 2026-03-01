@@ -2166,16 +2166,16 @@ function _patchNsPrice() {
   if (chip) chip.innerHTML = _nsPriceHtml();
 }
 
-function _nsStatusSvg(variant: SkiDotVariant): string {
+function _nsStatusSvg(variant: SkiDotVariant, prefix = 'nss'): string {
   if (!_skiSvgText) {
     const ch = variant === 'green-circle' ? '●' : variant === 'blue-square' ? '■' : '◆';
     const col = variant === 'green-circle' ? '#22c55e' : variant === 'blue-square' ? '#60a5fa' : '#fff';
     return `<span style="color:${col};font-size:0.6rem">${ch}</span>`;
   }
-  let s = _buildSkiSvg('nss-svg', 'wk-ns-status-svg', 'nss', variant, false);
+  let s = _buildSkiSvg(`${prefix}-svg`, 'wk-ns-status-svg', prefix, variant, false);
   // Hide SKI text and crop viewBox to just the dot area
   s = s
-    .replace('id="nss-text"', 'id="nss-text" style="display:none"')
+    .replace(`id="${prefix}-text"`, `id="${prefix}-text" style="display:none"`)
     .replace('viewBox="0 460 1214 387"', 'viewBox="20 490 350 340"');
   return s;
 }
@@ -2461,7 +2461,8 @@ function renderSkiMenu() {
         ${nsRowHtml}
       </div>`;
   } else {
-    // Black-diamond state — compact dropdown
+    // Black-diamond state — no primary SuiNS name
+    // Show ◆ + full copyable address, then NS registration row below
     const addrDisplay = app.copied ? 'Copied! \u2713' : ws.address;
     els.skiMenu.innerHTML = `
       <div class="wk-dropdown open">
@@ -2470,7 +2471,8 @@ function renderSkiMenu() {
           <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
         </div>
         ${balToggleHtml}
-        <div class="wk-dd-address-row">
+        <div class="wk-dd-address-row wk-dd-address-row--with-dot">
+          <span class="wk-ns-status" style="flex-shrink:0">${_nsStatusSvg('black-diamond', 'nss-addr')}</span>
           <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
             <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
           </button>

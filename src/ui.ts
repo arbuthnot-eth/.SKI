@@ -143,6 +143,7 @@ export function updateAppState(patch: Partial<AppState>) {
 const els = {
   widget: document.getElementById('wallet-widget'),
   wk: document.getElementById('wk-widget'),
+  skiDotBtn: document.getElementById('ski-dot-btn'),
   skiBtn: document.getElementById('wallet-ski-btn'),
   skiMenu: document.getElementById('ski-menu-root'),
   modal: document.getElementById('ski-modal'),
@@ -2076,11 +2077,22 @@ function _renderSkiBtnEl(el: HTMLElement) {
   el.innerHTML = getSkiBtnSvg('black-diamond') + drop;
 }
 
+function _renderDotBtn() {
+  const btn = els.skiDotBtn;
+  if (!btn) return;
+  const ws = getState();
+  if (!ws.address) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  const variant: SkiDotVariant = app.suinsName ? 'blue-square' : 'black-diamond';
+  btn.innerHTML = _shapeOnlySvg(variant, 31);
+}
+
 function renderSkiBtn() {
   if (els.skiBtn) {
     els.skiBtn.style.display = '';
     _renderSkiBtnEl(els.skiBtn);
   }
+  _renderDotBtn();
   externalSkiBtns.forEach((el) => {
     if (document.contains(el)) _renderSkiBtnEl(el);
     else externalSkiBtns.delete(el);
@@ -2138,6 +2150,7 @@ let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
 let nsAvail: null | 'available' | 'taken' | 'owned' = null;
+let ns5CharPriceUsd: number | null = null; // loaded once, reused for all 5+ char names
 
 async function fetchAndShowNsPrice(label: string) {
   if (label.length < 3) {
@@ -2149,12 +2162,41 @@ async function fetchAndShowNsPrice(label: string) {
   nsPriceFetchFor = label;
   nsAvail = null;
   _patchNsStatus();
+
+  if (label.length >= 5) {
+    if (ns5CharPriceUsd != null) {
+      // Already loaded — show instantly, only fetch availability
+      nsPriceUsd = ns5CharPriceUsd;
+      _patchNsPrice();
+      const ws = getState();
+      const status = await checkDomainStatus(label, ws.address || undefined);
+      if (nsPriceFetchFor !== label) return;
+      nsAvail = status;
+      _patchNsStatus();
+      return;
+    }
+    // First 5+ char lookup — fetch price once, then cache it
+    const ws = getState();
+    const [priceResult, statusResult] = await Promise.allSettled([
+      fetchDomainPriceUsd(label),
+      checkDomainStatus(label, ws.address || undefined),
+    ]);
+    if (nsPriceFetchFor !== label) return;
+    if (priceResult.status === 'fulfilled') ns5CharPriceUsd = priceResult.value;
+    nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
+    nsAvail = statusResult.status === 'fulfilled' ? statusResult.value : null;
+    _patchNsPrice();
+    _patchNsStatus();
+    return;
+  }
+
+  // 3–4 char names have variable pricing — fetch both in parallel
   const ws = getState();
   const [priceResult, statusResult] = await Promise.allSettled([
     fetchDomainPriceUsd(label),
     checkDomainStatus(label, ws.address || undefined),
   ]);
-  if (nsPriceFetchFor !== label) return; // stale
+  if (nsPriceFetchFor !== label) return;
   nsPriceUsd = priceResult.status === 'fulfilled' ? priceResult.value : null;
   nsAvail = statusResult.status === 'fulfilled' ? statusResult.value : null;
   _patchNsPrice();
@@ -2166,18 +2208,36 @@ function _patchNsPrice() {
   if (chip) chip.innerHTML = _nsPriceHtml();
 }
 
-function _nsStatusSvg(variant: SkiDotVariant, prefix = 'nss'): string {
-  if (!_skiSvgText) {
-    const ch = variant === 'green-circle' ? '●' : variant === 'blue-square' ? '■' : '◆';
-    const col = variant === 'green-circle' ? '#22c55e' : variant === 'blue-square' ? '#60a5fa' : '#fff';
-    return `<span style="color:${col};font-size:0.6rem">${ch}</span>`;
+// Standalone shape SVGs matching ski.svg dot variants exactly:
+// - stroke-width = 10% of size (matches ski.svg proportions: sw30 on 310/304 elements)
+// - blue square: #4da2ff, no rounded corners (ski.svg rect has no rx)
+// - green circle: #22c55e
+// - black diamond: white outer polygon + black inner polygon (replicates dot-outer/dot-inner layering)
+function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
+  const s = sizePx;
+  const sw = Math.max(1.5, s * 0.10);
+  const half = s / 2;
+  const pad = sw / 2 + 0.5;
+  const ns = `xmlns="http://www.w3.org/2000/svg"`;
+  const base = `width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" ${ns} style="display:block"`;
+  if (variant === 'green-circle') {
+    const r = half - pad;
+    return `<svg ${base}><circle cx="${half}" cy="${half}" r="${r}" fill="#22c55e" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  let s = _buildSkiSvg(`${prefix}-svg`, 'wk-ns-status-svg', prefix, variant, false);
-  // Hide SKI text and crop viewBox to just the dot area
-  s = s
-    .replace(`id="${prefix}-text"`, `id="${prefix}-text" style="display:none"`)
-    .replace('viewBox="0 460 1214 387"', 'viewBox="20 490 350 340"');
-  return s;
+  if (variant === 'blue-square') {
+    const inner = s - pad * 2;
+    return `<svg ${base}><rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" fill="#4da2ff" stroke="white" stroke-width="${sw}"/></svg>`;
+  }
+  // black-diamond: white outer + black inner, replicating ski.svg dot-outer/dot-inner
+  const outerPad = pad;
+  const innerPad = pad + sw * 1.1;
+  const outer = `${half},${outerPad} ${s - outerPad},${half} ${half},${s - outerPad} ${outerPad},${half}`;
+  const inner = `${half},${innerPad} ${s - innerPad},${half} ${half},${s - innerPad} ${innerPad},${half}`;
+  return `<svg ${base}><polygon points="${outer}" fill="white"/><polygon points="${inner}" fill="#010101"/></svg>`;
+}
+
+function _nsStatusSvg(variant: SkiDotVariant): string {
+  return _shapeOnlySvg(variant);
 }
 
 function _patchNsStatus() {
@@ -2472,7 +2532,7 @@ function renderSkiMenu() {
         </div>
         ${balToggleHtml}
         <div class="wk-dd-address-row wk-dd-address-row--with-dot">
-          <span class="wk-ns-status" style="flex-shrink:0">${_nsStatusSvg('black-diamond', 'nss-addr')}</span>
+          <span class="wk-ns-status" style="flex-shrink:0">${_nsStatusSvg('black-diamond')}</span>
           <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="Copy address">
             <span class="wk-dd-address-text">${esc(addrDisplay)}</span>
           </button>
@@ -2637,6 +2697,13 @@ function render() {
 // ─── Global event bindings ───────────────────────────────────────────
 
 function bindEvents() {
+  els.skiDotBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!getState().address) return;
+    app.skiMenuOpen = !app.skiMenuOpen;
+    render();
+  });
+
   els.skiBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
 
@@ -2675,6 +2742,7 @@ function bindEvents() {
 
   document.addEventListener('click', (e) => {
     if (!app.skiMenuOpen) return;
+    if (els.skiDotBtn?.contains(e.target as Node)) return;
     if (els.skiBtn?.contains(e.target as Node)) return;
     if (els.skiMenu?.contains(e.target as Node)) return;
     app.skiMenuOpen = false;

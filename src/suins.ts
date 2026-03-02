@@ -13,13 +13,6 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
-import {
-  DeepBookContract,
-  DeepBookConfig,
-  mainnetCoins as dbCoins,
-  mainnetPools as dbPools,
-  mainnetPackageIds as dbPkgIds,
-} from '@mysten/deepbook-v3';
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 
@@ -302,63 +295,25 @@ export function buildCreateLeafSubnameTx(
 
 type AnyTransportClient = SuiGrpcClient | SuiGraphQLClient;
 
-/** Fetch SUI/USD price by racing four exchanges — returns null only if all fail. */
-async function fetchSuiUsdPrice(): Promise<number | null> {
-  const valid = (v: unknown): number => {
-    const n = typeof v === 'string' ? parseFloat(v) : Number(v);
-    if (!Number.isFinite(n) || n <= 0) throw new Error('invalid');
-    return n;
-  };
-  try {
-    return await Promise.any([
-      fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT')
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then((d: { price: string }) => valid(d.price)),
-      fetch('https://api.coinbase.com/v2/prices/SUI-USD/spot')
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then((d: { data?: { amount?: string } }) => valid(d.data?.amount)),
-      fetch('https://api.bybit.com/v5/market/tickers?category=spot&symbol=SUIUSDT')
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then((d: { result?: { list?: Array<{ lastPrice: string }> } }) => valid(d.result?.list?.[0]?.lastPrice)),
-      fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd')
-        .then(r => r.ok ? r.json() : Promise.reject())
-        .then((d: { sui?: { usd?: number } }) => valid(d.sui?.usd)),
-    ]);
-  } catch {
-    return null;
-  }
-}
+
+type CoinRef = { objectId: string; version: string; digest: string };
 
 async function listCoinsOfType(
   client: AnyTransportClient,
   owner: string,
   coinType: string,
-): Promise<{ objectId: string }[]> {
-  const all: { objectId: string }[] = [];
+): Promise<CoinRef[]> {
+  const all: CoinRef[] = [];
   let cursor: string | null | undefined;
   do {
     const result = await client.listCoins({ owner, coinType, ...(cursor ? { cursor } : {}) });
-    all.push(...result.objects);
+    all.push(...result.objects.map((c) => ({ objectId: c.objectId, version: c.version, digest: c.digest })));
     if (!result.hasNextPage) break;
     cursor = result.cursor;
   } while (cursor);
   return all;
 }
 
-function listNsCoins(client: AnyTransportClient, owner: string) {
-  return listCoinsOfType(client, owner, mainPackage.mainnet.coins.NS.type);
-}
-
-// Create a zero-balance coin of any type without requiring user balance.
-function zeroCoin(tx: Transaction, type: string) {
-  return tx.moveCall({ target: '0x2::coin::zero', typeArguments: [type] });
-}
-
-function makeDeepBook(address: string): DeepBookContract {
-  return new DeepBookContract(
-    new DeepBookConfig({ network: 'mainnet', address, coins: dbCoins, pools: dbPools, packageIds: dbPkgIds }),
-  );
-}
 
 /**
  * Check whether a .sui label is available, taken, or owned by the given wallet.
@@ -425,131 +380,87 @@ export async function fetchDomainPriceUsd(label: string): Promise<number> {
     suinsClient.calculatePrice({ name: `${label}.sui`, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
   ]);
-  // TypeName stores addresses without 0x prefix
   const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   return (rawPrice * (1 - discountPct / 100)) / 1e6;
 }
 
-function isInsufficientBalance(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return (
-    lower.includes('insufficient balance') ||
-    lower.includes('insufficientcoinbalance') ||
-    lower.includes('insufficient coin balance') ||
-    lower.includes('insufficient_coin_balance')
-  );
-}
+// ─── Hardcoded shared object refs (initialSharedVersion verified on-chain) ──────
+// Pyth NS/USD PriceInfoObject — updated in-place by Pyth every ~400ms
+const NS_PYTH_PRICE_INFO_OBJECT = '0xc6352e1ea55d7b5acc3ed690cc3cdf8007978071d7bfd6a189445018cfb366e0';
+const NS_PYTH_PRICE_INFO_INITIAL_SHARED_VERSION = 417086474;
 
-export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'splash.sui', suiPrice?: number, setAsDefault = false): Promise<Uint8Array> {
+// ─── DeepBook v3 mainnet constants ────────────────────────────────────
+const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+const DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
+const DB_NS_USDC_POOL_INITIAL_SHARED_VERSION = 414947421;
+const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+
+export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'splash.sui', _suiPrice?: number, setAsDefault = false): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
-  const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
-  let transport: AnyTransportClient = grpc;
 
-  // ── 1. Fetch coins in parallel ────────────────────────────────────
-  // NS coins are always contributed silently regardless of swap method.
-  // USDC presence decides whether to try USDC path before falling back to SUI.
-  let nsCoins: { objectId: string }[] = [];
-  let usdcCoins: { objectId: string }[] = [];
-  try {
-    [nsCoins, usdcCoins] = await Promise.all([
-      listNsCoins(grpc, walletAddress),
-      listCoinsOfType(grpc, walletAddress, mainPackage.mainnet.coins.USDC.type),
-    ]);
-  } catch {
-    transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-    [nsCoins, usdcCoins] = await Promise.all([
-      listNsCoins(transport, walletAddress),
-      listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.USDC.type),
-    ]);
-  }
-
+  // Use GraphQL directly — skip gRPC trial which adds a full extra round-trip on failure.
+  // All three fetches run in parallel: USDC coins + price + discount map.
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
-  // ── 2. Pre-fetch price data shared across both swap paths ─────────
-  const [rawPrice, discountMap, extraRecord, fetchedSuiPrice] = await Promise.all([
+  const [usdcCoins, rawPrice, discountMap] = await Promise.all([
+    listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.USDC.type),
     suinsClient.calculatePrice({ name: domain, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
-    suinsClient.getNameRecord('extra.sui'),
-    (suiPrice && suiPrice > 0) ? Promise.resolve(suiPrice) : fetchSuiUsdPrice(),
   ]);
-  const resolvedSuiPrice = fetchedSuiPrice;
-  if (!resolvedSuiPrice) throw new Error('Unable to fetch SUI/USD price from any source');
+
+  if (usdcCoins.length === 0) throw new Error('No USDC balance — add USDC to your wallet to register.');
+
   const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
-  const extraAddress = extraRecord?.targetAddress
-    ? normalizeSuiAddress(extraRecord.targetAddress)
-    : walletAddress;
+  // 7¢ buffer + round up to nearest cent
+  const usdcMicro = BigInt(Math.ceil((discountedUsd + 0.07) * 100) * 10000);
 
-  // ── 3. Swap PTB builder (USDC or SUI → NS) ───────────────────────
-  //
-  // Route: USDC first, SUI fallback.
-  // Any existing NS coins are silently merged into the swap result so
-  // they contribute to the payment without requiring an exact balance check.
-  // Leftover NS after registration is swapped back to USDC and routed to extra.sui.
-  const buildSwapTx = async (method: 'USDC' | 'SUI'): Promise<Uint8Array> => {
-    const tx = new Transaction();
-    tx.setSender(walletAddress);
-    const suinsTx = new SuinsTransaction(suinsClient, tx);
-    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
-    );
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
 
-    const poolKey = method === 'USDC' ? 'NS_USDC' : 'NS_SUI';
-    // SUI amount needed = registration_price_usd / sui_usd_price  (NS price cancels out).
-    // Add 5% buffer for DeepBook pool slippage and minor oracle price lag.
-    // USDC path: flat 10¢ buffer (stablecoin, effectively no slippage).
-    const suiUsd = resolvedSuiPrice;
-    const swapAmount = method === 'SUI'
-      ? Math.round((discountedUsd / suiUsd) * 1.05 * 1000) / 1000
-      : discountedUsd + 0.10;
+  // All shared objects hardcoded — tx.build() won't need to resolve them via RPC.
+  // Pyth PriceInfoObject: mutable:false — SuiNS only reads (&PriceInfoObject), never updates.
+  const priceInfoObjectId = tx.sharedObjectRef({
+    objectId: NS_PYTH_PRICE_INFO_OBJECT,
+    initialSharedVersion: NS_PYTH_PRICE_INFO_INITIAL_SHARED_VERSION,
+    mutable: false,
+  });
+  const dbPool = tx.sharedObjectRef({
+    objectId: DB_NS_USDC_POOL,
+    initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
+    mutable: true,
+  });
 
-    const db = makeDeepBook(walletAddress);
-    const zeroDEEP = zeroCoin(tx, dbCoins.DEEP.type);
-    const [nsCoinResult, swapRemainder, deepRemainder] = db.swapExactQuoteForBase({
-      poolKey,
-      amount: swapAmount,
-      deepAmount: 0,
-      deepCoin: zeroDEEP,
-      minOut: 0,
-    })(tx);
-
-    // Return swap remainders immediately — quote change and DEEP dust.
-    tx.transferObjects([swapRemainder, deepRemainder], tx.pure.address(walletAddress));
-
-    // Silently fold any existing NS coins into the swapped NS.
-    // This reduces the net cost of future swaps without any extra logic.
-    if (nsCoins.length > 0) {
-      tx.mergeCoins(nsCoinResult, nsCoins.map((c) => tx.object(c.objectId)));
-    }
-
-    const nft = suinsTx.register({
-      domain, years: 1,
-      coinConfig: mainPackage.mainnet.coins.NS,
-      coin: nsCoinResult,
-      priceInfoObjectId,
-    });
-    suinsTx.setTargetAddress({ nft, address: walletAddress });
-    if (setAsDefault) suinsTx.setDefault(domain);
-    tx.transferObjects([nft], tx.pure.address(walletAddress));
-
-    // Return any remaining NS directly to extra.sui — no reverse swap.
-    // A reverse swap (NS→USDC) would require USDC in the wallet for DeepBook
-    // pool accounting, causing spurious "insufficient USDC" failures.
-    tx.transferObjects([nsCoinResult], tx.pure.address(extraAddress));
-
-    return tx.build({ client: transport as never });
-  };
-
-  // ── 4. SUI first, USDC fallback ───────────────────────────────────
-  try {
-    return await buildSwapTx('SUI');
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!isInsufficientBalance(msg)) throw e;
-    // SUI insufficient — fall back to USDC
+  // Use objectRef (id+version+digest) for user coins — skips per-coin RPC lookup in tx.build().
+  const usdcCoin = tx.objectRef(usdcCoins[0]);
+  if (usdcCoins.length > 1) {
+    tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map((c) => tx.objectRef(c)));
   }
+  const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(usdcMicro)]);
 
-  return buildSwapTx('USDC');
+  // Swap USDC → NS via DeepBook
+  const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+  const [nsCoin, usdcSwapChange, deepChange] = tx.moveCall({
+    target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+    typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+    arguments: [dbPool, usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
+  });
+
+  // Register domain with NS discount
+  const suinsTx = new SuinsTransaction(suinsClient, tx);
+  const nft = suinsTx.register({ domain, years: 1, coinConfig: mainPackage.mainnet.coins.NS, coin: nsCoin, priceInfoObjectId });
+  suinsTx.setTargetAddress({ nft, address: walletAddress });
+  if (setAsDefault) suinsTx.setDefault(domain);
+  tx.transferObjects([nft], tx.pure.address(walletAddress));
+
+  // Burn NS dust — prevents "+NS" in wallet confirmation
+  tx.transferObjects([nsCoin], tx.pure.address('0x0'));
+
+  // Return USDC change
+  tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
+
+  return tx.build({ client: transport as never });
 }

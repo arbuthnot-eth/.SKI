@@ -371,8 +371,24 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
   };
 
   const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
+
+  // Wallets like Phantom check for serialize()/toJSON() on the transaction and
+  // throw if not found. If we have pre-built bytes (Uint8Array), augment the
+  // instance with those methods. The object remains instanceof Uint8Array so
+  // WaaP's internal short-circuit (which checks instanceof first) still fires.
+  let txArg: unknown = transaction;
+  if (transaction instanceof Uint8Array) {
+    let b64 = '';
+    for (let i = 0; i < transaction.length; i++) b64 += String.fromCharCode(transaction[i]);
+    b64 = btoa(b64);
+    const aug = transaction as Uint8Array & { serialize?: () => string; toJSON?: () => string };
+    aug.serialize = () => b64;
+    aug.toJSON = () => b64;
+    txArg = aug;
+  }
+
   return feature.signAndExecuteTransaction({
-    transaction,
+    transaction: txArg,
     account,
     chain,
     options: { showEffects: true },

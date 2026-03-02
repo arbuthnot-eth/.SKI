@@ -2424,8 +2424,6 @@ function _patchNsStatus() {
   if (!icon) return;
   const variant = _nsVariant();
   icon.innerHTML = _nsStatusSvg(variant);
-  icon.style.cursor = nsAvail === 'owned' ? 'pointer' : 'default';
-  icon.title = nsAvail === 'owned' ? 'Set as primary name' : '';
   const sec = document.getElementById('wk-dd-ns-section');
   // --available: confirmed available OR pending but likely available (valid > 3 chars)
   const looksAvailable = nsAvail === 'available' || (nsAvail === null && variant === 'green-circle');
@@ -2435,6 +2433,8 @@ function _patchNsStatus() {
   sec?.classList.toggle('wk-dd-ns-section--owned',        nsAvail === 'owned');
   sec?.classList.toggle('wk-dd-ns-section--taken',        nsAvail === 'taken');
   sec?.classList.toggle('wk-dd-ns-section--self-target',  isSelfTarget);
+  icon.style.cursor = isSelfTarget ? 'pointer' : 'default';
+  icon.title = isSelfTarget ? `Set ${nsLabel.trim()}.sui as primary name` : '';
   const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
   if (btn) {
     btn.disabled = variant === 'black-diamond';
@@ -2814,9 +2814,10 @@ function renderSkiMenu() {
 
   document.getElementById('wk-ns-status')?.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (nsAvail !== 'owned') return;
     const ws2 = getState();
-    if (!ws2.address) return;
+    if (!ws2.address || !nsTargetAddress) return;
+    const isSelfTarget = nsTargetAddress.toLowerCase() === ws2.address.toLowerCase();
+    if (!isSelfTarget) return;
     const label = nsLabel.trim();
     if (!label) return;
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
@@ -2824,7 +2825,15 @@ function renderSkiMenu() {
     if (icon) icon.style.opacity = '0.4';
     try {
       const tx = await buildSetDefaultNsTx(ws2.address, domain);
+      if (icon) icon.style.opacity = '0.1';
       await signAndExecuteTransaction(tx);
+      app.suinsName = domain;
+      suinsCache[ws2.address] = domain;
+      try { localStorage.setItem(`ski:suins:${ws2.address}`, domain); } catch {}
+      updateSkiDot('blue-square', domain);
+      renderSkiBtn();
+      renderSkiMenu();
+      updateFavicon('blue-square');
       showToast(`${domain} set as primary \u2713`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';

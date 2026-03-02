@@ -171,10 +171,11 @@ export async function connect(wallet: Wallet): Promise<WalletAccount> {
       walletIcon: wallet.icon || '',
     });
 
-    // Persist for auto-reconnect
+    // Persist for auto-reconnect and instant preload
     try {
       localStorage.setItem('ski:last-wallet', wallet.name);
       localStorage.setItem('ski:last-address', account.address);
+      if (wallet.icon) localStorage.setItem(`ski:wallet-icon:${wallet.name}`, wallet.icon);
     } catch { /* storage unavailable */ }
 
     return account;
@@ -435,6 +436,7 @@ export function activateAccount(wallet: Wallet, account: WalletAccount): void {
   try {
     localStorage.setItem('ski:last-wallet', wallet.name);
     localStorage.setItem('ski:last-address', account.address);
+    if (wallet.icon) localStorage.setItem(`ski:wallet-icon:${wallet.name}`, wallet.icon);
   } catch {}
 }
 
@@ -454,6 +456,27 @@ export async function reconnectWallet(): Promise<void> {
 
   // No silent flag → wallet shows its UI (unlock screen / account picker)
   await connectFeature.connect();
+}
+
+// ─── Preload from storage (instant UI before autoReconnect) ──────────
+
+/**
+ * Synchronously pre-populate wallet state from localStorage so the first
+ * render can show the connected UI without waiting for autoReconnect().
+ * Does NOT notify subscribers — this is a silent pre-hydration only.
+ * autoReconnect() will overwrite with the real wallet object when ready.
+ */
+export function preloadStoredWallet(): { address: string; walletName: string } | null {
+  try {
+    const walletName = localStorage.getItem('ski:last-wallet') || '';
+    const address = localStorage.getItem('ski:last-address') || '';
+    if (!walletName || !address) return null;
+    const walletIcon = localStorage.getItem(`ski:wallet-icon:${walletName}`) || '';
+    currentState = { ...currentState, status: 'connecting', address, walletName, walletIcon };
+    return { address, walletName };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Auto-Reconnect ──────────────────────────────────────────────────

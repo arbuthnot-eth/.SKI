@@ -20,6 +20,7 @@ import {
   signPersonalMessage,
   signAndExecuteTransaction,
   autoReconnect,
+  preloadStoredWallet,
   onWalletsChanged,
   type WalletState,
 } from './wallet.js';
@@ -114,6 +115,7 @@ export interface AppState {
   sui: number;
   usd: number | null;
   stableUsd: number;
+  nsBalance: number;
   suinsName: string;
   ikaWalletId: string;
   skiMenuOpen: boolean;
@@ -125,9 +127,10 @@ const app: AppState = {
   sui: 0,
   usd: null,
   stableUsd: 0,
+  nsBalance: 0,
   suinsName: '',
   ikaWalletId: '',
-  skiMenuOpen: false,
+  skiMenuOpen: (() => { try { return localStorage.getItem('ski:menu-open') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
 };
@@ -230,6 +233,50 @@ export function showToast(msg: string, isHtml = false) {
   const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
   setTimeout(remove, 3800);
   toast.addEventListener('click', remove);
+}
+
+function showCopyableToast(display: string, fullText: string, durationMs = 8000) {
+  const text = display.trim();
+  if (!text) return;
+  let root = document.getElementById('app-toast-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'app-toast-root';
+    root.className = 'app-toast-root';
+    document.body.appendChild(root);
+  }
+  const toast = document.createElement('div');
+  const id = 'app-toast-' + ++toastSeq;
+  toast.className = 'app-toast app-toast--copyable';
+  toast.id = id;
+  toast.setAttribute('role', 'status');
+
+  const msgEl = document.createElement('div');
+  msgEl.className = 'app-toast-copy-msg';
+  msgEl.textContent = text;
+  toast.appendChild(msgEl);
+
+  const hint = document.createElement('div');
+  hint.className = 'app-toast-copy-hint';
+  hint.textContent = 'click to copy error';
+  toast.appendChild(hint);
+
+  root.appendChild(toast);
+  requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
+
+  let copied = false;
+  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
+  const timer = setTimeout(remove, durationMs);
+
+  toast.addEventListener('click', () => {
+    if (copied) { remove(); return; }
+    copied = true;
+    clearTimeout(timer);
+    navigator.clipboard.writeText(fullText).catch(() => {});
+    hint.textContent = '\u2713 Copied';
+    hint.style.color = '#4ade80';
+    setTimeout(remove, 1400);
+  });
 }
 
 const BACKPACK_CHROME_URL  = 'https://chromewebstore.google.com/detail/backpack/aflkmfhebedbjioipglgcbcmnbpgliof';
@@ -1831,6 +1878,7 @@ async function selectWallet(wallet: Wallet) {
 
 const GRAPHQL_URL = 'https://graphql.mainnet.sui.io/graphql';
 const USDC_TYPE   = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+const NS_TYPE     = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
 
 function normalizeSuiAddress(addr: string): string {
   let hex = addr.startsWith('0x') ? addr.slice(2) : addr;
@@ -1921,9 +1969,10 @@ export async function refreshPortfolio(force = false) {
 
   try {
     // gRPC for balances + SUI price in parallel
-    const [suiResult, usdcResult, suinsName, suiPrice] = await Promise.all([
+    const [suiResult, usdcResult, nsResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.getBalance({ owner: fetchedFor }).catch(() => null),
       grpcClient.core.getBalance({ owner: fetchedFor, coinType: USDC_TYPE }).catch(() => null),
+      grpcClient.core.getBalance({ owner: fetchedFor, coinType: NS_TYPE }).catch(() => null),
       lookupSuiNS(fetchedFor),
       fetchSuiPrice(),
     ]);
@@ -1937,12 +1986,29 @@ export async function refreshPortfolio(force = false) {
     const usdcRaw = Number(usdcResult?.balance?.balance ?? 0);
     app.stableUsd = Number.isFinite(usdcRaw) ? usdcRaw / 1e6 : 0;
 
-    app.usd = suiPrice != null ? app.sui * suiPrice : null;
+    // NS balance stored in raw smallest units (9 decimals)
+    const nsRaw = Number(nsResult?.balance?.balance ?? 0);
+    app.nsBalance = Number.isFinite(nsRaw) ? nsRaw / 1e9 : 0;
+
+    // Total USD = SUI value + USDC balance
+    const suiUsd = suiPrice != null ? app.sui * suiPrice : null;
+    app.usd = suiUsd != null ? suiUsd + app.stableUsd : (app.stableUsd > 0 ? app.stableUsd : null);
 
     if (suinsName) {
       app.suinsName = suinsName;
       try { localStorage.setItem(`ski:suins:${fetchedFor}`, suinsName); } catch {}
     }
+
+    // Cache balances for instant display on next page load
+    try {
+      localStorage.setItem(`ski:balances:${fetchedFor}`, JSON.stringify({
+        sui: app.sui,
+        stableUsd: app.stableUsd,
+        nsBalance: app.nsBalance,
+        usd: app.usd,
+        t: Date.now(),
+      }));
+    } catch {}
   } catch { /* keep existing */ }
   finally {
     portfolioInFlight = false;
@@ -2119,8 +2185,9 @@ export function mountSkiButton(el: HTMLElement): () => void {
       return;
     }
     if (modalOpen) { closeModal(); return; }
-    if (app.skiMenuOpen) { app.skiMenuOpen = false; render(); openModal(); return; }
+    if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:menu-open', '0'); } catch {} render(); openModal(); return; }
     app.skiMenuOpen = true;
+    try { localStorage.setItem('ski:menu-open', '1'); } catch {}
     render();
   }
 
@@ -2145,11 +2212,12 @@ export function mountSkiButton(el: HTMLElement): () => void {
 
 // ─── NS registration row (SKI menu) ─────────────────────────────────
 
-let nsLabel = 'splash';
+let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || 'splash'; } catch { return 'splash'; } })();
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
 let nsAvail: null | 'available' | 'taken' | 'owned' = null;
+let nsLastDigest = ''; // digest from last successful registration; shown in route area
 let ns5CharPriceUsd: number | null = null; // loaded once, reused for all 5+ char names
 
 async function fetchAndShowNsPrice(label: string) {
@@ -2206,6 +2274,52 @@ async function fetchAndShowNsPrice(label: string) {
 function _patchNsPrice() {
   const chip = document.getElementById('wk-ns-price-chip');
   if (chip) chip.innerHTML = _nsPriceHtml();
+  _patchNsRoute();
+}
+
+function _nsRouteHtml(): string {
+  // After a successful registration, show the tx digest instead of the route indicator
+  if (nsLastDigest) {
+    const short = nsLastDigest.slice(0, 8) + '…' + nsLastDigest.slice(-4);
+    return `<span class="wk-ns-route"><span class="wk-ns-digest" id="wk-ns-digest-copy" title="Copy transaction hash" style="cursor:pointer">${short}</span></span>`;
+  }
+  // Owned: prompt the user to click the blue square to set as primary
+  if (nsAvail === 'owned') {
+    return `<span class="wk-ns-route"><span class="wk-ns-route-owned-hint">click ◼ to set primary</span></span>`;
+  }
+  if (!nsPriceUsd) return '';
+  const suiUsdPrice = suiPriceCache?.price ?? 0;
+  // Mirror buildRegisterSplashNsTx cascade: SUI first, USDC fallback.
+  const suiOk  = suiUsdPrice > 0 && app.sui * suiUsdPrice >= nsPriceUsd * 1.2;
+  const usdcOk = app.stableUsd >= nsPriceUsd * 1.05;
+
+  const active: 'SUI' | 'USDC' | null = suiOk ? 'SUI' : usdcOk ? 'USDC' : null;
+
+  const step = (label: string, which: 'SUI' | 'USDC') => {
+    const cls = active === which ? ' wk-ns-route-step--on' : '';
+    return `<span class="wk-ns-route-step${cls}">${label}</span>`;
+  };
+
+  // +NS hint shown when user has NS coins that will be silently folded in
+  const nsHint = app.nsBalance > 0
+    ? `<span class="wk-ns-route-ns-hint">+NS</span><span class="wk-ns-route-arr"> · </span>`
+    : '';
+
+  const warn = active === null
+    ? `<span class="wk-ns-route-warn">insufficient balance</span>`
+    : '';
+
+  return `<span class="wk-ns-route">`
+    + nsHint
+    + step('SUI', 'SUI') + `<span class="wk-ns-route-arr">→</span>`
+    + step('USDC', 'USDC')
+    + warn
+    + `</span>`;
+}
+
+function _patchNsRoute() {
+  const el = document.getElementById('wk-ns-route');
+  if (el) el.innerHTML = _nsRouteHtml();
 }
 
 // Standalone shape SVGs matching ski.svg dot variants exactly:
@@ -2226,7 +2340,9 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
   }
   if (variant === 'blue-square') {
     const inner = s - pad * 2;
-    return `<svg ${base}><rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" fill="#4da2ff" stroke="white" stroke-width="${sw}"/></svg>`;
+    const rx = Math.max(2, Math.round(s * 0.16));
+    const tsw = Math.max(1, Math.round(s * 0.07));
+    return `<svg ${base}><rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" rx="${rx}" fill="#4da2ff" stroke="white" stroke-width="${tsw}"/></svg>`;
   }
   // black-diamond: white outer + black inner, replicating ski.svg dot-outer/dot-inner
   const outerPad = pad;
@@ -2249,6 +2365,7 @@ function _patchNsStatus() {
   icon.innerHTML = _nsStatusSvg(variant);
   icon.style.cursor = nsAvail === 'owned' ? 'pointer' : 'default';
   icon.title = nsAvail === 'owned' ? 'Set as primary name' : '';
+  _patchNsRoute();
 }
 
 function _nsPriceHtml(): string {
@@ -2494,6 +2611,7 @@ function renderSkiMenu() {
           <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn" type="button" title="Register via NS">\u2192</button>
         </div>
+        <div id="wk-ns-route" class="wk-ns-route-wrap">${_nsRouteHtml()}</div>
       </div>`;
 
   // Blue-square state (SuiNS name) — big profile popout
@@ -2545,6 +2663,7 @@ function renderSkiMenu() {
   document.getElementById('wk-dd-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyAddress(); });
   document.getElementById('wk-dd-switch')?.addEventListener('click', () => {
     app.skiMenuOpen = false;
+    try { localStorage.setItem('ski:menu-open', '0'); } catch {}
     render();
     openModal();
   });
@@ -2566,6 +2685,7 @@ function renderSkiMenu() {
     nsLabel = '';
     nsPriceUsd = null;
     nsAvail = null;
+    nsLastDigest = '';
     nsPriceFetchFor = '';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     _patchNsPrice();
@@ -2581,17 +2701,27 @@ function renderSkiMenu() {
   nsInput?.addEventListener('input', (e) => {
     const val = (e.target as HTMLInputElement).value.trim().toLowerCase();
     nsLabel = val;
+    try { if (val) localStorage.setItem('ski:ns-label', val); } catch {}
     nsPriceUsd = null;
     nsAvail = null;
+    nsLastDigest = '';
     _patchNsPrice();
     _patchNsStatus();
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     if (val.length >= 3) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
   });
 
+  document.getElementById('wk-ns-route')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const target = e.target as HTMLElement;
+    if (target.id === 'wk-ns-digest-copy' && nsLastDigest) {
+      navigator.clipboard.writeText(nsLastDigest).catch(() => {});
+      showCopyableToast(nsLastDigest, nsLastDigest, 4000);
+    }
+  });
+
   document.getElementById('wk-ns-status')?.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (nsAvail !== 'owned') return;
     const ws2 = getState();
     if (!ws2.address) return;
     const label = nsLabel.trim();
@@ -2611,6 +2741,72 @@ function renderSkiMenu() {
     }
   });
 
+  function parseNsError(raw: string): { display: string; full: string } {
+    const lower = raw.toLowerCase();
+
+    const isInsufficientBalance =
+      lower.includes('insufficientcoinbalance') ||
+      lower.includes('insufficient coin balance') ||
+      lower.includes('insufficient_coin_balance');
+
+    if (isInsufficientBalance) {
+      return {
+        display:
+          'Insufficient balance — not enough funds to complete the registration.\n\n' +
+          'You need SUI for gas fees plus ~$7.50 worth of one of:\n' +
+          '  \u2022 NS (direct payment)\n' +
+          '  \u2022 USDC (swapped via DeepBook)\n' +
+          '  \u2022 SUI (swapped via DeepBook)\n\n' +
+          'Add funds to your wallet and try again.',
+        full: raw,
+      };
+    }
+
+    if (lower.includes('transaction resolution failed')) {
+      const inner = raw.replace(/transaction resolution failed[:\s]*/i, '').trim();
+      if (inner.toLowerCase().includes('insufficient')) {
+        return {
+          display:
+            'Insufficient balance — the wallet could not resolve enough funds for the transaction.\n\n' +
+            'Make sure you have SUI for gas plus enough NS, USDC, or SUI (~$7.50) for the domain.\n\n' +
+            `Detail: ${inner}`,
+          full: raw,
+        };
+      }
+      return {
+        display:
+          `Transaction failed during preparation: ${inner}\n\n` +
+          'This may be a temporary network issue. Verify your wallet has sufficient SUI, USDC, or NS and try again.',
+        full: raw,
+      };
+    }
+
+    if (lower.includes('insufficientgas') || lower.includes('insufficient gas')) {
+      return {
+        display: 'Insufficient gas — not enough SUI to pay transaction fees. Add SUI to your wallet and try again.',
+        full: raw,
+      };
+    }
+
+    if (lower.includes('objectnotfound') || lower.includes('object not found')) {
+      return {
+        display:
+          'A required on-chain object was not found. The domain may already be registered, or there was a network issue. Refresh and try again.',
+        full: raw,
+      };
+    }
+
+    if (lower.includes('moveabort') || lower.includes('move_abort')) {
+      return {
+        display:
+          `The SuiNS contract rejected this registration.\n\nThe domain may already be registered or the payment amount was incorrect.\n\nDetail: ${raw}`,
+        full: raw,
+      };
+    }
+
+    return { display: raw, full: raw };
+  }
+
   document.getElementById('wk-dd-ns-register')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
@@ -2621,13 +2817,26 @@ function renderSkiMenu() {
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     try {
-      const tx = await buildRegisterSplashNsTx(ws2.address, domain);
+      const tx = await buildRegisterSplashNsTx(ws2.address, domain, suiPriceCache?.price, !app.suinsName);
       if (btn) btn.textContent = '\u270f';
       const { digest } = await signAndExecuteTransaction(tx);
+      // Update NS row: blue square status + show tx digest
+      nsAvail = 'owned';
+      nsLastDigest = digest ?? '';
+      _patchNsStatus();
+      _patchNsRoute();
+      // Immediately upgrade dot-btn and suins cache to blue square
+      app.suinsName = app.suinsName || domain;
+      suinsCache[ws2.address] = app.suinsName;
+      try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
+      updateSkiDot('blue-square', app.suinsName);
       showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed';
-      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      const raw = err instanceof Error ? err.message : String(err);
+      if (!raw.toLowerCase().includes('reject')) {
+        const { display, full } = parseNsError(raw);
+        showCopyableToast(display, display);
+      }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
     }
@@ -2641,6 +2850,7 @@ function renderSkiMenu() {
 
 async function handleDisconnect(reopenModal = false) {
   app.skiMenuOpen = false;
+  try { localStorage.setItem('ski:menu-open', '0'); } catch {}
   app.copied = false;
   closeModal();
   render();
@@ -2699,9 +2909,7 @@ function render() {
 function bindEvents() {
   els.skiDotBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!getState().address) return;
-    app.skiMenuOpen = !app.skiMenuOpen;
-    render();
+    window.open('https://sui.ski', '_blank', 'noopener');
   });
 
   els.skiBtn?.addEventListener('click', (e) => {
@@ -2713,9 +2921,10 @@ function bindEvents() {
       return;
     }
     if (modalOpen) { closeModal(); return; }
-    if (app.skiMenuOpen) { app.skiMenuOpen = false; render(); openModal(); return; }
+    if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:menu-open', '0'); } catch {} render(); openModal(); return; }
 
     app.skiMenuOpen = true;
+    try { localStorage.setItem('ski:menu-open', '1'); } catch {}
     render();
   });
 
@@ -2746,6 +2955,7 @@ function bindEvents() {
     if (els.skiBtn?.contains(e.target as Node)) return;
     if (els.skiMenu?.contains(e.target as Node)) return;
     app.skiMenuOpen = false;
+    try { localStorage.setItem('ski:menu-open', '0'); } catch {}
     render();
   });
 
@@ -2802,9 +3012,11 @@ export function initUI() {
       app.sui = 0;
       app.usd = null;
       app.stableUsd = 0;
+      app.nsBalance = 0;
       app.suinsName = '';
       app.ikaWalletId = '';
       app.skiMenuOpen = false;
+      try { localStorage.setItem('ski:menu-open', '0'); } catch {}
       app.copied = false;
       // Keep ski:suins-name and ski:session so data persists through disconnect
 
@@ -2995,17 +3207,38 @@ export function initUI() {
     if (modalOpen) renderModal();
   });
 
-  // Suppress disconnected flash if a wallet was previously connected
-  try {
-    if (localStorage.getItem('mysten-dapp-kit:selected-wallet-and-address')) {
-      _hydrating = true;
-    }
-  } catch {}
+  // Pre-populate wallet state from localStorage for instant first render.
+  // This lets the button show the connected state before autoReconnect() completes.
+  const preloaded = preloadStoredWallet();
+  if (preloaded) {
+    _hydrating = true;
+    try {
+      const cachedName = localStorage.getItem(`ski:suins:${preloaded.address}`);
+      if (cachedName) app.suinsName = cachedName;
+    } catch {}
+    try {
+      const raw = localStorage.getItem(`ski:balances:${preloaded.address}`);
+      if (raw) {
+        const b = JSON.parse(raw) as { sui?: number; stableUsd?: number; nsBalance?: number; usd?: number | null };
+        if (typeof b.sui === 'number') app.sui = b.sui;
+        if (typeof b.stableUsd === 'number') app.stableUsd = b.stableUsd;
+        if (typeof b.nsBalance === 'number') app.nsBalance = b.nsBalance;
+        if (b.usd !== undefined) app.usd = b.usd;
+      }
+    } catch {}
+  } else {
+    // Fallback: suppress disconnected flash for dapp-kit wallets
+    try {
+      if (localStorage.getItem('mysten-dapp-kit:selected-wallet-and-address')) {
+        _hydrating = true;
+      }
+    } catch {}
+  }
 
-  // Initial render
+  // Initial render — already shows connected state if preloaded
   render();
 
-  // Auto-reconnect to last wallet
+  // Auto-reconnect to last wallet (fills in real wallet object + icon)
   autoReconnect().catch(() => {});
   // Safety: clear hydrating after 1.5 s in case subscribe never fires
   setTimeout(() => { if (_hydrating) { _hydrating = false; render(); } }, 1500);

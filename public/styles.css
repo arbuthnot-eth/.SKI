@@ -875,6 +875,74 @@ body {
   cursor: default;
 }
 
+.wk-ns-route-wrap {
+  min-height: 14px;
+}
+
+.wk-ns-route {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 0.60rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  letter-spacing: 0.03em;
+}
+
+.wk-ns-route-step {
+  color: rgba(255, 255, 255, 0.20);
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.wk-ns-route-step--on {
+  color: #a78bfa;
+  font-weight: 700;
+}
+
+.wk-ns-route-arr {
+  color: rgba(255, 255, 255, 0.12);
+  font-size: 0.58rem;
+}
+
+.wk-ns-route-warn {
+  color: rgba(251, 146, 60, 0.7);
+  font-size: 0.58rem;
+  margin-left: 2px;
+}
+
+.wk-ns-route-ns-hint {
+  color: rgba(168, 85, 247, 0.45);
+  font-weight: 600;
+  font-size: 0.58rem;
+}
+
+.wk-ns-digest {
+  color: #4da2ff;
+  font-family: monospace;
+  font-size: 0.60rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  user-select: all;
+}
+
+.wk-ns-route-owned-hint {
+  color: #4da2ff;
+  font-size: 0.60rem;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.wk-ns-status[style*="pointer"] svg rect {
+  animation: ns-owned-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ns-owned-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ─── Big Popout (blue-square / SuiNS profile card) ──────────────── */
 
 .wk-dropdown--large {
@@ -1282,6 +1350,24 @@ body {
 
 .app-toast-retry:hover {
   background: rgba(96, 165, 250, 0.28);
+}
+
+.app-toast--copyable {
+  max-width: min(480px, calc(100vw - 28px));
+}
+
+.app-toast-copy-msg {
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.app-toast-copy-hint {
+  margin-top: 7px;
+  font-size: 0.65rem;
+  opacity: 0.45;
+  text-align: right;
+  letter-spacing: 0.02em;
+  transition: color 0.15s ease, opacity 0.15s ease;
 }
 
 /* ─── Wallet Connect Modal ─────────────────────────────────────────── */

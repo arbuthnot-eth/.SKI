@@ -1,0 +1,8 @@
+[package]
+name = "shade"
+edition = "2024.beta"
+
+[dependencies]
+
+[addresses]
+shade = "0x0"

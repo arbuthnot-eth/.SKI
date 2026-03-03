@@ -8,3 +8,7 @@ local-server.mjs
 
 .DS_Store
 *.log
+
+# Move build artifacts
+contracts/*/build/
+contracts/*/Move.lock

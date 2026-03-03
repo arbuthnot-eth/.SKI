@@ -717,3 +717,386 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     `Add USDC or SUI to your wallet to register.`,
   );
 }
+
+// ─── Shade — privacy-preserving grace-period escrow ──────────────────
+//
+// Uses a commitment-reveal pattern + Seal encryption so that on-chain
+// observers cannot see which domain is being targeted or when execution
+// will occur. Only the order owner can decrypt the sealed payload.
+//
+// On-chain, a ShadeOrder stores:
+//   - owner, deposit (Balance<SUI>), commitment (keccak256 hash), sealed_payload
+// Hidden until execution: domain, execute_after_ms, target_address, salt
+
+/** Shade package on mainnet (published by plankton.sui). */
+const SHADE_PACKAGE = '0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff';
+
+/**
+ * Seal key servers — free/open mainnet servers (no API key required).
+ *   Overclock open:    https://seal-mainnet-open.overclock.run
+ *   NodeInfra open:    https://open-seal-mainnet.nodeinfra.com (3 req/s limit)
+ *   Studio Mirai open: https://open.key-server.mainnet.seal.mirai.cloud
+ */
+const SEAL_KEY_SERVERS = [
+  { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
+  { objectId: '0x1afb3a57211ceff8f6781757821847e3ddae73f64e78ec8cd9349914ad985475', weight: 1 }, // NodeInfra
+  { objectId: '0x837c18dc88b73552c182ccd6e27336de062297c264d405da625c1c9f5a598a35', weight: 1 }, // Studio Mirai
+];
+
+/** Seal encryption threshold (2-of-3 key servers must agree). */
+const SEAL_THRESHOLD = 2;
+
+export interface ShadeOrderInfo {
+  objectId: string;
+  domain: string;
+  owner: string;
+  depositMist: bigint;
+  executeAfterMs: number;
+  targetAddress: string;
+  salt: string; // hex-encoded
+}
+
+// ─── Commitment helpers ──────────────────────────────────────────────
+
+/** Generate a random 32-byte salt as hex string. */
+function generateSalt(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Hex string → Uint8Array. */
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/** Uint8Array → hex string. */
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** BCS-encode a u64 as 8 little-endian bytes (matches Move's bcs::to_bytes). */
+function bcsU64(value: number | bigint): Uint8Array {
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  view.setBigUint64(0, BigInt(value), true); // little-endian
+  return new Uint8Array(buf);
+}
+
+/** BCS-encode a Sui address as 32 bytes (matches Move's bcs::to_bytes for address). */
+function bcsAddress(addr: string): Uint8Array {
+  return hexToBytes(normalizeSuiAddress(addr));
+}
+
+/**
+ * Build the commitment preimage matching the Move contract:
+ *   keccak256(domain_bytes || bcs(execute_after_ms) || bcs(target_address) || salt_bytes)
+ */
+async function buildCommitment(
+  domain: string,
+  executeAfterMs: number,
+  targetAddress: string,
+  saltHex: string,
+): Promise<Uint8Array> {
+  const domainBytes = new TextEncoder().encode(domain);
+  const msBytes = bcsU64(executeAfterMs);
+  const addrBytes = bcsAddress(targetAddress);
+  const saltBytes = hexToBytes(saltHex);
+
+  // Concatenate: domain || execute_after_ms || target_address || salt
+  const preimage = new Uint8Array(domainBytes.length + msBytes.length + addrBytes.length + saltBytes.length);
+  let offset = 0;
+  preimage.set(domainBytes, offset); offset += domainBytes.length;
+  preimage.set(msBytes, offset); offset += msBytes.length;
+  preimage.set(addrBytes, offset); offset += addrBytes.length;
+  preimage.set(saltBytes, offset);
+
+  // keccak256 — use SubtleCrypto SHA-256 as a standin until we wire keccak.
+  // The Move contract uses sui::hash::keccak256, so we need to match.
+  // We import keccak from @noble/hashes which @mysten/sui bundles.
+  const { keccak_256 } = await import('@noble/hashes/sha3');
+  return keccak_256(preimage);
+}
+
+// ─── Seal encrypt/decrypt ────────────────────────────────────────────
+
+/**
+ * Encrypt the shade order payload using Seal so only the owner can recover it.
+ * Returns the encrypted blob to store on-chain in ShadeOrder.sealed_payload.
+ */
+async function sealEncrypt(
+  orderIdBytes: Uint8Array,
+  payload: { domain: string; executeAfterMs: number; targetAddress: string; salt: string },
+): Promise<Uint8Array> {
+  const { SealClient } = await import('@mysten/seal');
+  const transport = new SuiGrpcClient({ network: 'mainnet', baseUrl: GRPC_URL });
+  const sealClient = new SealClient({
+    suiClient: transport as never,
+    serverConfigs: SEAL_KEY_SERVERS,
+    verifyKeyServers: false, // testnet servers may not be fully verified
+  });
+
+  const data = new TextEncoder().encode(JSON.stringify(payload));
+  const { encryptedObject } = await sealClient.encrypt({
+    threshold: SEAL_THRESHOLD,
+    packageId: SHADE_PACKAGE,
+    id: orderIdBytes,
+    data,
+  });
+  return encryptedObject;
+}
+
+// ─── PTB builders ────────────────────────────────────────────────────
+
+/**
+ * Build a PTB to create a new Shade order.
+ *
+ * 1. Calculates deposit: basePriceUsd / suiPrice * 1.20 * 1e9 MIST (20% buffer)
+ * 2. Builds commitment hash from (domain, graceEndMs, targetAddress, salt)
+ * 3. Encrypts payload via Seal
+ * 4. Calls shade::create(coin, commitment, sealed_payload)
+ *
+ * Returns { txBytes, orderInfo } — txBytes for signing, orderInfo for localStorage.
+ */
+export async function buildCreateShadeOrderTx(
+  rawAddress: string,
+  domain: string,
+  graceEndMs: number,
+  suiPrice: number,
+): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> }> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+
+  // Calculate deposit: domain base price in USD / SUI price * 1.20 buffer
+  const rawPrice = await suinsClient.calculatePrice({ name: `${domain}.sui`, years: 1 });
+  const basePriceUsd = rawPrice / 1e6;
+  const depositMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.20 * 1e9));
+
+  // Generate salt and build commitment
+  const salt = generateSalt();
+  const commitment = await buildCommitment(domain, graceEndMs, walletAddress, salt);
+
+  // Build the Seal-encrypted payload
+  // We use a placeholder order ID for encryption identity — the actual order ID
+  // is created on-chain. We'll use the commitment as a deterministic identity
+  // since it's unique per order.
+  const sealPayload = { domain, executeAfterMs: graceEndMs, targetAddress: walletAddress, salt };
+  let sealedPayload: Uint8Array;
+  try {
+    sealedPayload = await sealEncrypt(commitment, sealPayload);
+  } catch {
+    // If Seal encryption fails (e.g. key servers unreachable), store empty —
+    // the user must keep their localStorage intact for recovery.
+    sealedPayload = new Uint8Array(0);
+  }
+
+  // Build PTB
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  const [depositCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(depositMist)]);
+  tx.moveCall({
+    target: `${SHADE_PACKAGE}::shade::create`,
+    arguments: [
+      depositCoin,
+      tx.pure.vector('u8', Array.from(commitment)),
+      tx.pure.vector('u8', Array.from(sealedPayload)),
+    ],
+  });
+
+  const txBytes = await tx.build({ client: transport as never });
+
+  const orderInfo: Omit<ShadeOrderInfo, 'objectId'> = {
+    domain,
+    owner: walletAddress,
+    depositMist,
+    executeAfterMs: graceEndMs,
+    targetAddress: walletAddress,
+    salt,
+  };
+
+  return { txBytes, orderInfo };
+}
+
+/**
+ * Build a PTB to execute a Shade order (reveal + register).
+ *
+ * PTB composition:
+ *   shade::execute(order, domain, execute_after_ms, target, salt, clock) → Coin<SUI>
+ *   → suins::register(coin=releasedCoin) → nft
+ *   → setTargetAddress + setDefault + transferObjects
+ *   → transferObjects(releasedCoin change → owner)
+ */
+export async function buildExecuteShadeOrderTx(
+  rawAddress: string,
+  order: ShadeOrderInfo,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Step 1: Execute shade order → returns released Coin<SUI>
+  const domainBytes = Array.from(new TextEncoder().encode(order.domain));
+  const saltBytes = Array.from(hexToBytes(order.salt));
+  const [releasedCoin] = tx.moveCall({
+    target: `${SHADE_PACKAGE}::shade::execute`,
+    arguments: [
+      tx.object(order.objectId),
+      tx.pure.vector('u8', domainBytes),
+      tx.pure.u64(order.executeAfterMs),
+      tx.pure.address(normalizeSuiAddress(order.targetAddress)),
+      tx.pure.vector('u8', saltBytes),
+      tx.object.clock(),
+    ],
+  });
+
+  // Step 2: Get Pyth SUI/USD price info for SuiNS registration
+  const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+    tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
+  );
+
+  // Step 3: Register the domain with released SUI
+  const fullDomain = `${order.domain}.sui`;
+  const suinsTx = new SuinsTransaction(suinsClient, tx);
+  const nft = suinsTx.register({
+    domain: fullDomain,
+    years: 1,
+    coinConfig: mainPackage.mainnet.coins.SUI,
+    coin: releasedCoin,
+    priceInfoObjectId,
+  });
+
+  // Step 4: Point name at target + set default + transfer NFT
+  suinsTx.setTargetAddress({ nft, address: normalizeSuiAddress(order.targetAddress) });
+  suinsTx.setDefault(fullDomain);
+  tx.transferObjects([nft], tx.pure.address(normalizeSuiAddress(order.targetAddress)));
+
+  // Step 5: Merge remaining SUI back into gas (matches existing SUI registration pattern)
+  tx.mergeCoins(tx.gas, [releasedCoin]);
+
+  return tx.build({ client: transport as never });
+}
+
+/**
+ * Build a PTB to cancel a Shade order (owner-only refund).
+ */
+export async function buildCancelShadeOrderTx(
+  rawAddress: string,
+  orderObjectId: string,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  tx.moveCall({
+    target: `${SHADE_PACKAGE}::shade::cancel`,
+    arguments: [tx.object(orderObjectId)],
+  });
+  return tx.build({ client: transport as never });
+}
+
+/**
+ * Query a transaction digest to find the created ShadeOrder object ID.
+ * This is the reliable path — wallet `effects` shapes vary across providers.
+ */
+export async function findCreatedShadeOrderId(digest: string): Promise<string | null> {
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($digest: String!) {
+          transactionBlock(digest: $digest) {
+            effects {
+              objectChanges {
+                nodes {
+                  outputState { ... on MoveObject { address contents { type { repr } } } }
+                }
+              }
+            }
+          }
+        }`,
+        variables: { digest },
+      }),
+    });
+    const json = await res.json() as {
+      data?: { transactionBlock?: { effects?: { objectChanges?: { nodes?: Array<{
+        outputState?: { address?: string; contents?: { type?: { repr?: string } } };
+      }> } } } };
+    };
+    const nodes = json?.data?.transactionBlock?.effects?.objectChanges?.nodes ?? [];
+    for (const node of nodes) {
+      const typeRepr = node.outputState?.contents?.type?.repr ?? '';
+      if (typeRepr.includes('shade::ShadeOrder')) {
+        return node.outputState?.address ?? null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Shade order localStorage tracking ───────────────────────────────
+
+const SHADE_STORAGE_PREFIX = 'ski:shade-orders:';
+
+export function getShadeOrders(address: string): ShadeOrderInfo[] {
+  try {
+    const raw = localStorage.getItem(`${SHADE_STORAGE_PREFIX}${address}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+export function addShadeOrder(address: string, order: ShadeOrderInfo): void {
+  const orders = getShadeOrders(address);
+  // Avoid duplicates by objectId
+  if (orders.some(o => o.objectId === order.objectId)) return;
+  orders.push(order);
+  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders)); } catch {}
+}
+
+export function removeShadeOrder(address: string, objectId: string): void {
+  const orders = getShadeOrders(address).filter(o => o.objectId !== objectId);
+  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(orders)); } catch {}
+}
+
+/** Find a shade order for a specific domain owned by this address. */
+export function findShadeOrder(address: string, domain: string): ShadeOrderInfo | null {
+  return getShadeOrders(address).find(o => o.domain === domain) ?? null;
+}
+
+/**
+ * Validate shade orders against on-chain state — remove consumed/cancelled ones.
+ * Called lazily when the menu opens.
+ */
+export async function pruneShadeOrders(address: string): Promise<void> {
+  const orders = getShadeOrders(address);
+  if (orders.length === 0) return;
+
+  const validOrders: ShadeOrderInfo[] = [];
+  for (const order of orders) {
+    try {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($id: SuiAddress!) { object(address: $id) { address } }`,
+          variables: { id: order.objectId },
+        }),
+      });
+      const json = await res.json() as { data?: { object?: { address?: string } } };
+      if (json?.data?.object?.address) validOrders.push(order);
+    } catch {
+      validOrders.push(order); // keep on network error — prune next time
+    }
+  }
+  try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(validOrders)); } catch {}
+}

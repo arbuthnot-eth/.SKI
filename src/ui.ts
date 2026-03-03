@@ -19,6 +19,7 @@ import {
   activateAccount,
   signPersonalMessage,
   signAndExecuteTransaction,
+  signTransaction,
   reconnectWallet,
   autoReconnect,
   preloadStoredWallet,
@@ -38,7 +39,8 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, type OwnedDomain, type DomainStatusResult } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, findShadeOrder, addShadeOrder, removeShadeOrder, pruneShadeOrders, findCreatedShadeOrderId, executeSignedTx, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
+import { connectShadeExecutor, scheduleShadeExecution, disconnectShadeExecutor } from './client/shade.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -161,8 +163,8 @@ function esc(s: string): string {
 }
 
 function truncAddr(addr: string): string {
-  if (!addr || addr.length <= 20) return addr;
-  return addr.slice(0, 10) + '\u2026' + addr.slice(-8);
+  if (!addr || addr.length <= 14) return addr;
+  return addr.slice(0, 6) + '\u2026' + addr.slice(-4);
 }
 
 function fmtSui(n: number): string {
@@ -2339,6 +2341,8 @@ let nsNewTargetAddr = ''; // value in the target-address input
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
+let nsShadeOrder: ShadeOrderInfo | null = null; // active shade order for current domain
+let nsShadeOrdersPruned = false; // true once we've validated orders against on-chain state
 
 // ─── Wishlist (black-diamond names the user is watching) ─────────────
 let nsWishlist: string[] = (() => {
@@ -2629,6 +2633,19 @@ function _patchNsOwnedList() {
   const el = document.getElementById('wk-ns-owned-list');
   if (!el) return;
   el.innerHTML = _nsOwnedListHtml();
+  _attachOwnedGridWheel();
+}
+
+/** Attach horizontal wheel-scroll to the owned names grid. */
+function _attachOwnedGridWheel() {
+  const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+  if (!grid) return;
+  grid.addEventListener('wheel', (e) => {
+    if (grid.scrollWidth > grid.clientWidth) {
+      e.preventDefault();
+      grid.scrollLeft += e.deltaY || e.deltaX;
+    }
+  }, { passive: false });
 }
 
 /** Fetch owned SuiNS domains for the connected wallet (cached per address). */
@@ -2744,11 +2761,45 @@ function _patchNsStatus() {
   const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
   if (btn) {
     const isPurple = isOwned || isSelfTarget;
-    const disabled = variant === 'black-diamond' || variant === 'red-hexagon' || (isPurple && !nsSubnameParent);
-    btn.disabled = disabled;
-    if (variant === 'black-diamond') btn.title = 'Invalid SuiNS name';
-    else if (variant === 'red-hexagon') btn.title = `Grace period ends ${_graceEndDate()}`;
-    else if (isPurple && !nsSubnameParent) btn.title = 'Already registered';
+
+    // ── Shade: grace-period domains get special button states ──
+    if (nsAvail === 'grace') {
+      // Look up shade order for this domain
+      const addr = getState().address;
+      nsShadeOrder = addr ? findShadeOrder(addr, nsLabel.trim()) : null;
+      const graceExpired = nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
+
+      // Remove old shade classes
+      btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
+
+      if (!nsShadeOrder) {
+        // No order → amber pulsing crosshair — "Set up Shade"
+        btn.disabled = false;
+        btn.textContent = '\u2299'; // ⊙ crosshair
+        btn.title = `Shade ${nsLabel.trim()}.sui — lock funds for grace expiry`;
+        btn.classList.add('wk-shade-ready');
+      } else if (graceExpired) {
+        // Order exists + grace expired → green bright arrow — "Execute now"
+        btn.disabled = false;
+        btn.textContent = '\u2192'; // → arrow
+        btn.title = `Execute Shade — register ${nsLabel.trim()}.sui now`;
+        btn.classList.add('wk-shade-execute');
+      } else {
+        // Order exists + grace active → green check — "Shaded!"
+        btn.disabled = false;
+        btn.textContent = '\u2713'; // ✓ check
+        btn.title = `Shaded! Execute after ${_graceEndDate()}`;
+        btn.classList.add('wk-shade-active');
+      }
+    } else {
+      // Non-grace states — standard behavior
+      btn.classList.remove('wk-shade-ready', 'wk-shade-active', 'wk-shade-execute');
+      const disabled = variant === 'black-diamond' || (isPurple && !nsSubnameParent);
+      btn.disabled = disabled;
+      btn.textContent = '\u2192';
+      if (variant === 'black-diamond') btn.title = 'Invalid SuiNS name';
+      else if (isPurple && !nsSubnameParent) btn.title = 'Already registered';
+    }
   }
   _patchNsRoute();
 }
@@ -2779,7 +2830,20 @@ function _nsPriceHtml(): string {
   if (nsLabel.length < 3) return '';
   const variant = _nsVariant();
   if (variant === 'black-diamond') return ''; // invalid label — no spinner
-  if (nsAvail === 'grace') return `<span class="wk-ns-price-val wk-ns-grace-pill">${_graceCountdown()}</span>`;
+  if (nsAvail === 'grace') {
+    if (nsShadeOrder) {
+      // Shade order exists — show "Shaded! Xh Ym" or "Shade — ready!" if grace expired
+      const graceExpired = nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
+      if (graceExpired) return `<span class="wk-ns-price-val wk-shade-pill wk-shade-pill--ready">ready</span>`;
+      return `<span class="wk-ns-price-val wk-shade-pill">${_graceCountdown()}</span>`;
+    }
+    // No shade order — show estimated SUI cost to shade
+    if (nsPriceUsd != null && suiPriceCache) {
+      const sui = nsPriceUsd / suiPriceCache.price * 1.20;
+      return `<span class="wk-ns-price-val wk-ns-grace-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
+    }
+    return `<span class="wk-ns-price-val wk-ns-grace-pill">${_graceCountdown()}</span>`;
+  }
   // Don't show price for owned or self-target names — they can't be re-registered
   if (nsAvail === 'owned') return '';
   const _walletAddr = getState().address?.toLowerCase() ?? '';
@@ -3051,10 +3115,17 @@ function renderSkiMenu() {
   const _parentBare = nsSubnameParent ? nsSubnameParent.name.replace(/\.sui$/, '') : '';
   const _dotSuiText = _subnameMode ? `.${_parentBare}.sui` : '.sui';
   const _inputPlaceholder = _subnameMode ? 'subname' : 'name';
+  // Look up shade order for initial render state
+  const _nsInitShadeOrder = (nsAvail === 'grace' && ws.address) ? findShadeOrder(ws.address, nsLabel.trim()) : null;
+  const _nsInitGraceExpired = nsAvail === 'grace' && nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
   const _registerTitle = _subnameMode
     ? (nsLabel ? `Create ${esc(nsLabel)}.${_parentBare}.sui` : 'Create subname')
-    : (_nsInitVariant === 'black-diamond' && nsLabel ? 'Invalid SuiNS name' : _nsInitVariant === 'red-hexagon' ? `Grace period ends ${_graceEndDate()}` : nsLabel ? `Mint ${esc(nsLabel)}.sui` : 'Mint .sui');
-  const _registerDisabled = _subnameMode ? false : (_nsInitVariant === 'black-diamond' || _nsInitVariant === 'red-hexagon');
+    : (nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? `Execute Shade \u2014 register ${esc(nsLabel)}.sui now`
+      : nsAvail === 'grace' && _nsInitShadeOrder ? `Shaded! Execute after ${_graceEndDate()}`
+      : nsAvail === 'grace' ? `Shade ${esc(nsLabel)}.sui \u2014 lock funds for grace expiry`
+      : _nsInitVariant === 'black-diamond' && nsLabel ? 'Invalid SuiNS name'
+      : nsLabel ? `Mint ${esc(nsLabel)}.sui` : 'Mint .sui');
+  const _registerDisabled = _subnameMode ? false : _nsInitVariant === 'black-diamond';
   const _inputHtml = _subnameMode
     ? `<input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}">`
     : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
@@ -3067,7 +3138,7 @@ function renderSkiMenu() {
           ${_inputHtml}
           <span class="wk-ns-dot-sui">${esc(_dotSuiText)}</span>
           <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_subnameMode ? '' : _nsPriceHtml()}</span>
-          <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}">\u2192</button>
+          <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list">${_nsOwnedListHtml()}</div>
       </div>`;
@@ -3119,6 +3190,7 @@ function renderSkiMenu() {
     nsGraceEndMs = 0;
     nsTargetAddress = null;
     nsLastDigest = '';
+    nsShadeOrder = null;
     nsPriceFetchFor = '';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     _patchNsPrice();
@@ -3300,23 +3372,19 @@ function renderSkiMenu() {
     if (icon) icon.style.opacity = '0.4';
     try {
       if (icon) icon.style.opacity = '0.1';
-      // Try signing — if it fails with "Invalid user signature" (stale WaaP session),
-      // force a non-silent reconnect to refresh the OAuth/MPC session and retry once.
-      let signed = false;
-      for (let attempt = 0; attempt < 2 && !signed; attempt++) {
-        try {
-          const txBytes = await buildSetDefaultNsTx(ws2.address, domain);
-          await signAndExecuteTransaction(txBytes);
-          signed = true;
-        } catch (signErr) {
-          const sm = signErr instanceof Error ? signErr.message : '';
-          if (attempt === 0 && sm.toLowerCase().includes('invalid') && sm.toLowerCase().includes('signature')) {
-            showToast('Refreshing wallet session\u2026');
-            await reconnectWallet();
-          } else {
-            throw signErr;
-          }
-        }
+      // Prefer sign-only + own gRPC execution to bypass WaaP execution bugs.
+      // Falls back to signAndExecuteTransaction with wallet reconnect on failure.
+      const txBytes = await buildSetDefaultNsTx(ws2.address, domain);
+      try {
+        const { bytes, signature } = await signTransaction(txBytes);
+        await executeSignedTx(bytes, signature);
+      } catch (signOnlyErr) {
+        const em = signOnlyErr instanceof Error ? signOnlyErr.message : '';
+        if (em.toLowerCase().includes('reject') || em.toLowerCase().includes('denied')) throw signOnlyErr;
+        // sign-only failed (not supported, or stale session) — reconnect + full path
+        try { await reconnectWallet(); } catch { /* ignore */ }
+        const freshTx = await buildSetDefaultNsTx(ws2.address, domain);
+        await signAndExecuteTransaction(freshTx);
       }
       app.suinsName = domain;
       suinsCache[ws2.address] = domain;
@@ -3432,6 +3500,97 @@ function renderSkiMenu() {
       return;
     }
 
+    // ── Shade mode: grace-period domain ──
+    if (nsAvail === 'grace') {
+      const graceExpired = nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
+      const existingOrder = findShadeOrder(ws2.address, label);
+
+      if (!existingOrder) {
+        // No shade order → create one (lock funds for grace expiry)
+        const price = suiPriceCache?.price;
+        if (!price || price <= 0) { showToast('SUI price unavailable — try again'); return; }
+        if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+        try {
+          const { txBytes, orderInfo } = await buildCreateShadeOrderTx(ws2.address, label, nsGraceEndMs, price);
+          if (btn) btn.textContent = '\u270f';
+          const { digest } = await signAndExecuteTransaction(txBytes);
+          // Query the transaction to find the created ShadeOrder object ID
+          const orderId = digest ? await findCreatedShadeOrderId(digest) : null;
+          if (orderId) {
+            const fullOrder: ShadeOrderInfo = { ...orderInfo, objectId: orderId };
+            addShadeOrder(ws2.address, fullOrder);
+            nsShadeOrder = fullOrder;
+            // Schedule auto-execution with ShadeExecutorAgent DO
+            try {
+              connectShadeExecutor(ws2.address);
+              await scheduleShadeExecution({
+                objectId: orderId,
+                domain: fullOrder.domain,
+                executeAfterMs: fullOrder.executeAfterMs,
+                targetAddress: fullOrder.targetAddress,
+                salt: fullOrder.salt,
+                ownerAddress: ws2.address,
+                depositMist: String(fullOrder.depositMist),
+              });
+            } catch { /* DO scheduling is best-effort — user can still execute manually */ }
+          }
+          _patchNsStatus();
+          _patchNsPrice();
+          if (!orderId) {
+            showToast(`Shade tx sent but order ID not found — check explorer: ${digest?.slice(0, 8) ?? ''}\u2026`);
+          } else {
+            showToast(`${label}.sui shaded \u2713 auto-execute scheduled`);
+          }
+        } catch (err) {
+          const raw = err instanceof Error ? err.message : String(err);
+          if (!raw.toLowerCase().includes('reject')) showToast(raw);
+        } finally {
+          if (btn) { btn.disabled = false; _patchNsStatus(); }
+        }
+        return;
+      }
+
+      if (graceExpired) {
+        // Shade order + grace expired → execute registration
+        if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+        try {
+          const tx = await buildExecuteShadeOrderTx(ws2.address, existingOrder);
+          if (btn) btn.textContent = '\u270f';
+          const { digest } = await signAndExecuteTransaction(tx);
+          // Remove shade order — it's consumed
+          removeShadeOrder(ws2.address, existingOrder.objectId);
+          nsShadeOrder = null;
+          // Update state to owned
+          nsAvail = 'owned';
+          nsTargetAddress = ws2.address;
+          nsLastDigest = digest ?? '';
+          _patchNsStatus();
+          _patchNsRoute();
+          const domain = `${label}.sui`;
+          app.suinsName = app.suinsName || domain;
+          suinsCache[ws2.address] = app.suinsName;
+          try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
+          updateSkiDot('blue-square', app.suinsName);
+          nsOwnedFetchedFor = '';
+          _fetchOwnedDomains();
+          showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
+        } catch (err) {
+          const raw = err instanceof Error ? err.message : String(err);
+          if (!raw.toLowerCase().includes('reject')) {
+            const { display, full } = parseNsError(raw);
+            showCopyableToast(display, full);
+          }
+        } finally {
+          if (btn) { btn.disabled = false; _patchNsStatus(); }
+        }
+        return;
+      }
+
+      // Shade order + grace still active → show countdown toast
+      showToast(`Shaded! Execute after ${_graceEndDate()}`);
+      return;
+    }
+
     // ── Normal mode: register domain ──
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
@@ -3476,6 +3635,14 @@ function renderSkiMenu() {
   _discoverRealOwner();
   _fetchOwnedDomains();
 
+  // Prune stale shade orders (consumed/cancelled) on first menu open
+  if (!nsShadeOrdersPruned && ws.address) {
+    nsShadeOrdersPruned = true;
+    pruneShadeOrders(ws.address).catch(() => {});
+    // Also look up shade order for the current label
+    nsShadeOrder = findShadeOrder(ws.address, nsLabel.trim());
+  }
+
   // Owned domain list — click to populate input or remove wishlist
   document.getElementById('wk-ns-owned-list')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -3510,15 +3677,7 @@ function renderSkiMenu() {
   });
 
   // Horizontal wheel scroll for owned names grid
-  const ownedGrid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
-  if (ownedGrid) {
-    ownedGrid.addEventListener('wheel', (e) => {
-      if (ownedGrid.scrollWidth > ownedGrid.clientWidth) {
-        e.preventDefault();
-        ownedGrid.scrollLeft += e.deltaY || e.deltaX;
-      }
-    }, { passive: false });
-  }
+  _attachOwnedGridWheel();
 
 }
 
@@ -3819,11 +3978,12 @@ export function initUI() {
       return;
     }
 
-    // Detail pane keyed header click → sign "Lock in {name/address}"
+    // Detail pane keyed header click → activate/reactivate the wallet shown
     const clickedDetailHeader = (e.target as HTMLElement).closest<HTMLElement>('.ski-detail-header--keyed');
     const detailPane = document.getElementById('ski-modal-detail');
-    if (clickedDetailHeader && detailPane?.contains(clickedDetailHeader)) {
-      void lockInIdentity();
+    if (clickedDetailHeader && detailPane?.contains(clickedDetailHeader) && lockedWallet) {
+      if (/waap/i.test(lockedWallet.name)) void tryWaapProofConnect(lockedWallet);
+      else void selectWallet(lockedWallet);
       return;
     }
 
@@ -3845,6 +4005,21 @@ export function initUI() {
       if (headRow) {
         const idx = parseInt(headRow.dataset.legendIdx || '-1', 10);
         if (idx >= 0) activateLegendRow(idx);
+      }
+      return;
+    }
+
+    // "Create WaaP" row click → full disconnect + fresh OAuth flow for new account
+    const createWaapRow = (e.target as HTMLElement).closest<HTMLElement>('[data-legend-create-waap]');
+    if (createWaapRow?.dataset.legendWallet) {
+      const wallet = getSuiWallets().find((w) => w.name === createWaapRow.dataset.legendWallet);
+      if (wallet) {
+        closeModal();
+        deactivateCurrent();
+        // Skip silent connect so WaaP always shows its OAuth UI for new account
+        void connect(wallet, { skipSilent: true }).catch((err) => {
+          showToast('Failed to connect: ' + (err instanceof Error ? err.message : 'unknown error'));
+        });
       }
       return;
     }

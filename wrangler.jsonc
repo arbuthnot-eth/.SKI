@@ -29,6 +29,10 @@
       {
         "name": "SplashDeviceAgent",
         "class_name": "SplashDeviceAgent"
+      },
+      {
+        "name": "ShadeExecutorAgent",
+        "class_name": "ShadeExecutorAgent"
       }
     ]
   },
@@ -45,6 +49,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["SplashDeviceAgent"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["ShadeExecutorAgent"]
     }
   ]
 }

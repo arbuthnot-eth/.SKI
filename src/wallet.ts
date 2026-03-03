@@ -88,7 +88,7 @@ export function onWalletsChanged(fn: () => void): () => void {
 
 // ─── Connect ─────────────────────────────────────────────────────────
 
-export async function connect(wallet: Wallet): Promise<WalletAccount> {
+export async function connect(wallet: Wallet, opts?: { skipSilent?: boolean }): Promise<WalletAccount> {
   setState({ status: 'connecting' });
 
   try {
@@ -96,8 +96,11 @@ export async function connect(wallet: Wallet): Promise<WalletAccount> {
       connect: (input?: { silent?: boolean }) => Promise<{ accounts: readonly WalletAccount[] }>;
     };
 
-    // Try silent first (already authorized)
-    let { accounts } = await connectFeature.connect({ silent: true });
+    // Try silent first (already authorized) — unless caller explicitly requests UI
+    let accounts: readonly WalletAccount[] = [];
+    if (!opts?.skipSilent) {
+      ({ accounts } = await connectFeature.connect({ silent: true }));
+    }
 
     if (accounts.length === 0) {
       // Request user authorization — race connect() against the wallet's own

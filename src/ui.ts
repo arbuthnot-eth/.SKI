@@ -2369,6 +2369,7 @@ function _renderDotBtn() {
   const variant: SkiDotVariant = app.suinsName ? 'blue-square' : 'black-diamond';
   btn.innerHTML = modalOpen ? _shapeWithDropSvg(variant, 31) : _shapeOnlySvg(variant, 31);
   btn.classList.toggle('ski-dot--modal-open', modalOpen);
+  btn.title = modalOpen ? 'Close SKI modal' : 'Open SKI modal';
 }
 
 function _renderDotBtnEl(el: HTMLElement) {
@@ -4472,13 +4473,19 @@ export function initUI() {
       return;
     }
 
-    // Group arrow click → toggle collapsible group AND activate the head row
-    const arrowBtn = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-group-arrow');
-    if (arrowBtn) {
-      const group = arrowBtn.closest('.ski-legend-group');
+    // Group toggle: arrow, area left of arrow, or first row's shape — all toggle the group
+    const _toggleTarget = e.target as HTMLElement;
+    const arrowBtn = _toggleTarget.closest<HTMLElement>('.ski-legend-group-arrow');
+    const headEl = _toggleTarget.closest<HTMLElement>('.ski-legend-group-head');
+    // Click on shape of the head row (first shape in group)
+    const headShape = headEl && _toggleTarget.closest<HTMLElement>('.ski-legend-shape');
+    // Click landed on the head element itself to the left of child content (padding area)
+    const isHeadPadding = headEl && _toggleTarget === headEl;
+    if (arrowBtn || headShape || isHeadPadding) {
+      const group = (arrowBtn || headEl)?.closest('.ski-legend-group');
       if (group) group.classList.toggle('ski-legend-group--open');
       // Also activate the head row as the active wallet
-      const headRow = arrowBtn.closest('.ski-legend-group-head')?.querySelector<HTMLElement>('.ski-legend-row');
+      const headRow = (arrowBtn || headEl)?.closest('.ski-legend-group-head')?.querySelector<HTMLElement>('.ski-legend-row');
       if (headRow) {
         const idx = parseInt(headRow.dataset.legendIdx || '-1', 10);
         if (idx >= 0) activateLegendRow(idx);

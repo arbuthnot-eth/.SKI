@@ -2585,9 +2585,10 @@ body {
   display: flex;
   align-items: center;
   gap: 0;
+  cursor: pointer;
 }
 .ski-legend-group-arrow {
-  width: 16px;
+  width: 20px;
   height: 36px;
   display: flex;
   align-items: center;
@@ -2595,9 +2596,10 @@ body {
   background: none;
   border: none;
   color: #ffffff;
-  font-size: 0.8rem;
+  font-size: 1.1rem;
   cursor: pointer;
   padding: 0;
+  margin-left: -4px;
   flex-shrink: 0;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   transform: rotate(0deg);
@@ -2613,6 +2615,9 @@ body {
   flex: 1;
   min-width: 0;
   padding-left: 0;
+}
+.ski-legend-group-head > .ski-legend-row > .ski-legend-shape {
+  cursor: pointer;
 }
 .ski-legend-group-body {
   display: grid;

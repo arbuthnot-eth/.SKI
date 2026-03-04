@@ -2828,6 +2828,27 @@ function _nsOwnedListHtml(): string {
   return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
 }
 
+/** Clear the NS input and reset price/status when opening the roster. */
+function _clearNsInput() {
+  const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+  if (inp) inp.value = '';
+  nsLabel = '';
+  nsPriceUsd = null;
+  nsAvail = null;
+  nsGraceEndMs = 0;
+  nsTargetAddress = null;
+  nsNftOwner = null;
+  nsLastDigest = '';
+  nsKioskListing = null;
+  nsShadeOrder = null;
+  nsPriceFetchFor = '';
+  if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
+  _patchNsPrice();
+  _patchNsStatus();
+  _patchNsRoute();
+  _patchNsOwnedList();
+}
+
 function _patchNsOwnedList() {
   const el = document.getElementById('wk-ns-owned-list');
   if (!el) return;
@@ -3607,6 +3628,7 @@ function renderSkiMenu() {
     // Don't toggle if the user clicked the input, register button, pin button, or price chip
     if (t.closest('#wk-ns-label-input') || t.closest('#wk-dd-ns-register') || t.closest('#wk-ns-pin-btn') || t.closest('#wk-ns-price-chip')) return;
     nsRosterOpen = !nsRosterOpen;
+    if (nsRosterOpen) _clearNsInput();
     const list = document.getElementById('wk-ns-owned-list');
     if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
   });
@@ -3629,6 +3651,7 @@ function renderSkiMenu() {
     const dimRow = target.closest<HTMLElement>('.wk-ns-target-row--dim');
     if (dimRow) {
       nsRosterOpen = !nsRosterOpen;
+      if (nsRosterOpen) _clearNsInput();
       const list = document.getElementById('wk-ns-owned-list');
       if (list) list.classList.toggle('wk-ns-owned-list--hidden', !nsRosterOpen);
       return;

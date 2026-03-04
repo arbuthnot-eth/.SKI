@@ -1,6 +1,6 @@
 # .SKI — .Sui Key-In
 
-One-button Sui wallet sign-in. Connect once, authenticate everywhere.
+Your Sui wallet, everywhere. Connect once, authenticate everywhere.
 
 [![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
 [![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
@@ -9,47 +9,80 @@ One-button Sui wallet sign-in. Connect once, authenticate everywhere.
 
 ---
 
-## What it does
+## UI overview
 
-.SKI is a drop-in wallet widget for Sui dApps. It adds two elements to your page:
+The `.SKI` header bar renders up to four elements in a row:
 
-- **Left pill** — connected wallet icon, social badge (WaaP), SuiNS name or truncated address, live SUI balance with click-to-toggle SUI/USD display. Clicking it opens the wallet's `.sui.ski` profile in a new tab when a SuiNS name is set.
-- **.SKI button** — opens the Key-In modal, or switches wallet if the menu is already open.
+### Dot button (`ski-dot`)
 
-### Key-In modal
+Small status indicator on the far left. Shows the connected wallet's shape (diamond, blue square, green circle). Clicking it opens the **SKI modal** when disconnected, or toggles the **SKI menu** when connected. The dot also carries a Splash drop overlay when a sponsor is active.
 
-The modal lists every installed Sui wallet extension with a legend grid showing each key that has ever connected. For each wallet it shows:
+### Profile pill (`ski-profile`)
 
-- SuiNS name (resolved, cached, displayed as a subdomain link)
-- Shape badge: diamond (hardware/WaaP), blue square (SuiNS), green circle (software)
-- Live SUI balance + USD value (price fetched from Binance, 5-minute cache)
-- Supported networks and Wallet Standard features
-- Ika cross-chain dWallet badge when active
+Displays the connected wallet icon, social badge (WaaP provider), SuiNS name, and live balance. Clicking the pill opens the wallet's `.sui.ski` profile page in a new tab when a SuiNS name is set. The balance cycles between SUI-primary and USD-primary on click.
 
-The connected wallet and address are pre-selected when the modal opens. Clicking any row switches to that wallet in one tap.
+### SKI button (`ski-btn`)
 
-**Long-press lock** — press and hold a row for 2.2 s to lock the right-pane detail to that wallet. Hover won't update the detail while locked. Long-press again to unlock. An amber ring indicates the locked state.
+The main branded button showing the SKI logo and optionally the wallet shape, SuiNS name, and Splash drop. When disconnected, clicking it opens the **SKI modal**. When connected, it toggles the **SKI menu**. The modal and menu are mutually exclusive — opening one always closes the other.
 
-### Balance cycler
+### Balance pill
 
-The balance display in both the modal header and the key detail card toggles between SUI-primary and USD-primary on click. The preference is saved to `localStorage` (`ski:bal-pref`) and persists across sessions.
+Shows the live USD-equivalent balance with a dollar icon. Click to cycle between SUI and USD display.
 
-### Session layer
+---
+
+## SKI modal
+
+A single-column overlay anchored below the SKI button, right-aligned with it. The modal has a fixed header (brand logo, balance, QR code) and a scrollable body containing:
+
+- **Connected key card** — the currently active wallet with SuiNS name, address, balance, network badges, and Ika dWallet status
+- **Splash legend** — every key that has ever connected from this device, grouped by shape tier (diamond > blue square > green circle) with collapsible group arrows
+- **Wallet list** (alternative layout) — one row per installed wallet extension with shape badges and social icons
+
+Each legend row shows the key shape, SuiNS name badge, truncated hex address (right-justified next to the wallet provider icon), and the provider icon (Phantom, Backpack, WaaP, Slush, Suiet, etc.).
+
+**Long-press lock** — hold a row for 2.2 s to lock the detail pane to that wallet. An amber ring indicates locked state. Long-press again to unlock.
+
+**Layout toggle** — the Splash/List switch at the bottom lets users choose between the splash legend view and the plain wallet list. Preference is persisted in `localStorage`.
+
+## SKI menu
+
+A dropdown menu beneath the SKI button (mutually exclusive with the modal). Contains:
+
+- SuiNS name management — register new `.sui` names, set default, view owned names with renewal dates
+- Shade orders — privacy-preserving grace-period domain sniping with commitment-reveal
+- Disconnect button
+- Manage Keys — opens the modal from the menu
+
+## SuiNS integration
+
+Full SuiNS lifecycle from the SKI menu:
+
+- **Register** — search and register `.sui` names with instant tier pricing, pay with SUI, USDC, or NS tokens
+- **Set default** — change your primary SuiNS name (updates the SKI button and profile instantly)
+- **Target address** — view and copy the address a name points to, with color-coded status (purple = self, green = available, orange = kiosk-listed)
+- **Owned names** — scrollable chip grid showing all names owned by the connected wallet, with grace-period expiry warnings and renewal cost estimates
+
+---
+
+## Session layer
 
 After connecting, .SKI requests one personal message signature to prove key ownership. The signed proof is tied to a FingerprintJS `visitorId` (device fingerprint) and stored in `localStorage`. On reload the session is restored silently — no re-signing required until it expires (7 days for software wallets, 24 hours for hardware/Keystone).
 
 Session format: `{ address, signature, bytes, visitorId, expiresAt }` — stored under `ski:session`.
 
-The included Cloudflare Durable Object (`SessionAgent`) can verify sessions server-side if you deploy your own worker.
+## Splash sponsorship
 
-### Splash sponsorship
+Splash is a device-level gas sponsor system. A wallet owner activates Splash to cover gas fees for every key connected from the same device. Sponsored transactions use Sui's sponsored transaction flow.
 
-Splash is a device-level gas sponsor system built on top of .SKI. A wallet owner can activate Splash to cover gas fees for every key that has ever connected from the same device. Sponsored transactions use Sui's sponsored transaction flow — the user approves in their wallet as usual, and the sponsor's wallet countersigns separately.
-
-- Activate via the Splash button in the .SKI modal header brand column
-- Devices that connect through a sponsor's `?splash={address}` URL are enrolled automatically
-- SuiNS names can be used as the sponsor parameter: `?splash=brando.sui`
+- Activate via the Splash button in the modal header or the detail card
+- Devices that connect through `?splash={address}` are enrolled automatically
+- SuiNS names work as the sponsor parameter: `?splash=brando.sui`
 - The drop badge appears on keys covered by an active sponsor
+
+## Shade
+
+Privacy-preserving SuiNS grace-period sniping using commitment-reveal with Seal encryption. A Move contract hides the target domain, address, and timing on-chain. The `ShadeExecutorAgent` Durable Object auto-executes orders at grace expiry via DO Alarms.
 
 ---
 
@@ -71,12 +104,15 @@ bun add sui.ski
 Add the widget markup anywhere in your `<body>`:
 
 ```html
-<div class="wallet-widget" id="wallet-widget">
-  <div id="wk-widget"></div>
-  <button class="wallet-ski-btn" id="wallet-ski-btn" style="display:none"></button>
-  <div id="wallet-menu-root"></div>
+<div class="ski-header">
+  <div class="ski-wallet" id="ski-wallet">
+    <button class="ski-btn ski-dot" id="ski-dot" style="display:none"></button>
+    <div id="ski-profile"></div>
+    <button class="ski-btn" id="ski-btn" style="display:none"></button>
+    <div id="ski-menu"></div>
+  </div>
 </div>
-<div id="ski-modal-root"></div>
+<div id="ski-modal"></div>
 ```
 
 The script auto-initializes on load — no further JS required.
@@ -104,8 +140,6 @@ window.dispatchEvent(new CustomEvent('ski:request-signin'));
 
 ## Requesting a transaction
 
-Any page can ask .SKI to sign and execute a transaction:
-
 ```ts
 import { Transaction } from '@mysten/sui/transactions';
 
@@ -121,7 +155,7 @@ window.addEventListener('ski:transaction-result', (e: CustomEvent) => {
 });
 ```
 
-If a Splash sponsor is active and the transaction is a `Transaction` object, the sponsored flow is used automatically.
+If a Splash sponsor is active, the sponsored flow is used automatically.
 
 ## Modal API
 
@@ -129,7 +163,7 @@ If a Splash sponsor is active and the transaction is a `Transaction` object, the
 import { openModal } from 'sui.ski';
 import { setModalLayout, type ModalLayout } from 'sui.ski';
 
-// Layouts: 'splash' (default, includes Splash toggle), 'list' (wallet list only), 'layout2' (no Splash strip)
+// Layouts: 'splash' (default), 'list' (wallet list only), 'layout2' (no Splash strip)
 setModalLayout('list');
 ```
 
@@ -140,11 +174,11 @@ Any wallet implementing the [Sui Wallet Standard](https://docs.sui.io/standards/
 | Wallet | Notes |
 |---|---|
 | Phantom | |
-| Backpack | Keystone hardware wallet via Backpack supported (24 h session) |
+| Backpack | Keystone hardware via Backpack supported (24 h session) |
 | Slush | |
 | Suiet | |
 | Keystone | Direct extension; auto-prompts on connect |
-| WaaP | Social/email wallet (Google, X, email); always shown as diamond; provider badge displayed |
+| WaaP | Social/email wallet (Google, X, email); diamond shape; provider badge displayed |
 | Any Sui Wallet Standard extension | |
 
 ## Self-hosting / Cloudflare Worker deploy
@@ -152,16 +186,24 @@ Any wallet implementing the [Sui Wallet Standard](https://docs.sui.io/standards/
 ```bash
 bun install
 npx wrangler login
-bun run deploy   # builds + deploys in one step
+bun run build && npx wrangler deploy
 ```
 
-The worker hosts three Durable Objects:
+The worker hosts four Durable Objects:
 
 | Binding | Purpose |
 |---|---|
 | `SessionAgent` | Verifies signed sessions server-side |
 | `SponsorAgent` | Manages Splash sponsor state |
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
+| `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
+
+## Stack
+
+- `@mysten/sui` v2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.1
+- Transport: `SuiGrpcClient` with `SuiGraphQLClient` fallback (no JSON-RPC)
+- Build: `bun build src/ski.ts --outdir public/dist --target browser`
+- Deploy: Cloudflare Workers + Wrangler 4.70
 
 ## Local development
 

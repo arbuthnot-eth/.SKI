@@ -4545,6 +4545,19 @@ function renderSkiMenu() {
     }
 
     // ── Shade mode: grace-period domain OR existing shade order ──
+    // Auto-recover nsShadeOrder if the label matches a known shade order
+    if (!nsShadeOrder) {
+      const shadeMatch = findShadeOrder(ws2.address, label)
+        ?? nsShadeOrders.find(o => o.domain === label)
+        ?? (() => {
+          const doMatch = _shadeDoState?.orders.find(o => o.domain === label && (o.status === 'pending' || o.status === 'executing'));
+          return doMatch ? { objectId: doMatch.objectId, domain: doMatch.domain, executeAfterMs: doMatch.executeAfterMs, targetAddress: doMatch.targetAddress, salt: doMatch.salt, depositMist: doMatch.depositMist } : null;
+        })();
+      if (shadeMatch) {
+        nsShadeOrder = shadeMatch;
+        nsGraceEndMs = nsGraceEndMs || shadeMatch.executeAfterMs || 0;
+      }
+    }
     if (nsAvail === 'grace' || nsShadeOrder) {
       const graceExpired = nsGraceEndMs > 0 && Date.now() >= nsGraceEndMs;
       // Use nsShadeOrder (populated by on-chain fallback) OR localStorage

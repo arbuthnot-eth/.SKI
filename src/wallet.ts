@@ -323,7 +323,7 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       return normalizeTxResult(r);
     }
 
-    // WaaP: sign-only + own gRPC execution fallback.
+    // WaaP: sign-only + own JSON-RPC execution fallback.
     // WaaP's signAndExecuteTransaction produces "Invalid user signature" for some txs
     // (shared-object-by-value, e.g. shade::cancel). Sign-only works — we execute ourselves.
     if (/waap/i.test(wallet.name) && 'sui:signTransaction' in wallet.features) {
@@ -334,12 +334,30 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       const { bytes, signature } = await signFeat.signTransaction({
         transaction: augmentBytes(transaction), account, chain,
       });
-      // Execute via our own gRPC using WaaP's returned bytes + signature
-      const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' });
-      const txBytes = Uint8Array.from(atob(bytes), c => c.charCodeAt(0));
-      const result = await grpc.executeTransaction({ transaction: txBytes, signatures: [signature] });
-      const digest = (result as { digest?: string }).digest ?? '';
-      return { digest, effects: (result as { effects?: unknown }).effects };
+      // Execute via JSON-RPC (gRPC can have signature encoding issues)
+      const rpcUrls = [
+        'https://sui-rpc.publicnode.com',
+        'https://sui-mainnet-endpoint.blockvision.org',
+        'https://fullnode.mainnet.sui.io:443',
+      ];
+      let lastErr: unknown;
+      for (const url of rpcUrls) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0', id: 1,
+              method: 'sui_executeTransactionBlock',
+              params: [bytes, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+            }),
+          });
+          const json = await res.json() as { result?: { digest?: string; effects?: unknown }; error?: { message?: string } };
+          if (json.error) throw new Error(json.error.message ?? 'RPC error');
+          return { digest: json.result?.digest ?? '', effects: json.result?.effects };
+        } catch (err) { lastErr = err; }
+      }
+      throw lastErr;
     }
 
     if (!('sui:signAndExecuteTransaction' in wallet.features)) {

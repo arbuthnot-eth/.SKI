@@ -82,7 +82,15 @@ Splash is a device-level gas sponsor system. A wallet owner activates Splash to 
 
 ## Shade
 
-Privacy-preserving SuiNS grace-period sniping using commitment-reveal with Seal encryption. A Move contract hides the target domain, address, and timing on-chain. The `ShadeExecutorAgent` Durable Object auto-executes orders at grace expiry via DO Alarms.
+Privacy-preserving SuiNS grace-period domain sniping via on-chain commitment-reveal. A Move contract stores only `keccak256(domain || execute_after_ms || target_address || salt)` — the domain name, target address, and execution timestamp remain hidden until reveal at execution time.
+
+- **ShadeOrder** — a shared object holding the owner address, escrowed SUI balance, and opaque commitment hash
+- **`execute()`** — permissionless; anyone with the preimage can call, enabling keeper bots
+- **`cancel()`** — owner-only; returns escrowed SUI
+- **ShadeExecutorAgent** — Cloudflare Durable Object that auto-executes orders at grace-period expiry via DO Alarms, using a dedicated keeper address with its own gas
+- Three execution routes: SUI->NS (DeepBook), SUI->USDC->NS (two-hop), or SUI direct fallback
+
+See [SHIELD.md](SHIELD.md) for the full security model and threat analysis.
 
 ---
 

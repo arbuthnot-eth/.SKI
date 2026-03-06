@@ -38,8 +38,8 @@ import {
   removeSponsoredEntry,
   getActiveSponsoredList,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo } from './suins.js';
+import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
 import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
@@ -1301,7 +1301,6 @@ function buildSplashLegend(): string {
       const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
       const addrs = [...new Set([...liveAddrs, ...stored])];
       if (addrs.length === 0) {
-        if (/waap/i.test(w.name)) continue; // handled by dedicated WaaP create row
         entries.push({ walletName: w.name, icon: w.icon || '', address: null, suinsName: null, tier: 2 });
       } else {
         for (const addr of addrs) {
@@ -1347,8 +1346,7 @@ function buildSplashLegend(): string {
     let allHtml = '';
     for (const tier of [0, 1, 2]) {
       const group = tierGroups.get(tier);
-      // For green (tier 2): prepend WaaP create row
-      const extraBefore = tier === 2 ? buildWaapCreateRow() : '';
+      const extraBefore = '';
       if (!group || group.length === 0) {
         if (extraBefore) allHtml += extraBefore;
         continue;
@@ -1368,7 +1366,7 @@ function buildSplashLegend(): string {
   }
 
   // Splash active — green-circle rows appended at bottom of legend (unconnected wallets only)
-  const greenWallets = allWallets.filter(w => isGreen(w) && !/waap/i.test(w.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const greenWallets = allWallets.filter(w => isGreen(w)).sort((a, b) => a.name.localeCompare(b.name));
   const walletRows = greenWallets.map((w) => {
     const social = socialIconSvg(w.name);
     const col2 = social
@@ -1456,7 +1454,7 @@ function buildSplashLegend(): string {
 
   const targetsHtml = annotated.length === 0 && greenWallets.length === 0
     ? `<span class="ski-legend-target ski-legend-target--open">all keys</span>`
-    : wrapScroll(sponsoredHtml + buildWaapCreateRow() + walletRows);
+    : wrapScroll(sponsoredHtml + walletRows);
 
   return `<div class="ski-splash-legend">
     <div class="ski-legend-header">
@@ -4197,6 +4195,7 @@ function renderSkiMenu() {
       const icon = document.getElementById('wk-ns-status');
       if (icon) icon.style.opacity = '0.4';
       try {
+        const isWaapWallet = /waap/i.test(ws2.walletName || '');
         const allOnChain = await fetchOnChainShadeOrders(ws2.address);
         if (allOnChain.length === 0) {
           showToast('No shade orders found on-chain');
@@ -4204,11 +4203,23 @@ function renderSkiMenu() {
         }
         let totalRefund = 0;
         let cancelled = 0;
+        let firstErr = '';
         for (const o of allOnChain) {
           try {
-            const tx = await buildCancelShadeOrderTx(ws2.address, o.objectId);
+            const tx = isWaapWallet
+              ? await buildCancelRefundShadeOrderTx(ws2.address, o.objectId)
+              : await buildCancelShadeOrderTx(ws2.address, o.objectId);
             if (icon) icon.style.opacity = `${0.2 + 0.6 * (cancelled / allOnChain.length)}`;
             await signAndExecuteTransaction(tx);
+            if (isWaapWallet) {
+              const cleanup = await reapCancelledShadeOrder(ws2.address, o.objectId);
+              if (!cleanup.success) {
+                const msg = (cleanup.error || 'Failed to delete cancelled shade object').toLowerCase();
+                if (!msg.includes('not found') && !msg.includes('already')) {
+                  throw new Error(cleanup.error || 'Failed to delete cancelled shade object');
+                }
+              }
+            }
             _shadeCancelledIds.add(o.objectId); _persistShadeCancelled();
             removeShadeOrder(ws2.address, o.objectId);
             try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
@@ -4217,6 +4228,7 @@ function renderSkiMenu() {
           } catch (err) {
             const raw = err instanceof Error ? err.message : String(err);
             if (raw.toLowerCase().includes('reject')) break;
+            if (!firstErr) firstErr = raw;
           }
         }
         const label = nsLabel.trim();
@@ -4232,6 +4244,8 @@ function renderSkiMenu() {
         _patchNsRoute();
         if (cancelled > 0) {
           showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded`);
+        } else if (firstErr) {
+          showToast(firstErr);
         }
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
@@ -4436,32 +4450,49 @@ function renderSkiMenu() {
           executeAfterMs: nsGraceEndMs,
           targetAddress: address,
           salt: '',
-          depositMist: onChain[0].depositMist,
+          depositMist: BigInt(onChain[0].depositMist),
+          owner: address,
         };
       }
     }
     if (!existingOrder) { showToast('No shade order found'); return; }
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     try {
+      const isWaapWallet = /waap/i.test(getState().walletName || '');
       const allOnChain = await fetchOnChainShadeOrders(address);
-      const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: existingOrder.depositMist }];
+      const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: String(existingOrder.depositMist) }];
       let totalRefund = 0;
       let cancelled = 0;
       let lastDigest = '';
+      let firstErr = '';
       for (const o of ordersToCxl) {
         try {
-          const tx = await buildCancelShadeOrderTx(address, o.objectId);
+          const tx = isWaapWallet
+            ? await buildCancelRefundShadeOrderTx(address, o.objectId)
+            : await buildCancelShadeOrderTx(address, o.objectId);
           if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
           const result = await signAndExecuteTransaction(tx);
+          if (isWaapWallet) {
+            const cleanup = await reapCancelledShadeOrder(address, o.objectId);
+            if (!cleanup.success) {
+              const msg = (cleanup.error || 'Failed to delete cancelled shade object').toLowerCase();
+              if (!msg.includes('not found') && !msg.includes('already')) {
+                throw new Error(cleanup.error || 'Failed to delete cancelled shade object');
+              }
+            }
+            if (cleanup.digest) lastDigest = cleanup.digest;
+          } else if (result.digest) {
+            lastDigest = result.digest;
+          }
           _shadeCancelledIds.add(o.objectId); _persistShadeCancelled();
           removeShadeOrder(address, o.objectId);
           try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
           totalRefund += Number(o.depositMist) / 1e9;
           cancelled++;
-          if (result.digest) lastDigest = result.digest;
         } catch (err) {
           const raw = err instanceof Error ? err.message : String(err);
           if (raw.toLowerCase().includes('reject')) break;
+          if (!firstErr) firstErr = raw;
         }
       }
       if (cancelled > 0) {
@@ -4475,6 +4506,8 @@ function renderSkiMenu() {
         _patchNsRoute();
         showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
         setTimeout(() => refreshPortfolio(true), 1200);
+      } else if (firstErr) {
+        showToast(firstErr);
       }
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
@@ -4551,7 +4584,15 @@ function renderSkiMenu() {
         ?? nsShadeOrders.find(o => o.domain === label)
         ?? (() => {
           const doMatch = _shadeDoState?.orders.find(o => o.domain === label && (o.status === 'pending' || o.status === 'executing'));
-          return doMatch ? { objectId: doMatch.objectId, domain: doMatch.domain, executeAfterMs: doMatch.executeAfterMs, targetAddress: doMatch.targetAddress, salt: doMatch.salt, depositMist: doMatch.depositMist } : null;
+          return doMatch ? {
+            objectId: doMatch.objectId,
+            domain: doMatch.domain,
+            executeAfterMs: doMatch.executeAfterMs,
+            targetAddress: doMatch.targetAddress,
+            salt: doMatch.salt,
+            depositMist: BigInt(doMatch.depositMist),
+            owner: ws2.address,
+          } : null;
         })();
       if (shadeMatch) {
         nsShadeOrder = shadeMatch;
@@ -4573,7 +4614,8 @@ function renderSkiMenu() {
             executeAfterMs: nsGraceEndMs,
             targetAddress: ws2.address,
             salt: '',
-            depositMist: onChain[0].depositMist,
+            depositMist: BigInt(onChain[0].depositMist),
+            owner: ws2.address,
           };
           nsShadeOrder = existingOrder;
         }

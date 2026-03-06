@@ -5251,11 +5251,21 @@ export function initUI() {
       return;
     }
 
-    // Legend row click → show wallet in detail pane (active card)
+    // Legend row click → show detail pane; if no keys stored, connect directly
     const legendRow = (e.target as HTMLElement).closest<HTMLElement>('.ski-legend-row');
     if (legendRow) {
       const idx = parseInt(legendRow.dataset.legendIdx || '-1', 10);
       if (idx >= 0) activateLegendRow(idx);
+      // If the wallet has no stored keys (green circle / tier 2), trigger connect on click
+      const wName = legendRow.dataset.legendWallet;
+      const hasAddr = !!legendRow.dataset.legendAddr;
+      if (wName && !hasAddr && getState().status !== 'connected') {
+        const wallet = getSuiWallets().find((w) => w.name === wName);
+        if (wallet) {
+          if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
+          else void selectWallet(wallet);
+        }
+      }
       return;
     }
     // Wallet-list row click → show wallet in detail pane (active card)

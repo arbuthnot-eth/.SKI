@@ -465,12 +465,11 @@ function getInlineSkiSvg(): string {
   }
 
   let extraOverlay = '';
-  if (ws.address && app.suinsName) {
+  const _showSui = activeDetailAddr ? activeDetailSui : app.sui;
+  const _showUsd = activeDetailAddr ? activeDetailUsd : app.usd;
+  if (activeDetailAddr || (ws.address && app.suinsName)) {
     // Hide SKI letter paths and replace with live balance (left-justified from after the dot)
     svg = svg.replace('id="ski-text"', 'id="ski-text" style="display:none"');
-    // Use active detail slot balance if available, else connected wallet
-    const _showSui = activeDetailAddr ? activeDetailSui : app.sui;
-    const _showUsd = activeDetailAddr ? activeDetailUsd : app.usd;
     const rawBal = balView === 'usd'
       ? ((fmtUsd(_showUsd) || '').replace(/^\$/, '') || '--')
       : fmtSui(_showSui);
@@ -742,18 +741,21 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       const _fetchAddr = _detailAddr0;
       (async () => {
         try {
-          const [suiRes, usdcRes, price] = await Promise.all([
+          const [suiRes, usdcRes, nsRes, price] = await Promise.all([
             grpcClient.core.getBalance({ owner: _fetchAddr }).catch(() => null),
             grpcClient.core.getBalance({ owner: _fetchAddr, coinType: USDC_TYPE }).catch(() => null),
+            grpcClient.core.getBalance({ owner: _fetchAddr, coinType: NS_TYPE }).catch(() => null),
             fetchSuiPrice(),
           ]);
           if (activeDetailAddr !== _fetchAddr) return; // switched away
           const sui = Number(suiRes?.balance?.balance ?? 0) / 1e9;
           const stable = Number(usdcRes?.balance?.balance ?? 0) / 1e6;
-          const usd = price != null ? sui * price + stable : (stable > 0 ? stable : null);
+          const ns = Number(nsRes?.balance?.balance ?? 0) / 1e9;
+          const nsUsd = getNsTokenPrice() != null && ns > 0 ? ns * getNsTokenPrice()! : 0;
+          const usd = price != null ? sui * price + stable + nsUsd : (stable + nsUsd > 0 ? stable + nsUsd : null);
           activeDetailSui = sui;
           activeDetailUsd = usd;
-          try { localStorage.setItem(`ski:balances:${_fetchAddr}`, JSON.stringify({ sui, stableUsd: stable, usd, t: Date.now() })); } catch {}
+          try { localStorage.setItem(`ski:balances:${_fetchAddr}`, JSON.stringify({ sui, stableUsd: stable, ns, usd, t: Date.now() })); } catch {}
           renderModalLogo();
         } catch {}
       })();
@@ -894,6 +896,8 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   const otherKeysSlot = document.getElementById('ski-other-keys-slot');
   if (otherKeysSlot) {
     otherKeysSlot.innerHTML = otherKeysHtml ? `<div class="ski-detail-row">${otherKeysHtml}</div>` : '';
+    // Collapsed by default
+    otherKeysSlot.classList.remove('ski-other-keys--open');
     // Bind copy buttons in other keys
     otherKeysSlot.querySelectorAll('.ski-copy-btn').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -905,6 +909,33 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
           setTimeout(() => { (btn as HTMLElement).textContent = '\u2398'; }, 1500);
         });
       });
+    });
+  }
+
+  // Add/remove expand arrows on legend rows matching this wallet provider
+  const hasOtherKeys = displayAddrs.length > 1;
+  document.querySelectorAll<HTMLElement>('.ski-legend-keys-arrow').forEach(el => el.remove());
+  if (hasOtherKeys) {
+    document.querySelectorAll<HTMLElement>(`.ski-legend-row[data-legend-wallet="${CSS.escape(w.name)}"]`).forEach(row => {
+      const iconEl = row.querySelector('.ski-legend-wallet-icon');
+      if (!iconEl) return;
+      const arrow = document.createElement('button');
+      arrow.className = 'ski-legend-keys-arrow';
+      arrow.type = 'button';
+      arrow.setAttribute('aria-label', 'Toggle other keys');
+      arrow.textContent = '\u25B8';
+      arrow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const slot = document.getElementById('ski-other-keys-slot');
+        if (!slot) return;
+        slot.classList.toggle('ski-other-keys--open');
+        const open = slot.classList.contains('ski-other-keys--open');
+        document.querySelectorAll<HTMLElement>('.ski-legend-keys-arrow').forEach(a => {
+          a.classList.toggle('ski-legend-keys-arrow--open', open);
+        });
+      });
+      row.style.position = 'relative';
+      row.appendChild(arrow);
     });
   }
 
@@ -1554,6 +1585,9 @@ function activateLegendRow(idx: number, fromHover = false) {
           </div>
         </div>
       </div>`;
+    activeDetailAddr = '';
+    activeDetailSui = 0;
+    activeDetailUsd = null;
     updateSkiDot('green-circle');
     renderModalLogo();
     return;
@@ -2174,6 +2208,20 @@ let balView: 'sui' | 'usd' = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'usd'; } catch { return 'usd'; }
 })();
 
+// NS token price cache — refreshed alongside SUI price
+let nsTokenPriceCache: { price: number; fetchedAt: number } | null = (() => {
+  try {
+    const raw = localStorage.getItem('ski:ns-token-price');
+    if (raw) {
+      const p = JSON.parse(raw) as { price: number; fetchedAt: number };
+      if (p.price > 0) return p;
+    }
+  } catch {}
+  return null;
+})();
+
+function getNsTokenPrice(): number | null { return nsTokenPriceCache?.price ?? null; }
+
 async function fetchSuiPrice(): Promise<number | null> {
   const now = Date.now();
   if (suiPriceCache && now - suiPriceCache.fetchedAt < 5 * 60 * 1000) return suiPriceCache.price;
@@ -2201,9 +2249,17 @@ async function fetchSuiPrice(): Promise<number | null> {
     fetch('https://api.bybit.com/v5/market/tickers?category=spot&symbol=SUIUSDT')
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((d: { result?: { list?: Array<{ lastPrice: string }> } }) => valid(d.result?.list?.[0]?.lastPrice)),
-    fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui&vs_currencies=usd')
+    fetch('https://api.coingecko.com/api/v3/simple/price?ids=sui,suins&vs_currencies=usd')
       .then(r => r.ok ? r.json() : Promise.reject())
-      .then((d: { sui?: { usd?: number } }) => valid(d.sui?.usd)),
+      .then((d: { sui?: { usd?: number }; suins?: { usd?: number } }) => {
+        // Side-effect: also cache NS token price from same response
+        const nsP = d.suins?.usd;
+        if (nsP && Number.isFinite(nsP) && nsP > 0) {
+          nsTokenPriceCache = { price: nsP, fetchedAt: Date.now() };
+          try { localStorage.setItem('ski:ns-token-price', JSON.stringify(nsTokenPriceCache)); } catch {}
+        }
+        return valid(d.sui?.usd);
+      }),
   ];
 
   try {
@@ -2247,9 +2303,10 @@ export async function refreshPortfolio(force = false) {
     const nsRaw = Number(nsResult?.balance?.balance ?? 0);
     app.nsBalance = Number.isFinite(nsRaw) ? nsRaw / 1e9 : 0;
 
-    // Total USD = SUI value + USDC balance
+    // Total USD = SUI value + USDC balance + NS token value
     const suiUsd = suiPrice != null ? app.sui * suiPrice : null;
-    app.usd = suiUsd != null ? suiUsd + app.stableUsd : (app.stableUsd > 0 ? app.stableUsd : null);
+    const nsUsd = getNsTokenPrice() != null && app.nsBalance > 0 ? app.nsBalance * getNsTokenPrice()! : 0;
+    app.usd = suiUsd != null ? suiUsd + app.stableUsd + nsUsd : (app.stableUsd + nsUsd > 0 ? app.stableUsd + nsUsd : null);
 
     // Keep active detail balance in sync if it's showing the connected wallet
     if (activeDetailAddr && activeDetailAddr.toLowerCase() === fetchedFor.toLowerCase()) {
@@ -2405,7 +2462,7 @@ function _renderSkiBtnEl(el: HTMLElement) {
     const balLabel = balView === 'usd'
       ? `<span class="ski-btn-price-label ski-btn-price-label--usd">${esc(rawUsd ? rawUsd.replace(/^\$/, '') : '--')}</span>`
       : `<span class="ski-btn-price-label">${esc(fmtSui(app.sui))}</span><img src="${SUI_DROP_URI}" class="ski-btn-inline-drop" alt="" aria-hidden="true">`;
-    el.innerHTML = `<span class="ski-btn-dot" title="Switch currency" aria-label="Switch USD/SUI">${dotSvg}</span>${balLabel}`;
+    el.innerHTML = `<span class="ski-btn-dot" title="SKI Menu" aria-label="Switch USD/SUI">${dotSvg}</span>${balLabel}`;
     return;
   }
 
@@ -5100,7 +5157,13 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', (e) => {
-    if ((e as KeyboardEvent).key !== 'Escape') return;
+    const key = (e as KeyboardEvent).key;
+    if (key === 'ArrowDown' && !modalOpen && document.activeElement !== els.skiBtn) {
+      e.preventDefault();
+      els.skiBtn?.focus();
+      return;
+    }
+    if (key !== 'Escape') return;
     if (getState().address) {
       e.preventDefault();
       handleDisconnect(false);

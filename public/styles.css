@@ -2232,6 +2232,42 @@ body {
 #ski-other-keys-slot {
   border-top: 1px solid rgba(160, 200, 240, 0.06);
   padding: 4px 10px 0;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#ski-other-keys-slot.ski-other-keys--open {
+  grid-template-rows: 1fr;
+}
+#ski-other-keys-slot > * {
+  overflow: hidden;
+  min-height: 0;
+}
+/* Small white arrow next to wallet icon in legend rows */
+.ski-legend-keys-arrow {
+  position: absolute;
+  right: -8px;
+  top: 0;
+  width: 16px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  z-index: 1;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: rotate(0deg);
+  transform-origin: center;
+}
+.ski-legend-keys-arrow:hover { color: #ffffff; }
+.ski-legend-keys-arrow.ski-legend-keys-arrow--open {
+  transform: rotate(90deg);
 }
 
 /* Wallet-list layout left column */
@@ -2583,7 +2619,7 @@ body {
 }
 
 .ski-splash-legend {
-  padding: 12px 14px;
+  padding: 12px 2px 12px 2px;
   font-size: 0.72rem;
   color: #9ca7bb;
 }
@@ -2616,6 +2652,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  overflow-x: hidden;
 }
 .ski-legend-row {
   display: flex;
@@ -2673,18 +2710,18 @@ body {
   cursor: pointer;
 }
 .ski-legend-group-arrow {
-  width: 20px;
+  width: 16px;
   height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: none;
   border: none;
-  color: #ffffff;
-  font-size: 1.1rem;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.85rem;
   cursor: pointer;
   padding: 0;
-  margin-left: -4px;
+  margin: 0;
   flex-shrink: 0;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   transform: rotate(0deg);
@@ -3327,6 +3364,7 @@ body {
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
+  overflow: visible;
 }
 #ski-modal-close {
   background: rgba(0, 0, 0, 0.5);
@@ -3383,17 +3421,23 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 5px;
+  overflow: visible;
 }
 
 .ski-modal-brand-link {
-  display: contents;
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  overflow: visible;
 }
 
 .ski-modal-logo {
-  width: 94px;
-  height: auto;
+  width: auto;
+  height: calc(100% + 6px);
   flex-shrink: 0;
   transition: opacity 0.12s ease;
+  margin-right: -1px;
+  margin-bottom: -6px;
 }
 
 .ski-modal-logo:hover {
@@ -3436,16 +3480,18 @@ body {
   align-self: stretch;
   width: 92%;
   margin-left: 8%;
+  overflow: visible;
 }
 /* Logo row (wallet icon + SKI svg) spans both text rows */
 .ski-modal-header-brand .ski-brand-logo-row {
   grid-column: 1;
   grid-row: 1 / 3;
-  align-self: start;
+  align-self: stretch;
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 0;
+  overflow: visible;
 }
 /* Dissolve the titles wrapper so h2 and p sit in separate grid rows */
 .ski-modal-header-brand .ski-modal-titles {
@@ -3459,7 +3505,7 @@ body {
   padding-left: 1px;
   position: relative;
   top: 0;
-  font-size: 1.84rem;
+  font-size: 2.12rem;
 }
 /* Tagline: row 2, left-justified, anchored to bottom of brand area */
 .ski-modal-header-brand .ski-modal-tagline {
@@ -3468,10 +3514,10 @@ body {
   text-align: left;
   align-self: start;
   margin: 0;
-  padding-bottom: 2px;
+  padding-bottom: 0;
   position: relative;
-  left: 2px;
-  top: 4px;
+  left: 5px;
+  top: 1px;
   font-size: 0.95rem;
   line-height: 1.2;
 }
@@ -3788,12 +3834,13 @@ body {
   justify-content: center;
   border-radius: 6px;
   transition: opacity 0.15s;
-  width: 104px;
-  height: 71px;
+  width: 130px;
+  height: 81px;
   overflow: hidden;
   flex-shrink: 0;
   margin-left: 0;
   position: relative;
+  left: 14px;
   z-index: 1;
 }
 .ski-logo-btn > a {

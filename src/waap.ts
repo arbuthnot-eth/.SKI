@@ -13,9 +13,22 @@ const WAAP_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5
 
 let registered = false;
 
-export function registerWaaP(): void {
+export async function registerWaaP(): Promise<void> {
   if (registered || typeof window === 'undefined') return;
   registered = true;
+
+  // Preflight: bail early if WaaP servers are unreachable
+  try {
+    const res = await fetch('https://waap.xyz/iframe', { method: 'HEAD', mode: 'no-cors' });
+    // mode: no-cors gives opaque response — type 'opaque' means server responded
+    // If the fetch itself rejects, server is down
+    void res;
+  } catch {
+    registered = false;
+    console.warn('[.SKI] WaaP servers unreachable, skipping registration');
+    return;
+  }
+
   try {
     const wallet = initWaaPSui({
       useStaging: false,
@@ -29,6 +42,7 @@ export function registerWaaP(): void {
     Object.defineProperty(wallet, 'icon', { value: WAAP_ICON, writable: false, enumerable: true, configurable: true });
     registerWallet(wallet as unknown as Parameters<typeof registerWallet>[0]);
   } catch (err) {
+    registered = false;
     console.warn('[.SKI] WaaP registration failed:', err);
   }
 }

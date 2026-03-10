@@ -5444,6 +5444,14 @@ export function initUI() {
           void (async () => {
             // Full disconnect clears WaaP's accounts so connect() won't short-circuit
             try { await disconnect(); } catch {}
+            // Purge WaaP's OAuth localStorage keys so the SDK doesn't silently
+            // re-authenticate with the same social account on reconnect
+            try {
+              for (let i = localStorage.length - 1; i >= 0; i--) {
+                const k = localStorage.key(i);
+                if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
+              }
+            } catch {}
             try {
               await connect(wallet, { skipSilent: true });
             } catch (err) {

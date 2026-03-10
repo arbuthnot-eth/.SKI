@@ -268,6 +268,7 @@ export async function signIn(isReconnect = false): Promise<boolean> {
 
 export { forgetDevice, disconnectSession } from './client/session.js';
 export { setModalLayout, type ModalLayout, mountBalanceCycler, mountSkiButton, mountDotButton, mountProfile, openModal } from './ui.js';
+export { getState, getSuiWallets, connect, disconnect, subscribe, signAndExecuteTransaction, signPersonalMessage, signTransaction } from './wallet.js';
 
 // Register <ski-button>, <ski-dot>, <ski-balance> Custom Elements
 import './elements.js';

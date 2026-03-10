@@ -9,13 +9,26 @@ Your Sui wallet, everywhere. Connect once, authenticate everywhere.
 
 ---
 
+## Domain structure
+
+| Domain | Purpose |
+|---|---|
+| `sui.ski` | Root — main application, embeddable widget, API endpoints |
+| `<name>.sui.ski` | SuiNS profile pages (e.g. `brando.sui.ski` for `brando.sui`) |
+
+All subdomains with 3+ characters are reserved for SuiNS profile pages. There are no dedicated subdomains for the app, API, or RPC — everything routes through the root domain.
+
+A cross-domain session cookie (`ski:xdomain`) is set on `domain=sui.ski` so authentication persists across the root and all profile subdomains.
+
+---
+
 ## UI overview
 
 The `.SKI` header bar renders up to four elements in a row:
 
 ### Dot button (`ski-dot`)
 
-Small status indicator on the far left. Shows the connected wallet's shape (diamond, blue square, green circle). Clicking it opens the **SKI modal** when disconnected, or toggles the **SKI menu** when connected. The dot also carries a Splash drop overlay when a sponsor is active.
+Small status indicator on the far left. Shows the connected wallet's shape (diamond = address only, blue square = has SuiNS name, green circle = unconnected). Clicking it opens the **SKI modal** when disconnected, or toggles the **SKI menu** when connected. The dot carries a Splash drop overlay when a sponsor is active.
 
 ### Profile pill (`ski-profile`)
 
@@ -35,11 +48,12 @@ Shows the live USD-equivalent balance with a dollar icon. Click to cycle between
 
 A single-column overlay anchored below the SKI button, right-aligned with it. The modal has a fixed header (brand logo, balance, QR code) and a scrollable body containing:
 
-- **Connected key card** — the currently active wallet with SuiNS name, address, balance, network badges, and Ika dWallet status
+- **Key detail pane** — the currently selected wallet with SuiNS name, address, balance, network badges, and Ika dWallet status. Defaults to the first blue-square wallet on open, falls back to the first black-diamond, then to WaaP.
 - **Splash legend** — every key that has ever connected from this device, grouped by shape tier (diamond > blue square > green circle) with collapsible group arrows
+- **+ new WaaP row** — always present in the green tier; clicking it shows a placeholder detail pane, and clicking that detail header disconnects any active WaaP session and opens a fresh WaaP OAuth modal
 - **Wallet list** (alternative layout) — one row per installed wallet extension with shape badges and social icons
 
-Each legend row shows the key shape, SuiNS name badge, truncated hex address (right-justified next to the wallet provider icon), and the provider icon (Phantom, Backpack, WaaP, Slush, Suiet, etc.).
+Each legend row shows the key shape, SuiNS name badge, truncated hex address (right-justified), and the wallet provider icon (Phantom, Backpack, WaaP social icon, Slush, Suiet, etc.).
 
 **Long-press lock** — hold a row for 2.2 s to lock the detail pane to that wallet. An amber ring indicates locked state. Long-press again to unlock.
 
@@ -90,7 +104,22 @@ Privacy-preserving SuiNS grace-period domain sniping via on-chain commitment-rev
 - **ShadeExecutorAgent** — Cloudflare Durable Object that auto-executes orders at grace-period expiry via DO Alarms, using a dedicated keeper address with its own gas
 - Three execution routes: SUI->NS (DeepBook), SUI->USDC->NS (two-hop), or SUI direct fallback
 
+Contract: `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff`
+
 See [SHIELD.md](SHIELD.md) for the full security model and threat analysis.
+
+## WaaP (social login)
+
+WaaP provides custodial wallet creation via social login, email, phone, and biometrics — no browser extension required. A static placeholder wallet is always present in the SKI modal so the "+ new WaaP" row renders instantly on page load, before the WaaP SDK finishes initializing.
+
+| Auth method | Status |
+|---|---|
+| Social (X, Google, Discord, GitHub) | Active |
+| Email | Active |
+| Phone | Active |
+| Biometrics | Active |
+
+WaaP accounts appear in the legend with their social provider icon (X, Google, Discord, or email envelope). Clicking an existing WaaP blue-square row reconnects via encrypted device proof (zero-modal). Clicking "+ new WaaP" forces a full disconnect and opens a fresh OAuth flow.
 
 ---
 
@@ -179,15 +208,17 @@ setModalLayout('list');
 
 Any wallet implementing the [Sui Wallet Standard](https://docs.sui.io/standards/wallet-standard):
 
-| Wallet | Notes |
-|---|---|
-| Phantom | |
-| Backpack | Keystone hardware via Backpack supported (24 h session) |
-| Slush | |
-| Suiet | |
-| Keystone | Direct extension; auto-prompts on connect |
-| WaaP | Social/email wallet (Google, X, email); diamond shape; provider badge displayed |
-| Any Sui Wallet Standard extension | |
+| Wallet | Shape | Notes |
+|---|---|---|
+| Phantom | Diamond/Blue | |
+| Backpack | Diamond/Blue | Keystone hardware via Backpack supported (24 h session) |
+| Slush | Green | |
+| Suiet | Green | |
+| Keystone | Diamond | Direct extension; auto-prompts on connect |
+| WaaP | Diamond/Blue/Green | Social/email/phone/biometrics wallet; provider badge displayed |
+| Any Sui Wallet Standard extension | Varies | |
+
+Shape is determined by state: green circle = never connected, black diamond = connected (no SuiNS), blue square = connected with SuiNS name.
 
 ## Self-hosting / Cloudflare Worker deploy
 
@@ -206,12 +237,21 @@ The worker hosts four Durable Objects:
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
 
+API routes served by the worker:
+
+| Route | Purpose |
+|---|---|
+| `/agents/*` | WebSocket upgrade for Durable Object agents |
+| `/api/health` | Health check |
+| `/api/shade/*` | Shade order management (poke, status, schedule) |
+| `/api/tradeport/listing/:label` | TradePort listing proxy |
+
 ## Stack
 
-- `@mysten/sui` v2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.1
-- Transport: `SuiGrpcClient` with `SuiGraphQLClient` fallback (no JSON-RPC)
+- `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2
+- Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
-- Deploy: Cloudflare Workers + Wrangler 4.70
+- Deploy: Cloudflare Workers + Wrangler 4.71
 
 ## Local development
 

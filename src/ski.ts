@@ -364,13 +364,10 @@ window.addEventListener('ski:sign-and-execute-transaction', async (e) => {
 
 initUI();
 
-// Lazy-load WaaP after the page finishes loading so it never blocks boot
-const loadWaaP = () => import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
-if (document.readyState === 'complete') {
-  setTimeout(loadWaaP, 0);
-} else {
-  window.addEventListener('load', () => setTimeout(loadWaaP, 0), { once: true });
-}
+// Start WaaP loading immediately — don't wait for window.load.
+// The preflight fetch inside registerWaaP is non-blocking and the SDK init
+// is fast, so this shaves seconds off the time the modal shows stale state.
+import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
 
 // Handle ?splash= URL param for cross-device Splash sponsorship
 (async () => {

@@ -1569,7 +1569,7 @@ function activateLegendRow(idx: number, fromHover = false) {
     const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
     const iconSrc = wallet?.icon || '';
     detailEl.innerHTML = `
-      <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(walletName || '')}">
+      <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(walletName || '')}" data-detail-create-waap="true">
         <div class="ski-detail-icon-row">
           <div class="ski-detail-icons-top">
             ${iconSrc ? `<div class="ski-detail-icon-wrap"><img src="${esc(iconSrc)}" alt="" class="ski-detail-icon"></div>` : ''}
@@ -1901,10 +1901,36 @@ function renderModal(): void {
     }
   });
 
-  // Populate the detail pane immediately — no placeholder flash
+  // Populate the detail pane immediately — no placeholder flash.
+  // If connected, show that wallet; otherwise show the first blue-square
+  // (has SuiNS name) wallet so the detail pane isn't empty.
   const connectedWallet = connectedName ? getSuiWallets().find((w) => w.name === connectedName) : null;
   const initialDetailEl = document.getElementById('ski-modal-detail');
-  if (initialDetailEl && connectedWallet) showKeyDetail(connectedWallet, initialDetailEl, getState().address);
+  if (initialDetailEl && connectedWallet) {
+    showKeyDetail(connectedWallet, initialDetailEl, getState().address);
+  } else if (initialDetailEl && !connectedWallet) {
+    // Find the first wallet+address that has a cached SuiNS name (blue square),
+    // then fall back to first with any address (black diamond),
+    // then fall back to WaaP (green circle).
+    const allW = getSuiWallets();
+    let defaultWallet: Wallet | null = null;
+    let defaultAddr = '';
+    let fallbackWallet: Wallet | null = null;
+    let fallbackAddr = '';
+    for (const w of allW) {
+      const liveAddrs = (w.accounts as unknown as { address: string }[]).map((a) => a.address);
+      const stored: string[] = (() => { try { return JSON.parse(localStorage.getItem(`ski:wallet-keys:${w.name}`) || '[]') as string[]; } catch { return []; } })();
+      for (const addr of [...new Set([...liveAddrs, ...stored])]) {
+        if (!fallbackWallet) { fallbackWallet = w; fallbackAddr = addr; }
+        const name = (() => { try { return localStorage.getItem(`ski:suins:${addr}`); } catch { return null; } })();
+        if (name) { defaultWallet = w; defaultAddr = addr; break; }
+      }
+      if (defaultWallet) break;
+    }
+    const pick = defaultWallet || fallbackWallet || allW.find(w => /waap/i.test(w.name)) || null;
+    const pickAddr = defaultWallet ? defaultAddr : fallbackWallet ? fallbackAddr : '';
+    if (pick) showKeyDetail(pick, initialDetailEl, pickAddr);
+  }
 
   // Layout toggle — persists preference and re-renders
   document.getElementById('ski-layout-check')?.addEventListener('change', (e) => {
@@ -5278,7 +5304,10 @@ export function initUI() {
   subscribeSponsor(() => {
     render();
     const slot = document.getElementById('ski-legend-slot');
-    if (slot) slot.innerHTML = buildSplashLegend();
+    if (slot) {
+      const next = buildSplashLegend();
+      if (slot.innerHTML !== next) slot.innerHTML = next;
+    }
     // Refresh active card (sponsor state affects splash toggle display)
     const detailEl = document.getElementById('ski-modal-detail');
     const ws = getState();
@@ -5385,7 +5414,20 @@ export function initUI() {
           return wName ? getSuiWallets().find((w) => w.name === wName) ?? null : null;
         })();
       if (wallet) {
-        if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
+        // "+ new WaaP" detail pane → full disconnect to clear WaaP's in-memory
+        // session, then connect with skipSilent to force the OAuth modal open.
+        if (clickedDetailHeader.dataset.detailCreateWaap) {
+          closeModal();
+          void (async () => {
+            // Full disconnect clears WaaP's accounts so connect() won't short-circuit
+            try { await disconnect(); } catch {}
+            try {
+              await connect(wallet, { skipSilent: true });
+            } catch (err) {
+              showToast('Failed to connect: ' + _errMsg(err));
+            }
+          })();
+        } else if (/waap/i.test(wallet.name)) void tryWaapProofConnect(wallet);
         else {
           // Connect + lock-in: selectWallet triggers popup, then lockInIdentity signs
           void (async () => {
@@ -5509,34 +5551,26 @@ export function initUI() {
   });
 
   // Patch legend when wallets change — debounced to avoid flash as accounts trickle in.
-  // On first settle after restore, do a full renderModal() to build the DOM.
-  let _prevWalletCount = getSuiWallets().length;
+  // Never does a full renderModal() — only patches the legend slot in-place to avoid flash.
   let _walletChangeTimer: ReturnType<typeof setTimeout> | null = null;
-  let _modalRenderedOnce = true; // initial render already happened (or modal is closed)
   onWalletsChanged(() => {
     if (_walletChangeTimer) clearTimeout(_walletChangeTimer);
     _walletChangeTimer = setTimeout(() => {
       _walletChangeTimer = null;
-      const wallets = getSuiWallets();
       if (modalOpen) {
-        // First render after restore, or wallet count changed — full render
-        if (!_modalRenderedOnce || wallets.length !== _prevWalletCount) {
-          _modalRenderedOnce = true;
-          _prevWalletCount = wallets.length;
-          renderModal();
-        } else {
-          // Subsequent updates — just patch legend + detail in place
-          const slot = document.getElementById('ski-legend-slot');
-          if (slot) slot.innerHTML = buildSplashLegend();
-          const detailEl = document.getElementById('ski-modal-detail');
-          const ws = getState();
-          if (detailEl && ws.walletName) {
-            const wallet = wallets.find((w) => w.name === ws.walletName);
-            if (wallet) showKeyDetail(wallet, detailEl, ws.address);
-          }
+        const slot = document.getElementById('ski-legend-slot');
+        if (slot) {
+          const next = buildSplashLegend();
+          if (slot.innerHTML !== next) slot.innerHTML = next;
+        }
+        const detailEl = document.getElementById('ski-modal-detail');
+        const ws = getState();
+        if (detailEl && ws.walletName) {
+          const wallets = getSuiWallets();
+          const wallet = wallets.find((w) => w.name === ws.walletName);
+          if (wallet) showKeyDetail(wallet, detailEl, ws.address);
         }
       }
-      _prevWalletCount = wallets.length;
     }, 500);
   });
 
@@ -5572,9 +5606,7 @@ export function initUI() {
   // Initial render — already shows connected state if preloaded
   render();
 
-  // Restore modal if it was open before refresh — render immediately so the
-  // modal shell is visible; the legend will populate once wallets settle via
-  // the debounced onWalletsChanged handler.
+  // Restore modal if it was open before refresh
   if (modalOpen) {
     els.widget?.classList.add('ski-modal-active');
     renderModal();

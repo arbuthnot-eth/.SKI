@@ -34,8 +34,8 @@ export async function registerWaaP(): Promise<void> {
       useStaging: false,
       config: {
         styles: { darkMode: true },
-        authenticationMethods: ['social', 'email'],
-        allowedSocials: ['twitter', 'google'],
+        authenticationMethods: ['social', 'email', 'phone', 'biometrics'],
+        allowedSocials: ['twitter', 'google', 'discord', 'github'],
       },
     });
     // Override the built-in icon with our custom branded SVG

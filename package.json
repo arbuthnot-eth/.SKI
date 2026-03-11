@@ -57,7 +57,7 @@
     "@mysten/deepbook-v3": "^1.1.5",
     "@mysten/kiosk": "^1.1.2",
     "@mysten/seal": "^1.1.0",
-    "@mysten/sui": "^2.5.1",
+    "@mysten/sui": "^2.6.0",
     "@mysten/suins": "^1.0.2",
     "@mysten/wallet-standard": "^0.20.1",
     "@wallet-standard/app": "^1.1.0",

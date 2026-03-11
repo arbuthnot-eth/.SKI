@@ -37,6 +37,7 @@ import {
   addSponsoredEntry,
   removeSponsoredEntry,
   getActiveSponsoredList,
+  resolveNameToAddress,
 } from './sponsor.js';
 import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
@@ -1056,7 +1057,11 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
 
       subnameBtn.disabled = true;
       try {
-        const tx = buildSubnameTx(parentDomain, label, targetAddr, subnameType);
+        // Crown fee: resolve parent domain target, charge 1 SUI unless self-minting
+        const parentName = parentDomain.name.endsWith('.sui') ? parentDomain.name : `${parentDomain.name}.sui`;
+        const parentTarget = await resolveNameToAddress(parentName);
+        const feeRecipient = parentTarget && parentTarget !== ws.address ? parentTarget : undefined;
+        const tx = buildSubnameTx(parentDomain, label, targetAddr, subnameType, undefined, feeRecipient);
         const txBytes = await tx.build({ client: grpcClient });
         const chain = ws.account.chains.find((c: string) => c.startsWith('sui:')) ?? 'sui:mainnet';
         await signAndExec({ transaction: txBytes, account: ws.account, chain });
@@ -4754,7 +4759,11 @@ function renderSkiMenu() {
       const fullName = `${label}.${parentBare}.sui`;
       if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
       try {
-        const tx = await buildSubnameTxBytes(ws2.address, nsSubnameParent, label, ws2.address, 'leaf');
+        // Resolve who the parent domain points to — crown fee goes to them
+        const parentTarget = await resolveNameToAddress(parentBare.includes('.') ? `${parentBare}.sui` : `${parentBare}.sui`);
+        // Charge 1 SUI crown fee unless minter IS the parent domain owner
+        const feeRecipient = parentTarget && parentTarget !== ws2.address ? parentTarget : undefined;
+        const tx = await buildSubnameTxBytes(ws2.address, nsSubnameParent, label, ws2.address, 'leaf', feeRecipient);
         if (btn) btn.textContent = '\u270f';
         await signAndExecuteTransaction(tx);
         showToast(`${fullName} created \u2713`);

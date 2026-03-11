@@ -300,17 +300,28 @@ function extractDomainName(raw: unknown): string | null {
  * @param type           "leaf" (no expiry, points to address) or "node" (owned NFT, can parent more)
  * @param nodeExpiryMs   Expiration for node subnames (default: 1 year from now)
  */
+/** 1 SUI — the crown coin Duke Shelby flips (5 shillings, 1928). */
+const SUBNAME_FEE_MIST = 1_000_000_000n;
+
 export function buildSubnameTx(
   parent: OwnedDomain,
   subdomainLabel: string,
   targetAddress: string,
   type: 'leaf' | 'node' = 'leaf',
   nodeExpiryMs?: number,
+  /** Address that receives the 1 SUI subname fee. Omit to skip fee (e.g. self-minting). */
+  feeRecipient?: string,
 ): Transaction {
   const tx = new Transaction();
   const parentName = parent.name.endsWith('.sui') ? parent.name : `${parent.name}.sui`;
   const fullName = `${subdomainLabel}.${parentName}`;
   const expiry = BigInt(nodeExpiryMs ?? Date.now() + ONE_YEAR_MS);
+
+  // Crown fee — split 1 SUI from gas and send to the parent domain owner
+  if (feeRecipient) {
+    const [crown] = tx.splitCoins(tx.gas, [tx.pure.u64(SUBNAME_FEE_MIST)]);
+    tx.transferObjects([crown], tx.pure.address(feeRecipient));
+  }
 
   if (parent.kind === 'cap') {
     if (type === 'leaf') {
@@ -641,10 +652,11 @@ export async function buildSubnameTxBytes(
   subLabel: string,
   targetAddress: string,
   type: 'leaf' | 'node' = 'leaf',
+  feeRecipient?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-  const tx = buildSubnameTx(parent, subLabel, normalizeSuiAddress(targetAddress), type);
+  const tx = buildSubnameTx(parent, subLabel, normalizeSuiAddress(targetAddress), type, undefined, feeRecipient);
   tx.setSender(walletAddress);
   return tx.build({ client: transport as never });
 }

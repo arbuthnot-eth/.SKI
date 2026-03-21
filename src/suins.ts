@@ -1491,23 +1491,26 @@ export async function buildConsolidateToUsdcTx(
   const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
 
   // Fetch all swappable coins + sponsor info in parallel
-  const [nsCoins, walCoins, suiCoins, sponsorInfo] = await Promise.all([
+  const [nsCoins, walCoins, suiCoins, xaumCoins, sponsorInfo] = await Promise.all([
     listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
     listCoinsOfType(transport, walletAddress, WAL_TYPE),
     includeSui ? listCoinsOfType(transport, walletAddress, SUI_TYPE) : Promise.resolve([]),
+    listCoinsOfType(transport, walletAddress, XAUM_TYPE),
     fetchSponsorInfo(),
   ]);
 
   const totalNs = nsCoins.reduce((sum, c) => sum + c.balance, 0n);
   const totalWal = walCoins.reduce((sum, c) => sum + c.balance, 0n);
   const totalSui = suiCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const totalXaum = xaumCoins.reduce((sum, c) => sum + c.balance, 0n);
   const want = (s: string) => !tokens?.length || tokens.includes(s);
   // Minimum swap thresholds — skip dust amounts that would fail or cost more in fees than value
   const shouldSwapNs = totalNs > 1_000_000n && want('NS');     // > 1 NS (~$0.02)
   const shouldSwapWal = totalWal > 100_000_000n && want('WAL'); // > 0.1 WAL
   const shouldSwapSui = includeSui && totalSui > 500_000_000n && want('SUI');
+  const shouldSwapXaum = totalXaum > 0n && want('XAUM');
 
-  if (!shouldSwapNs && !shouldSwapWal && !shouldSwapSui) {
+  if (!shouldSwapNs && !shouldSwapWal && !shouldSwapSui && !shouldSwapXaum) {
     throw new Error('No eligible tokens to consolidate into USDC.');
   }
 
@@ -1585,6 +1588,37 @@ export async function buildConsolidateToUsdcTx(
     swaps.push({ symbol: 'SUI', amount: Number(swapAmount) / 1e9 });
   }
 
+  // ── XAUM → USDC (Bluefin CLMM: XAUM is X, USDC is Y → swapXtoY=true) ──
+  if (shouldSwapXaum) {
+    const xaumCoin = tx.objectRef(xaumCoins[0]);
+    if (xaumCoins.length > 1) {
+      tx.mergeCoins(xaumCoin, xaumCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+    const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumCoin] });
+    const [xaumBalValue] = tx.moveCall({ target: '0x2::balance::value', typeArguments: [XAUM_TYPE], arguments: [xaumBal] });
+    const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [USDC_TYPE] });
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'), // clock
+        tx.object(BF_GLOBAL_CONFIG),
+        tx.object(BF_XAUM_USDC_POOL),
+        xaumBal,        // coinX balance in (XAUM)
+        zeroUsdcBal,    // coinY balance in (zero USDC)
+        tx.pure.bool(true),  // swapXtoY = true (XAUM→USDC)
+        tx.pure.bool(true),  // by_amount_in
+        xaumBalValue,
+        tx.pure.u64(0), // min out
+        tx.pure.u128(BF_MIN_SQRT_PRICE), // sqrt price limit for X→Y
+      ],
+    });
+    const [xaumDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcOut] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+    tx.transferObjects([usdcOut, xaumDust], tx.pure.address(walletAddress));
+    swaps.push({ symbol: 'XAUM', amount: Number(totalXaum) / 1e9 });
+  }
+
   const txBytes = await tx.build({ client: transport as never });
   return {
     txBytes,
@@ -1652,6 +1686,196 @@ export async function buildSelfSwapTx(
   }
 
   throw new Error('Self-swap only supports SUI and USDC');
+}
+
+// ─── Bluefin CLMM swap (USDC ↔ XAUM) ──────────────────────────────
+const BF_XAUM_USDC_POOL = '0x458fc3722cc88babd7cbe78273aa5e4ecbdff75c76a2ad14cd1f75418b569649';
+const XAUM_TYPE = '0x9d297676e7a4b771ab023291377b2adfaa4938fb9080b8d12430e4b108b836a9::xaum::XAUM';
+// Bluefin CLMM sqrt price limits — use the absolute bounds (tick math min/max)
+const BF_MIN_SQRT_PRICE = 4295048017n;   // MIN + 1
+const BF_MAX_SQRT_PRICE = 79226673515401279992447579054n; // MAX - 1
+
+export interface SwapResult {
+  txBytes: Uint8Array;
+  fromSymbol: string;
+  toSymbol: string;
+}
+
+/**
+ * Build a swap PTB: input coinType → output coinType.
+ * Supports SUI→USDC, USDC→SUI (DeepBook), and SUI/USDC→XAUM (DeepBook+Bluefin).
+ */
+export async function buildSwapTx(
+  rawAddress: string,
+  inputCoinType: string,
+  outputCoinType: string,
+  amount: bigint,
+): Promise<SwapResult> {
+  // Same token — no swap needed
+  if (inputCoinType === outputCoinType) throw new Error('Input and output are the same token');
+
+  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+
+  // SUI↔USDC: delegate to existing buildSelfSwapTx
+  if ((inputCoinType === SUI_TYPE && outputCoinType === USDC_TYPE) ||
+      (inputCoinType === USDC_TYPE && outputCoinType === SUI_TYPE)) {
+    return buildSelfSwapTx(rawAddress, inputCoinType, amount);
+  }
+
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // USDC → XAUM (single Bluefin hop)
+  if (inputCoinType === USDC_TYPE && outputCoinType === XAUM_TYPE) {
+    const usdcCoins = await listCoinsOfType(transport, walletAddress, USDC_TYPE);
+    if (!usdcCoins.length) throw new Error('No USDC found');
+    const usdcCoin = tx.objectRef(usdcCoins[0]);
+    if (usdcCoins.length > 1) tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+    const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(amount)]);
+
+    // Pool tokens: X=XAUM, Y=USDC. Swapping USDC→XAUM = Y→X = swapXtoY=false
+    const [usdcBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [USDC_TYPE], arguments: [usdcForSwap] });
+    const [zeroBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [XAUM_TYPE] });
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'), // clock
+        tx.object(BF_GLOBAL_CONFIG),
+        tx.object(BF_XAUM_USDC_POOL),
+        zeroBal,   // coinX balance in (zero — we're not providing XAUM)
+        usdcBal,   // coinY balance in (USDC)
+        tx.pure.bool(false), // swapXtoY = false (Y→X)
+        tx.pure.bool(true),  // by_amount_in
+        tx.pure.u64(amount),
+        tx.pure.u64(0), // min out
+        tx.pure.u128(BF_MAX_SQRT_PRICE), // sqrt price limit for Y→X
+      ],
+    });
+    const [xaumCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+    tx.transferObjects([xaumCoin, usdcDust, usdcCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'USDC', toSymbol: 'XAUM' };
+  }
+
+  // SUI → XAUM (DeepBook SUI→USDC, then Bluefin USDC→XAUM)
+  if (inputCoinType === SUI_TYPE && outputCoinType === XAUM_TYPE) {
+    // Step 1: SUI → USDC via DeepBook
+    const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        suiPayment, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    const suiChange = dbResult[0];  // Coin<Base=SUI> change
+    const usdcFromDb = dbResult[1]; // Coin<Quote=USDC> out
+    const deepChange = dbResult[2]; // Coin<DEEP>
+
+    // Get USDC amount for Bluefin swap (use all of it)
+    const [usdcBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [USDC_TYPE], arguments: [usdcFromDb] });
+    const [usdcBalValue] = tx.moveCall({ target: '0x2::balance::value', typeArguments: [USDC_TYPE], arguments: [usdcBal] });
+    const [zeroBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [XAUM_TYPE] });
+
+    // Step 2: USDC → XAUM via Bluefin CLMM
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'),
+        tx.object(BF_GLOBAL_CONFIG),
+        tx.object(BF_XAUM_USDC_POOL),
+        zeroBal,
+        usdcBal,
+        tx.pure.bool(false),
+        tx.pure.bool(true),
+        usdcBalValue,
+        tx.pure.u64(0),
+        tx.pure.u128(BF_MAX_SQRT_PRICE),
+      ],
+    });
+    const [xaumCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+    tx.transferObjects([xaumCoin, usdcDust, suiChange, deepChange], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'SUI', toSymbol: 'XAUM' };
+  }
+
+  // XAUM → USDC (single Bluefin hop, X→Y)
+  if (inputCoinType === XAUM_TYPE && outputCoinType === USDC_TYPE) {
+    const xaumCoins = await listCoinsOfType(transport, walletAddress, XAUM_TYPE);
+    if (!xaumCoins.length) throw new Error('No XAUM found');
+    const xaumCoin = tx.objectRef(xaumCoins[0]);
+    if (xaumCoins.length > 1) tx.mergeCoins(xaumCoin, xaumCoins.slice(1).map(c => tx.objectRef(c)));
+    const [xaumForSwap] = tx.splitCoins(xaumCoin, [tx.pure.u64(amount)]);
+
+    const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumForSwap] });
+    const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [USDC_TYPE] });
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'),
+        tx.object(BF_GLOBAL_CONFIG),
+        tx.object(BF_XAUM_USDC_POOL),
+        xaumBal, zeroUsdcBal,
+        tx.pure.bool(true), tx.pure.bool(true),
+        tx.pure.u64(amount), tx.pure.u64(0),
+        tx.pure.u128(BF_MIN_SQRT_PRICE),
+      ],
+    });
+    const [xaumDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcOut] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+    tx.transferObjects([usdcOut, xaumDust, xaumCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'XAUM', toSymbol: 'USDC' };
+  }
+
+  // XAUM → SUI (Bluefin XAUM→USDC, then DeepBook USDC→SUI)
+  if (inputCoinType === XAUM_TYPE && outputCoinType === SUI_TYPE) {
+    const xaumCoins = await listCoinsOfType(transport, walletAddress, XAUM_TYPE);
+    if (!xaumCoins.length) throw new Error('No XAUM found');
+    const xaumCoin = tx.objectRef(xaumCoins[0]);
+    if (xaumCoins.length > 1) tx.mergeCoins(xaumCoin, xaumCoins.slice(1).map(c => tx.objectRef(c)));
+    const [xaumForSwap] = tx.splitCoins(xaumCoin, [tx.pure.u64(amount)]);
+
+    // Step 1: XAUM → USDC via Bluefin
+    const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumForSwap] });
+    const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [USDC_TYPE] });
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'),
+        tx.object(BF_GLOBAL_CONFIG),
+        tx.object(BF_XAUM_USDC_POOL),
+        xaumBal, zeroUsdcBal,
+        tx.pure.bool(true), tx.pure.bool(true),
+        tx.pure.u64(amount), tx.pure.u64(0),
+        tx.pure.u128(BF_MIN_SQRT_PRICE),
+      ],
+    });
+    const [xaumDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+
+    // Step 2: USDC → SUI via DeepBook
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], xaumDust, xaumCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'XAUM', toSymbol: 'SUI' };
+  }
+
+  throw new Error(`Swap from ${inputCoinType.split('::').pop()} to ${outputCoinType.split('::').pop()} is not supported`);
 }
 
 // ─── Send tokens to an address ──────────────────────────────────────

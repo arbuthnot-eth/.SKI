@@ -683,55 +683,133 @@ const NS_PYTH_PRICE_INFO_INITIAL_SHARED_VERSION = 417086474;
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 const DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
 const DB_NS_USDC_POOL_INITIAL_SHARED_VERSION = 414947421;
+const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+const DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION = 389750322;
 const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+const SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+// DeepBook v3 WAL/USDC pool (different package deployment than NS pools)
+const DB2_PACKAGE = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
+const DB_WAL_USDC_POOL = '0x56a1c985c1f1123181d6b881714793689321ba24301b3585eec427436eb1c76d';
+const DB_WAL_USDC_POOL_INITIAL_SHARED_VERSION = 414947427;
 
-export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'splash.sui', suiPrice?: number, setAsDefault = false): Promise<Uint8Array> {
+// ─── Bluefin CLMM mainnet constants ──────────────────────────────────
+// Note: 0x3492... is the original package (defines types), 0xd075... is the latest upgrade (has executable code)
+const BF_PACKAGE = '0xd075338d105482f1527cbfd363d6413558f184dec36d9138a70261e87f486e9c';
+const BF_GLOBAL_CONFIG = '0x03db251ba509a8d5d8777b6338836082335d93eecbdd09a11e190a1cff51c352';
+const BF_WAL_USDC_POOL = '0xa8479545ff8a71659a7a3b5a2149cab68c5468a67aab8b18f62e4b42623e341e';
+const WAL_TYPE = '0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL';
+
+export interface SponsoredTxResult {
+  txBytes: Uint8Array;
+  /** If set, gas is sponsored — client must fetch sponsor sig from /api/sponsor-gas */
+  sponsorAddress?: string;
+}
+
+/** Fetch sponsor info (keeper address + gas coins) from the Worker. */
+async function fetchSponsorInfo(): Promise<{ sponsorAddress: string; gasCoins: { objectId: string; version: string; digest: string }[] } | null> {
+  try {
+    const res = await fetch('/api/sponsor-info');
+    if (!res.ok) return null;
+    const data = await res.json() as { sponsorAddress?: string; gasCoins?: { objectId: string; version: string; digest: string }[] };
+    if (!data.sponsorAddress || !data.gasCoins?.length) return null;
+    return { sponsorAddress: data.sponsorAddress, gasCoins: data.gasCoins };
+  } catch { return null; }
+}
+
+export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'splash.sui', suiPrice?: number, setAsDefault = false, preferredCoin?: string): Promise<SponsoredTxResult> {
   const walletAddress = normalizeSuiAddress(rawAddress);
 
   // Use GraphQL directly — skip gRPC trial which adds a full extra round-trip on failure.
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
   const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
 
-  const [usdcCoins, rawPrice, discountMap] = await Promise.all([
+  const [usdcCoins, nsCoins, rawPrice, discountMap, sponsorInfo] = await Promise.all([
     listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.USDC.type),
+    listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
     suinsClient.calculatePrice({ name: domain, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
+    fetchSponsorInfo(),
   ]);
 
   const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
+  const basePriceUsd = rawPrice / 1e6;
   // 1.5% buffer + round up to nearest cent (covers DeepBook slippage)
   const usdcNeeded = BigInt(Math.ceil(discountedUsd * 1.015 * 100) * 10000);
 
-  // Calculate total USDC balance
+  // Calculate total balances
   const totalUsdc = usdcCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const totalNs = nsCoins.reduce((sum, c) => sum + c.balance, 0n);
 
-  // ── Path 1: USDC → DeepBook → NS → Register (cheapest, NS discount) ──
-  if (usdcCoins.length > 0 && totalUsdc >= usdcNeeded) {
+  const pref = preferredCoin?.toUpperCase();
+  const sponsored = !!sponsorInfo;
+
+  // Configure gas sponsorship on a transaction
+  const setupGas = (tx: Transaction) => {
+    if (sponsorInfo) {
+      tx.setGasOwner(sponsorInfo.sponsorAddress);
+      tx.setGasPayment(sponsorInfo.gasCoins.map(c => ({
+        objectId: c.objectId,
+        version: c.version,
+        digest: c.digest,
+      })));
+    }
+  };
+
+  // ── Path builders ──
+
+  const buildNsDirect = async (): Promise<Uint8Array | null> => {
+    if (nsCoins.length === 0 || totalNs === 0n) return null;
     const tx = new Transaction();
     tx.setSender(walletAddress);
+    setupGas(tx);
 
-    // All shared objects hardcoded — tx.build() won't need to resolve them via RPC.
-    const priceInfoObjectId = tx.sharedObjectRef({
-      objectId: NS_PYTH_PRICE_INFO_OBJECT,
-      initialSharedVersion: NS_PYTH_PRICE_INFO_INITIAL_SHARED_VERSION,
-      mutable: false,
-    });
+    // Pyth price feed for NS/USD — pay oracle update fee from gas
+    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+    );
+
+    // Merge all NS coins into one, then pass to register — contract takes what it needs via Pyth
+    const nsCoin = tx.objectRef(nsCoins[0]);
+    if (nsCoins.length > 1) {
+      tx.mergeCoins(nsCoin, nsCoins.slice(1).map((c) => tx.objectRef(c)));
+    }
+
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    const nft = suinsTx.register({ domain, years: 1, coinConfig: mainPackage.mainnet.coins.NS, coin: nsCoin, priceInfoObjectId });
+    suinsTx.setTargetAddress({ nft, address: walletAddress });
+    if (setAsDefault) suinsTx.setDefault(domain);
+    tx.transferObjects([nft], tx.pure.address(walletAddress));
+
+    // Return NS remainder to wallet
+    tx.transferObjects([nsCoin], tx.pure.address(walletAddress));
+
+    return tx.build({ client: transport as never });
+  };
+
+  const buildUsdcSwap = async (): Promise<Uint8Array | null> => {
+    if (usdcCoins.length === 0 || totalUsdc < usdcNeeded) return null;
+    const tx = new Transaction();
+    tx.setSender(walletAddress);
+    setupGas(tx);
+
+    // Pyth price feed for NS/USD — pay oracle update fee from gas
+    const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+    );
     const dbPool = tx.sharedObjectRef({
       objectId: DB_NS_USDC_POOL,
       initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
       mutable: true,
     });
 
-    // Use objectRef (id+version+digest) for user coins — skips per-coin RPC lookup in tx.build().
     const usdcCoin = tx.objectRef(usdcCoins[0]);
     if (usdcCoins.length > 1) {
       tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map((c) => tx.objectRef(c)));
     }
     const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(usdcNeeded)]);
 
-    // Swap USDC → NS via DeepBook
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
     const [nsCoin, usdcSwapChange, deepChange] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
@@ -739,38 +817,32 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       arguments: [dbPool, usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
     });
 
-    // Register domain with NS discount
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({ domain, years: 1, coinConfig: mainPackage.mainnet.coins.NS, coin: nsCoin, priceInfoObjectId });
     suinsTx.setTargetAddress({ nft, address: walletAddress });
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
 
-    // Burn NS dust — prevents "+NS" in wallet confirmation
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
-
-    // Return USDC change
     tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
 
     return tx.build({ client: transport as never });
-  }
+  };
 
-  // ── Path 2: SUI → Register directly (no NS discount, no DeepBook) ──
-  if (suiPrice && suiPrice > 0) {
-    const basePriceUsd = rawPrice / 1e6;
+  const buildSuiDirect = async (): Promise<Uint8Array | null> => {
+    if (!suiPrice || suiPrice <= 0) return null;
     const tx = new Transaction();
     tx.setSender(walletAddress);
+    // Note: SUI path splits from tx.gas for payment — no gas sponsorship here
+    // since tx.gas belongs to whoever pays gas
 
-    // Get Pyth SUI/USD price info — pay oracle fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
       tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
     );
 
-    // Split SUI from gas with 10% buffer — contract calculates exact amount on-chain via Pyth
     const suiMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.10 * 1e9));
     const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiMist)]);
 
-    // Register with SUI payment
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain, years: 1,
@@ -782,18 +854,44 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
 
-    // Merge SUI remainder back to gas
     tx.mergeCoins(tx.gas, [suiPayment]);
 
     return tx.build({ client: transport as never });
+  };
+
+  // ── Try paths in preferred order ──
+  // Default priority: NS direct (cheapest, 25% discount) → USDC swap → SUI direct
+  // NS and USDC paths support gas sponsorship; SUI direct does not (uses gas coin for payment)
+  type PathEntry = { fn: () => Promise<Uint8Array | null>; canSponsor: boolean };
+  let paths: PathEntry[];
+  const nsPath: PathEntry = { fn: buildNsDirect, canSponsor: true };
+  const usdcPath: PathEntry = { fn: buildUsdcSwap, canSponsor: true };
+  const suiPath: PathEntry = { fn: buildSuiDirect, canSponsor: false };
+
+  if (pref === 'NS') {
+    paths = [nsPath, usdcPath, suiPath];
+  } else if (pref === 'USDC' || pref === 'USD') {
+    paths = [usdcPath, nsPath, suiPath];
+  } else if (pref === 'SUI') {
+    paths = [suiPath, nsPath, usdcPath];
+  } else {
+    paths = [nsPath, usdcPath, suiPath];
   }
 
-  // ── Neither path viable ──
-  const usdcHave = (Number(totalUsdc) / 1e6).toFixed(2);
-  const usdcNeed = (Number(usdcNeeded) / 1e6).toFixed(2);
+  for (const { fn, canSponsor } of paths) {
+    const result = await fn();
+    if (result) {
+      return {
+        txBytes: result,
+        sponsorAddress: canSponsor && sponsored ? sponsorInfo!.sponsorAddress : undefined,
+      };
+    }
+  }
+
+  // ── No path viable ──
   throw new Error(
-    `Not enough USDC ($${usdcHave} / $${usdcNeed} needed) and no SUI price available. ` +
-    `Add USDC or SUI to your wallet to register.`,
+    `Insufficient balance for registration (~$${basePriceUsd.toFixed(2)}). ` +
+    `Need enough SUI, USDC, or NS tokens to cover the domain cost.`,
   );
 }
 
@@ -1356,4 +1454,240 @@ export async function pruneShadeOrders(address: string): Promise<void> {
     }
   }
   try { localStorage.setItem(`${SHADE_STORAGE_PREFIX}${address}`, JSON.stringify(validOrders)); } catch {}
+}
+
+// ─── Consolidate alt tokens → USDC via DeepBook v3 ──────────────────
+//
+// Builds a single PTB that swaps all non-stable, non-SUI tokens into USDC.
+// Currently supported routes:
+//   NS  → USDC  (DeepBook NS/USDC pool, NS is base)
+//   WAL → USDC  (Bluefin CLMM WAL/USDC pool)
+//   SUI → USDC  (DeepBook SUI/USDC pool) — optional, only excess SUI
+//
+// All non-SUI, non-stable tokens with a known route are consolidated.
+
+export interface ConsolidateResult {
+  txBytes: Uint8Array;
+  /** Tokens being swapped */
+  swaps: Array<{ symbol: string; amount: number }>;
+  sponsorAddress?: string;
+}
+
+export interface SelfSwapResult {
+  txBytes: Uint8Array;
+  fromSymbol: 'SUI' | 'USDC';
+  toSymbol: 'SUI' | 'USDC';
+}
+
+export async function buildConsolidateToUsdcTx(
+  rawAddress: string,
+  /** Which tokens to consolidate. If empty, consolidates all eligible. */
+  tokens?: string[],
+  /** If true, also swap excess SUI (keeping 0.5 SUI for gas). */
+  includeSui = false,
+): Promise<ConsolidateResult> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+
+  // Fetch all swappable coins + sponsor info in parallel
+  const [nsCoins, walCoins, suiCoins, sponsorInfo] = await Promise.all([
+    listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
+    listCoinsOfType(transport, walletAddress, WAL_TYPE),
+    includeSui ? listCoinsOfType(transport, walletAddress, SUI_TYPE) : Promise.resolve([]),
+    fetchSponsorInfo(),
+  ]);
+
+  const totalNs = nsCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const totalWal = walCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const totalSui = suiCoins.reduce((sum, c) => sum + c.balance, 0n);
+  const want = (s: string) => !tokens?.length || tokens.includes(s);
+  // Minimum swap thresholds — skip dust amounts that would fail or cost more in fees than value
+  const shouldSwapNs = totalNs > 1_000_000n && want('NS');     // > 1 NS (~$0.02)
+  const shouldSwapWal = totalWal > 100_000_000n && want('WAL'); // > 0.1 WAL
+  const shouldSwapSui = includeSui && totalSui > 500_000_000n && want('SUI');
+
+  if (!shouldSwapNs && !shouldSwapWal && !shouldSwapSui) {
+    throw new Error('No eligible tokens to consolidate into USDC.');
+  }
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Gas sponsorship
+  if (sponsorInfo) {
+    tx.setGasOwner(sponsorInfo.sponsorAddress);
+    tx.setGasPayment(sponsorInfo.gasCoins.map(c => ({
+      objectId: c.objectId, version: c.version, digest: c.digest,
+    })));
+  }
+
+  const swaps: Array<{ symbol: string; amount: number }> = [];
+
+  // ── NS → USDC (DeepBook: NS is base) ──
+  // swap_exact_base_for_quote returns [Coin<Quote>, Coin<Base>, Coin<DEEP>]
+  // (the normalized API incorrectly reports 0 returns)
+  if (shouldSwapNs) {
+    const nsCoin = tx.objectRef(nsCoins[0]);
+    if (nsCoins.length > 1) {
+      tx.mergeCoins(nsCoin, nsCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const nsSwapResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [mainPackage.mainnet.coins.NS.type, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        nsCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    // Transfer all 3 returned coins to wallet (USDC out, NS change, DEEP change)
+    tx.transferObjects([nsSwapResult[0], nsSwapResult[1], nsSwapResult[2]], tx.pure.address(walletAddress));
+    swaps.push({ symbol: 'NS', amount: Number(totalNs) / 1e6 });
+  }
+
+  // ── WAL → USDC (DeepBook v3 — same pattern) ──
+  if (shouldSwapWal) {
+    const walCoin = tx.objectRef(walCoins[0]);
+    if (walCoins.length > 1) {
+      tx.mergeCoins(walCoin, walCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const walSwapResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [WAL_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_WAL_USDC_POOL, initialSharedVersion: DB_WAL_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        walCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([walSwapResult[0], walSwapResult[1], walSwapResult[2]], tx.pure.address(walletAddress));
+    swaps.push({ symbol: 'WAL', amount: Number(totalWal) / 1e9 });
+  }
+
+  // ── SUI → USDC (DeepBook: SUI is base) — optional ──
+  if (shouldSwapSui) {
+    const swapAmount = totalSui - 500_000_000n;
+    const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(swapAmount)]);
+
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const suiSwapResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        suiPayment, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([suiSwapResult[0], suiSwapResult[1], suiSwapResult[2]], tx.pure.address(walletAddress));
+    swaps.push({ symbol: 'SUI', amount: Number(swapAmount) / 1e9 });
+  }
+
+  const txBytes = await tx.build({ client: transport as never });
+  return {
+    txBytes,
+    swaps,
+    sponsorAddress: sponsorInfo?.sponsorAddress,
+  };
+}
+
+export async function buildSelfSwapTx(
+  rawAddress: string,
+  coinType: string,
+  amount: bigint,
+): Promise<SelfSwapResult> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  if (coinType === SUI_TYPE) {
+    const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const suiSwapResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        suiPayment, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([suiSwapResult[0], suiSwapResult[1], suiSwapResult[2]], tx.pure.address(walletAddress));
+    return {
+      txBytes: await tx.build({ client: transport as never }),
+      fromSymbol: 'SUI',
+      toSymbol: 'USDC',
+    };
+  }
+
+  if (coinType === USDC_TYPE) {
+    const usdcCoins = await listCoinsOfType(transport, walletAddress, USDC_TYPE);
+    if (!usdcCoins.length) throw new Error('No USDC found');
+    const totalUsdc = usdcCoins.reduce((sum, c) => sum + c.balance, 0n);
+    if (totalUsdc < amount) throw new Error('Insufficient USDC balance');
+
+    const usdcCoin = tx.objectRef(usdcCoins[0]);
+    if (usdcCoins.length > 1) {
+      tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+    const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(amount)]);
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [suiOut, usdcSwapChange, deepChange] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([suiOut, usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
+    return {
+      txBytes: await tx.build({ client: transport as never }),
+      fromSymbol: 'USDC',
+      toSymbol: 'SUI',
+    };
+  }
+
+  throw new Error('Self-swap only supports SUI and USDC');
+}
+
+// ─── Send tokens to an address ──────────────────────────────────────
+
+export async function buildSendTx(
+  senderAddress: string,
+  recipientAddress: string,
+  coinType: string,
+  amount: bigint,
+): Promise<Uint8Array> {
+  const sender = normalizeSuiAddress(senderAddress);
+  const recipient = normalizeSuiAddress(recipientAddress);
+  if (sender === recipient) throw new Error('Recipient matches sender');
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+  const tx = new Transaction();
+  tx.setSender(sender);
+
+  if (coinType === SUI_TYPE) {
+    // SUI: split from gas coin
+    const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+    tx.transferObjects([coin], tx.pure.address(recipient));
+  } else {
+    // Other tokens: fetch coins, merge, split, transfer
+    const coins = await listCoinsOfType(transport, sender, coinType);
+    if (!coins.length) throw new Error('No coins found for this token');
+    const totalBalance = coins.reduce((s, c) => s + c.balance, 0n);
+    if (totalBalance < amount) throw new Error('Insufficient token balance');
+
+    const primaryCoin = tx.objectRef(coins[0]);
+    if (coins.length > 1) {
+      tx.mergeCoins(primaryCoin, coins.slice(1).map(c => tx.objectRef(c)));
+    }
+    const [sendCoin] = tx.splitCoins(primaryCoin, [tx.pure.u64(amount)]);
+    tx.transferObjects([sendCoin], tx.pure.address(recipient));
+    tx.transferObjects([primaryCoin], tx.pure.address(sender)); // return remainder
+  }
+
+  return tx.build({ client: transport as never });
 }

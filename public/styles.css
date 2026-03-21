@@ -756,10 +756,130 @@ body {
     0 0 0 1px rgba(248, 113, 113, 0.22) inset;
 }
 
+/* QR + name badge row — always visible */
+.wk-dd-qr-name-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.wk-dd-qr-col {
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.wk-dd-qr-col:hover {
+  opacity: 0.85;
+}
+
+.wk-dd-qr-col--main {
+  width: 72px;
+  min-height: 72px;
+}
+
+.wk-dd-name-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wk-dd-name-col .wk-popout-name-badge {
+  margin-bottom: 0;
+}
+
+.wk-dd-qr-col svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .wk-dd-address-row {
   display: flex;
   gap: 6px;
   align-items: stretch;
+}
+
+.wk-dd-address-network-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  align-self: center;
+  opacity: 0.7;
+}
+
+/* Send row — visible when address is collapsed */
+.wk-send-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  transition: opacity 0.2s, max-height 0.25s;
+  max-height: 40px;
+  opacity: 1;
+  overflow: hidden;
+}
+.wk-send-row--hidden {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+}
+.wk-send-amount {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  outline: none;
+}
+.wk-send-amount:focus {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(59, 130, 246, 0.06);
+}
+.wk-send-amount::placeholder { color: rgba(255, 255, 255, 0.25); }
+/* Hide number input spinners */
+.wk-send-amount::-webkit-inner-spin-button,
+.wk-send-amount::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.wk-send-amount { -moz-appearance: textfield; }
+.wk-send-token {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.45);
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.wk-send-btn {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.3), rgba(34, 197, 94, 0.25));
+  color: #86efac;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.wk-send-btn:hover {
+  border-color: rgba(34, 197, 94, 0.7);
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.5), rgba(34, 197, 94, 0.4));
+  color: #bbf7d0;
+}
+.wk-send-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .wk-dd-address-row--with-dot {
@@ -798,6 +918,25 @@ body {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Collapsible wrapper under name badge — holds address row + NS section */
+.wk-badge-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  transition: grid-template-rows 0.25s ease, opacity 0.25s ease;
+  opacity: 1;
+}
+
+.wk-badge-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.wk-badge-collapse--hidden {
+  grid-template-rows: 0fr;
+  opacity: 0;
 }
 
 .wk-dd-ns-domain-row {
@@ -1027,14 +1166,14 @@ body {
   cursor: pointer !important;
 }
 
-/* Target address matches connected wallet — .sui + button go purple */
-.wk-dd-ns-section--self-target .wk-ns-dot-sui {
+/* Target address matches connected wallet — .sui + button go purple (high specificity to override --available/--taken) */
+.wk-dd-ns-section.wk-dd-ns-section--self-target .wk-ns-dot-sui {
   color: rgba(192, 132, 252, 0.6);
 }
-.wk-dd-ns-section--self-target .wk-ns-price-val {
+.wk-dd-ns-section.wk-dd-ns-section--self-target .wk-ns-price-val {
   color: #a78bfa;
 }
-.wk-dd-ns-section--self-target .wk-dd-ns-register-btn {
+.wk-dd-ns-section.wk-dd-ns-section--self-target .wk-dd-ns-register-btn {
   border-color: rgba(168, 85, 247, 0.45);
   background: linear-gradient(135deg, rgba(88, 28, 135, 0.4), rgba(126, 34, 206, 0.35));
   color: rgba(192, 132, 252, 0.8);
@@ -1285,6 +1424,7 @@ body {
 .wk-dd-ns-section--owned .wk-ns-pin-btn,
 .wk-dd-ns-section--self-target .wk-ns-pin-btn { display: flex; }
 .wk-ns-pin-btn:hover { background: rgba(168, 85, 247, 0.55); }
+
 
 /* ─── Target address editor ────────────────────────────────────────── */
 .wk-ns-route--target-edit {
@@ -1682,6 +1822,161 @@ body {
 .wk-dropdown--large {
   width: 100%;
   padding: 12px;
+  overflow: hidden;
+}
+
+/* ─── Dual-panel slider (main ↔ settings) ─────────────────────────── */
+.wk-dd-slider {
+  position: relative;
+}
+
+.wk-dd-panel {
+  width: 100%;
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.wk-dd-panel--main {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.wk-dd-panel--settings {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  opacity: 0;
+  transform: translateX(24px);
+  pointer-events: none;
+}
+
+.wk-dd-slider--settings .wk-dd-panel--main {
+  opacity: 0;
+  transform: translateX(-24px);
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.wk-dd-slider--settings .wk-dd-panel--settings {
+  position: relative;
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+
+/* Settings gear button */
+.wk-dd-settings {
+  flex: 0 0 auto !important;
+  width: 36px;
+  padding: 6px !important;
+  font-size: 1.1rem;
+  line-height: 1;
+  text-align: center;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.wk-dd-settings:hover {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ─── Settings panel ──────────────────────────────────────────────── */
+.wk-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.wk-settings-back {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #dbe2f0;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.wk-settings-back:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.wk-settings-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
+  letter-spacing: 0.02em;
+}
+
+.wk-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wk-settings-group {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.wk-settings-group-label {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.3);
+  margin-bottom: 6px;
+}
+
+.wk-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.wk-settings-row + .wk-settings-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.wk-settings-label {
+  font-size: 0.78rem;
+  color: #dbe2f0;
+}
+
+.wk-settings-value {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.wk-settings-value--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+}
+
+.wk-settings-hint {
+  display: block;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.25);
+  margin-top: 4px;
 }
 
 .wk-popout-name-badge {
@@ -1693,6 +1988,14 @@ body {
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.3);
   margin-bottom: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.wk-popout-name-badge:hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.5);
 }
 
 .wk-popout-name-text {
@@ -1736,6 +2039,7 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  cursor: pointer;
 }
 
 .wk-popout-bal-icon {
@@ -1743,6 +2047,18 @@ body {
   height: 20px;
   flex-shrink: 0;
 }
+
+.wk-popout-bal-icon-btn {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  border-radius: 50%;
+  transition: transform 0.15s, filter 0.15s;
+}
+.wk-popout-bal-icon-btn:hover { transform: scale(1.15); filter: brightness(1.2); }
+.wk-popout-bal-icon-btn:active { transform: scale(0.95); }
+.wk-popout-bal-icon-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
 
 .wk-popout-bal-val {
   font-size: 1.21rem;
@@ -1756,6 +2072,104 @@ body {
 
 .wk-popout-bal-val--sui {
   color: #93c5fd;
+}
+
+/* Collapsible wrapper for coin chips */
+.wk-coins-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  transition: grid-template-rows 0.25s ease, opacity 0.25s ease, margin 0.25s ease;
+  opacity: 1;
+  margin-bottom: 8px;
+}
+.wk-coins-collapse--hidden {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-bottom: 0;
+}
+.wk-coins-collapse > .wk-coin-breakdown {
+  min-height: 0;
+}
+
+/* Per-coin breakdown */
+.wk-coin-breakdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+  overscroll-behavior-x: contain;
+}
+
+.wk-coin-network {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.wk-coin-network-icon {
+  width: 20px;
+  height: 20px;
+  opacity: 0.6;
+}
+
+.wk-coin-breakdown::-webkit-scrollbar { height: 4px; }
+.wk-coin-breakdown::-webkit-scrollbar-track { background: transparent; }
+.wk-coin-breakdown::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.25); border-radius: 2px; }
+
+.wk-coin-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.wk-coin-item--sui:hover,
+.wk-coin-item--sui.wk-coin-item--selected {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.15) inset;
+}
+
+.wk-coin-item--usd:hover,
+.wk-coin-item--usd.wk-coin-item--selected {
+  border-color: rgba(74, 222, 128, 0.5);
+  background: rgba(34, 197, 94, 0.1);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.15) inset;
+}
+
+.wk-popout-coin-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.wk-coin-val {
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wk-coin-whole { color: #ffffff; }
+.wk-coin-frac { font-weight: 400; }
+.wk-coin-frac--sui { color: rgba(147, 197, 253, 0.6); }
+.wk-coin-frac--usd { color: rgba(74, 222, 128, 0.7); }
+.wk-coin-frac--other { color: rgba(165, 148, 249, 0.6); }
+
+.wk-coin-item--other:hover,
+.wk-coin-item--other.wk-coin-item--selected {
+  border-color: rgba(129, 140, 248, 0.5);
+  background: rgba(99, 102, 241, 0.1);
+  box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.15) inset;
 }
 
 .wk-bal-whole {

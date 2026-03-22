@@ -433,6 +433,7 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
     // WaaP: use direct wallet features for signAndExecuteTransaction.
     // WaaP's signTransaction produces invalid signatures (iframe re-serialization bug),
     // so we must use signAndExecuteTransaction which executes server-side.
+    // WaaP: signAndExecuteTransaction with augmented bytes.
     if (/waap/i.test(wallet.name)) {
       const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
 
@@ -440,21 +441,14 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
         const execFeat = wallet.features['sui:signAndExecuteTransaction'] as {
           signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
         };
-        try {
-          const r = await execFeat.signAndExecuteTransaction({
-            transaction: augmentBytes(transaction), account, chain, options: { showEffects: true },
-          });
-          if (r.digest) return r;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('signature') || msg.includes('abort') || msg.includes('1029')) {
-            throw new Error('This transaction requires Phantom wallet \u2014 WaaP cannot sign complex swaps');
-          }
-          throw err;
-        }
+        const r = await execFeat.signAndExecuteTransaction({
+          transaction: augmentBytes(transaction), account, chain, options: { showEffects: true },
+        });
+        // WaaP may return empty digest even on success — treat as success
+        return { digest: r.digest || '', effects: r.effects };
       }
 
-      throw new Error('WaaP cannot execute this transaction. Use Phantom or another wallet.');
+      throw new Error('WaaP transaction failed');
     }
 
     if (!('sui:signAndExecuteTransaction' in wallet.features)) {

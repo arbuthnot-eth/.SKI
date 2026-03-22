@@ -485,14 +485,17 @@ export async function checkDomainStatus(
           query: `query($id: SuiAddress!) {
             object(address: $id) {
               owner {
-                ... on AddressOwner { owner { address } }
-                ... on Parent {
-                  parent {
+                __typename
+                ... on AddressOwner { address { address } }
+                ... on ObjectOwner {
+                  address {
                     address
-                    asMoveObject { contents { type { repr } } }
-                    owner {
-                      ... on Parent { parent { address } }
-                      ... on AddressOwner { owner { address } }
+                    asObject {
+                      asMoveObject { contents { type { repr } } }
+                      owner {
+                        ... on ObjectOwner { address { address } }
+                        ... on AddressOwner { address { address } }
+                      }
                     }
                   }
                 }
@@ -504,38 +507,39 @@ export async function checkDomainStatus(
       });
       type OwnerResult = {
         data?: { object?: { owner?: {
-          owner?: { address?: string };
-          parent?: {
+          __typename?: string;
+          address?: {
             address?: string;
-            asMoveObject?: { contents?: { type?: { repr?: string } } };
-            owner?: {
-              parent?: { address?: string };
-              owner?: { address?: string };
+            asObject?: {
+              asMoveObject?: { contents?: { type?: { repr?: string } } };
+              owner?: { address?: { address?: string } };
             };
           };
         } } };
       };
       const json = await res.json() as OwnerResult;
       const ownerData = json?.data?.object?.owner;
-      const ownerAddr = ownerData?.owner?.address;
-      if (ownerAddr) {
-        const normalizedOwner = ownerAddr.toLowerCase();
-        const candidates = [normalizeSuiAddress(walletAddress).toLowerCase()];
-        if (additionalOwnerAddresses) {
-          for (const a of additionalOwnerAddresses) candidates.push(normalizeSuiAddress(a).toLowerCase());
+      // AddressOwner — NFT owned directly by an address
+      if (ownerData?.__typename === 'AddressOwner') {
+        const ownerAddr = ownerData.address?.address;
+        if (ownerAddr) {
+          const normalizedOwner = ownerAddr.toLowerCase();
+          const candidates = [normalizeSuiAddress(walletAddress).toLowerCase()];
+          if (additionalOwnerAddresses) {
+            for (const a of additionalOwnerAddresses) candidates.push(normalizeSuiAddress(a).toLowerCase());
+          }
+          if (candidates.includes(normalizedOwner)) {
+            return { avail: 'owned', targetAddress, nftOwner: ownerAddr };
+          }
+          return { avail: 'taken', targetAddress, nftOwner: ownerAddr };
         }
-        if (candidates.includes(normalizedOwner)) {
-          return { avail: 'owned', targetAddress, nftOwner: ownerAddr };
-        }
-        return { avail: 'taken', targetAddress, nftOwner: ownerAddr };
       }
-      // Parent owner → NFT is inside a kiosk (dynamic field wrapper)
-      const parentData = ownerData?.parent;
-      if (parentData) {
-        const parentType = parentData.asMoveObject?.contents?.type?.repr ?? '';
+      // ObjectOwner — NFT is inside a kiosk (dynamic field wrapper)
+      if (ownerData?.__typename === 'ObjectOwner') {
+        const parentObj = ownerData.address?.asObject;
+        const parentType = parentObj?.asMoveObject?.contents?.type?.repr ?? '';
         if (parentType.includes('dynamic_field') || parentType.includes('kiosk')) {
-          // Grandparent is the kiosk ID
-          const kioskId = parentData.owner?.parent?.address ?? parentData.address;
+          const kioskId = parentObj?.owner?.address?.address ?? ownerData.address?.address;
           if (kioskId && record.nftId) {
             const listingPrice = await _fetchKioskListingPrice(kioskId, record.nftId);
             if (listingPrice) {
@@ -563,14 +567,16 @@ export async function lookupNftOwner(domain: string): Promise<string | null> {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        query: `query($id: SuiAddress!) { object(address: $id) { owner { ... on AddressOwner { owner { address } } } } }`,
+        query: `query($id: SuiAddress!) { object(address: $id) { owner { ... on AddressOwner { address { address } } ... on ObjectOwner { address { address asObject { owner { ... on AddressOwner { address { address } } } } } } } } }`,
         variables: { id: record.nftId },
       }),
     });
     const json = await res.json() as {
-      data?: { object?: { owner?: { owner?: { address?: string } } } };
+      data?: { object?: { owner?: { address?: { address?: string; asObject?: { owner?: { address?: { address?: string } } } } } } };
     };
-    return json?.data?.object?.owner?.owner?.address ?? null;
+    // For ObjectOwner (kiosk), walk up to find the human owner
+    const addr = json?.data?.object?.owner?.address;
+    return addr?.asObject?.owner?.address?.address ?? addr?.address ?? null;
   } catch {
     return null;
   }
@@ -916,6 +922,41 @@ export async function fetchTradeportListing(label: string): Promise<TradeportLis
 
 // ─── Kiosk marketplace helpers ───────────────────────────────────────
 
+/** Resolve the kiosk ID for an NFT by its object ID (e.g. from Tradeport nftTokenId). */
+export async function resolveKioskIdForNft(nftId: string): Promise<string | null> {
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($id: SuiAddress!) {
+          object(address: $id) {
+            owner {
+              ... on ObjectOwner {
+                address {
+                  address
+                  asObject {
+                    owner {
+                      ... on ObjectOwner { address { address } }
+                      ... on AddressOwner { address { address } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        variables: { id: nftId },
+      }),
+    });
+    type R = { data?: { object?: { owner?: { address?: { address?: string; asObject?: { owner?: { address?: { address?: string } } } } } } } };
+    const json = await res.json() as R;
+    const parent = json?.data?.object?.owner?.address;
+    // Grandparent is the kiosk ID (NFT → dynamic_field wrapper → kiosk)
+    return parent?.asObject?.owner?.address?.address ?? parent?.address ?? null;
+  } catch { return null; }
+}
+
 /** Fetch the listing price (in MIST) for an NFT inside a kiosk, or null if not listed. */
 async function _fetchKioskListingPrice(kioskId: string, nftId: string): Promise<string | null> {
   try {
@@ -931,56 +972,114 @@ async function _fetchKioskListingPrice(kioskId: string, nftId: string): Promise<
 /**
  * Build a PTB to purchase a SuiNS NFT from a seller's kiosk.
  *
- * Uses KioskTransaction.purchaseAndResolve() which auto-resolves transfer
- * policy rules (royalties, lock rules, etc). After purchase, the NFT is taken
- * out of the buyer's kiosk and transferred directly to the wallet so SuiNS
- * name resolution works. Returns Uint8Array for WaaP compatibility.
+ * Uses raw Move calls: kiosk::purchase → transfer_policy::confirm_request.
+ * SuinsRegistration has a shared TransferPolicy with zero rules, so we call
+ * confirm_request directly (no rule resolution needed). The NFT is transferred
+ * to the buyer's wallet so SuiNS name resolution works.
  */
+const SUINS_TRANSFER_POLICY = '0x38c967a9974ba7d6f94e66320a1bd04c90592e916ee8271b9ab943f8e4592723';
+
 export async function buildKioskPurchaseTx(
   rawAddress: string,
   sellerKioskId: string,
   nftId: string,
   priceMist: string,
 ): Promise<Uint8Array> {
-  const { kiosk, KioskTransaction } = await import('@mysten/kiosk');
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-  const kioskClient = transport.$extend(kiosk()).kiosk;
 
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
-  // Check if buyer already has a kiosk — purchaseAndResolve requires one
-  const ownedKiosks = await kioskClient.getOwnedKiosks({ address: walletAddress });
-  const buyerCap = ownedKiosks.kioskOwnerCaps[0];
+  // Split exact payment from gas
+  const payment = tx.splitCoins(tx.gas, [tx.pure.u64(priceMist)]);
 
-  const kioskTx = new KioskTransaction({
-    transaction: tx,
-    kioskClient,
-    ...(buyerCap ? { cap: buyerCap } : {}),
+  // kiosk::purchase<SuinsRegistration> → returns (NFT, TransferRequest)
+  const [nft, transferRequest] = tx.moveCall({
+    target: '0x2::kiosk::purchase',
+    typeArguments: [SUINS_REG_TYPE],
+    arguments: [
+      tx.object(sellerKioskId),
+      tx.pure.id(nftId),
+      payment,
+    ],
   });
 
-  // If buyer has no kiosk, create one (purchaseAndResolve requires a buyer kiosk)
-  if (!buyerCap) kioskTx.create();
-
-  // Purchase and resolve transfer policies (royalties, etc.)
-  // Item gets placed in buyer's kiosk by purchaseAndResolve
-  await kioskTx.purchaseAndResolve({
-    itemType: SUINS_REG_TYPE,
-    itemId: nftId,
-    price: priceMist,
-    sellerKiosk: sellerKioskId,
+  // Confirm the (empty-rules) transfer request against the shared policy
+  tx.moveCall({
+    target: '0x2::transfer_policy::confirm_request',
+    typeArguments: [SUINS_REG_TYPE],
+    arguments: [
+      tx.object(SUINS_TRANSFER_POLICY),
+      transferRequest,
+    ],
   });
 
-  // Take NFT out of buyer's kiosk → transfer directly to wallet address
-  // (SuiNS resolution requires AddressOwner, not kiosk parent)
-  const nft = kioskTx.take({ itemType: SUINS_REG_TYPE, itemId: nftId });
+  // Transfer NFT directly to buyer (SuiNS needs AddressOwner, not kiosk)
   tx.transferObjects([nft], tx.pure.address(walletAddress));
 
-  // Share newly created kiosk + transfer cap (must be before finalize)
-  if (!buyerCap) kioskTx.shareAndTransferCap(walletAddress);
+  return tx.build({ client: transport as never });
+}
 
-  kioskTx.finalize();
+/**
+ * Build a PTB to purchase a SuiNS NFT listed on Tradeport (SimpleListing).
+ *
+ * Tradeport uses its own listing contract, not kiosks. Calls
+ * tradeport_listings::buy_listing_without_transfer_policy which transfers
+ * the NFT directly to the buyer.
+ */
+const TRADEPORT_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
+const TRADEPORT_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+
+/**
+ * Resolve the on-chain SimpleListing object ID from the NFT token ID.
+ * Chain: NFT → dynamic_field wrapper → SimpleListing
+ */
+export async function resolveTradeportListingId(nftTokenId: string): Promise<string | null> {
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${nftTokenId}") { owner { ... on ObjectOwner { address { address asObject { owner { ... on ObjectOwner { address { address } } } } } } } } }`,
+      }),
+    });
+    type R = { data?: { object?: { owner?: { address?: { address?: string; asObject?: { owner?: { address?: { address?: string } } } } } } } };
+    const json = await res.json() as R;
+    // grandparent = SimpleListing object ID
+    return json?.data?.object?.owner?.address?.asObject?.owner?.address?.address ?? null;
+  } catch { return null; }
+}
+
+export async function buildTradeportPurchaseTx(
+  rawAddress: string,
+  nftTokenId: string,
+  priceMist: string,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Add 3% marketplace fee (fee_bps = 300)
+  const price = BigInt(priceMist);
+  const fee = price * 300n / 10000n;
+  const payment = tx.splitCoins(tx.gas, [tx.pure.u64((price + fee).toString())]);
+
+  // Store keys listings by NFT ID, not SimpleListing object ID
+  tx.moveCall({
+    target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+    typeArguments: [SUINS_REG_TYPE],
+    arguments: [
+      tx.object(TRADEPORT_STORE),
+      tx.pure.id(nftTokenId),
+      payment,
+    ],
+  });
+
+  // Return leftover coin (function borrows &mut Coin, doesn't consume it)
+  tx.transferObjects([payment], tx.pure.address(walletAddress));
 
   return tx.build({ client: transport as never });
 }

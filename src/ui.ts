@@ -4762,7 +4762,7 @@ function renderSkiMenu() {
                   <input id="wk-send-amount" class="wk-send-amount" type="number" step="any" min="0" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
                 </div>
                 <div class="wk-send-row-below">
-                  <button id="wk-send-all" class="wk-send-all" type="button" title="Use full balance">ALL</button>
+                  <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
@@ -5312,10 +5312,11 @@ function renderSkiMenu() {
     const sym = selectedCoinSymbol ?? '';
     const wc = walletCoins.find(c => c.symbol === sym || c.symbol.toLowerCase() === selKey)
       ?? (chip.colorCls === 'wk-coin-item--usd' ? walletCoins.find(c => c.isStable) : null);
-    const rawVal = wc?.isStable ? wc.balance : chip.val;
+    const isStable = wc?.isStable || chip.colorCls === 'wk-coin-item--usd';
+    const rawVal = isStable ? (wc?.balance ?? app.stableUsd) : chip.val;
     // Floor to nearest cent
     const floored = Math.floor(rawVal * 100) / 100;
-    pendingSendAmount = _fmtUsd(floored);
+    pendingSendAmount = floored.toFixed(2);
     amountInput.value = pendingSendAmount;
     const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
     if (sendBtn) sendBtn.disabled = false;

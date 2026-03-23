@@ -2293,6 +2293,7 @@ const _coinChipsCache: CoinChip[] = [];
 let selectedCoinSymbol: string | null = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as string) === 'sui' ? null : 'USD'; } catch { return 'USD'; }
 })();
+let _userManuallySelectedCoin = false;
 let pendingSendAmount = '';
 
 // ─── Swap output ────────────────────────────────────────────────────
@@ -2340,9 +2341,9 @@ function _fmtUsd(amt: number): string {
 }
 
 const _SWAP_ICONS: Record<string, string> = {
-  usd: '<svg viewBox="0 0 20 20" width="16" height="16"><circle cx="10" cy="10" r="9" fill="#22c55e" stroke="#fff" stroke-width="1.5"/><text x="10" y="10" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="700" fill="#fff">$</text></svg>',
-  sui: `<img src="${SUI_DROP_URI}" width="16" height="16" style="vertical-align:middle" alt="SUI">`,
-  gold: `<img src="${AU_ICON_URI}" width="16" height="16" style="vertical-align:middle;border-radius:50%" alt="Au">`,
+  usd: '<svg viewBox="0 0 20 20" width="22" height="22"><circle cx="10" cy="10" r="9" fill="#22c55e" stroke="#fff" stroke-width="1.5"/><text x="10" y="10" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="700" fill="#fff">$</text></svg>',
+  sui: `<img src="${SUI_DROP_URI}" width="22" height="22" style="vertical-align:middle" alt="SUI">`,
+  gold: `<img src="${AU_ICON_URI}" width="22" height="22" style="vertical-align:middle;border-radius:50%" alt="Au">`,
 };
 
 function _quoteToUsd(key: string, returnAmount: string): string {
@@ -2802,16 +2803,24 @@ function _renderProfileEl(el: HTMLElement) {
     ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">ika</span>'
     : '';
 
-  el.innerHTML = `
-    <div class="wk-widget">
-      <button class="wk-widget-btn connected" type="button" title="Open profile">
-        ${iconHtml}
+  const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
+  const innerHtml = `${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
             <span class="wk-widget-primary-name">${esc(label)}</span>
           </span>
         </span>
-        ${ikaHtml}
+        ${ikaHtml}`;
+
+  el.innerHTML = hasSuins
+    ? `<div class="wk-widget">
+      <a class="wk-widget-btn connected" href="${skiUrl}" target="_blank" rel="noopener" title="${esc(label)}.sui.ski">
+        ${innerHtml}
+      </a>
+    </div>`
+    : `<div class="wk-widget">
+      <button class="wk-widget-btn connected" type="button" title="Open profile">
+        ${innerHtml}
       </button>
     </div>`;
 }
@@ -3041,13 +3050,32 @@ let nsRosterOpen = (() => { try { return sessionStorage.getItem('ski:roster-open
 let nsRouteOpen = (() => { try { return sessionStorage.getItem('ski:route-open') !== '0'; } catch { return true; } })();
 let _suiamiVerifyHtml = ''; // persists SuiAMI result across re-renders
 function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
-let nsSectionOpen = (() => { try { return sessionStorage.getItem('ski:ns-section-open') === '1'; } catch { return false; } })();
+let nsSectionOpen = (() => {
+  try {
+    const stored = sessionStorage.getItem('ski:ns-section-open');
+    if (stored !== null) return stored === '1';
+    // Default: open for black diamond (no SuiNS name) so target address is visible
+    const addr = JSON.parse(localStorage.getItem('ski:session') ?? '{}')?.address;
+    const cachedName = addr ? localStorage.getItem(`ski:suins:${addr}`) : null;
+    return !cachedName;
+  } catch { return false; }
+})();
 function _persistNsSectionOpen() { try { sessionStorage.setItem('ski:ns-section-open', nsSectionOpen ? '1' : '0'); } catch {} }
 let coinChipsOpen = (() => { try { return sessionStorage.getItem('ski:coins-open') !== '0'; } catch { return true; } })();
 function _persistCoinChipsOpen() { try { sessionStorage.setItem('ski:coins-open', coinChipsOpen ? '1' : '0'); } catch {} }
-let addrSectionOpen = (() => { try { return sessionStorage.getItem('ski:addr-open') === '1'; } catch { return false; } })();
+let addrSectionOpen = (() => {
+  try {
+    const stored = sessionStorage.getItem('ski:addr-open');
+    if (stored !== null) return stored === '1';
+    // Default: open for black diamond (no SuiNS), closed for blue square (has SuiNS)
+    // Check localStorage cache since app.suinsName isn't set yet at init
+    const addr = JSON.parse(localStorage.getItem('ski:session') ?? '{}')?.address;
+    const cachedName = addr ? localStorage.getItem(`ski:suins:${addr}`) : null;
+    return !cachedName;
+  } catch { return false; }
+})();
 function _persistAddrSectionOpen() { try { sessionStorage.setItem('ski:addr-open', addrSectionOpen ? '1' : '0'); } catch {} }
-// Legacy alias — some code still references balSectionOpen
+// Legacy alias — kept in sync with addrSectionOpen
 let balSectionOpen = addrSectionOpen;
 let skiSettingsOpen = false;
 function _saveRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; if (g) sessionStorage.setItem('ski:roster-scroll', String(g.scrollLeft)); } catch {} }
@@ -3849,13 +3877,12 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white diamond outline using evenodd fill-rule so the center is transparent
-  // (avoids background-color dependency that broke on mobile/dark-mode environments)
+  // black-diamond: white outline with dark fill matching the input textbox
   const outerPad = pad;
   const innerPad = pad + sw * 1.1;
   const outerPath = `M${half},${outerPad} L${s - outerPad},${half} L${half},${s - outerPad} L${outerPad},${half}Z`;
   const innerPath = `M${half},${innerPad} L${s - innerPad},${half} L${half},${s - innerPad} L${innerPad},${half}Z`;
-  return `<svg ${base}><path d="${outerPath} ${innerPath}" fill="white" fill-rule="evenodd"/></svg>`;
+  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#050505"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -4542,9 +4569,12 @@ function renderSkiMenu() {
     const tp = getTokenPrice(symbol);
     return tp != null && tp > 0 ? bal * tp : 0;
   };
-  const _fmtUsdChipHtml = (usd: number): string => {
-    const s = usd < 100 ? usd.toFixed(2) : usd < 10_000 ? usd.toFixed(0) : (usd / 1_000).toFixed(1) + 'k';
-    return `<span class="wk-coin-whole">${esc(s)}</span>`;
+  const _fmtUsdChipHtml = (usd: number, showDollar = false, fracCls = 'wk-coin-frac--usd'): string => {
+    const s = usd < 10_000 ? usd.toFixed(2) : (usd / 1_000).toFixed(1) + 'k';
+    const prefix = showDollar ? '$' : '';
+    const dot = s.indexOf('.');
+    if (dot < 0) return `<span class="wk-coin-whole">${esc(prefix + s)}</span>`;
+    return `<span class="wk-coin-whole">${esc(prefix + s.slice(0, dot))}</span><span class="wk-coin-frac ${fracCls}">${esc(s.slice(dot))}</span>`;
   };
   _coinChipsCache.length = 0;
   const _fallbackSuiUsd = (() => {
@@ -4585,10 +4615,10 @@ function renderSkiMenu() {
     const balFmt = c.balance < 0.001 ? c.balance.toExponential(2) : c.balance < 1 ? c.balance.toFixed(6) : c.balance < 1000 ? c.balance.toFixed(4) : c.balance.toFixed(2);
     const priceFmt = !c.isStable && tp != null && tp > 0 ? ` ($${tp < 0.01 ? tp.toFixed(6) : tp < 1 ? tp.toFixed(4) : tp < 100 ? tp.toFixed(2) : _fmtUsd(tp)})` : '';
     const tooltip = `${balFmt} ${tokenName}${priceFmt}`;
+    const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : c.symbol === 'XAUM' ? 'wk-coin-frac--gold' : 'wk-coin-frac--other';
     if (_usdMode) {
-      _coinChipsCache.push({ icon, val: usd, html: _fmtUsdChipHtml(usd), key: c.symbol.toLowerCase(), colorCls, tooltip });
+      _coinChipsCache.push({ icon, val: usd, html: _fmtUsdChipHtml(usd, !c.isStable, fracCls), key: c.symbol.toLowerCase(), colorCls, tooltip });
     } else {
-      const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : 'wk-coin-frac--other';
       _coinChipsCache.push({ icon, val: c.balance, html: _fmtCoinHtml(c.balance, fracCls), key: c.symbol.toLowerCase(), colorCls, tooltip });
     }
   }
@@ -4599,7 +4629,7 @@ function renderSkiMenu() {
     if (_usdMode) {
       const suiUsd = _suiP > 0 ? app.sui * _suiP : _fallbackSuiUsd;
       if (suiUsd != null && suiUsd >= 0.10) {
-        _coinChipsCache.push({ icon: suiDropIcon, val: suiUsd, html: _fmtUsdChipHtml(suiUsd), key: 'sui', colorCls: 'wk-coin-item--sui', tooltip: suiTip });
+        _coinChipsCache.push({ icon: suiDropIcon, val: suiUsd, html: _fmtUsdChipHtml(suiUsd, true, 'wk-coin-frac--sui'), key: 'sui', colorCls: 'wk-coin-item--sui', tooltip: suiTip });
       }
     } else {
       _coinChipsCache.push({ icon: suiDropIcon, val: app.sui, html: _fmtCoinHtml(app.sui, 'wk-coin-frac--sui'), key: 'sui', colorCls: 'wk-coin-item--sui', tooltip: suiTip });
@@ -4620,20 +4650,27 @@ function renderSkiMenu() {
   if (!selectedCoinSymbol && _coinChipsCache.length) {
     selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
   }
-  // Auto-populate 95% of highest-value token as default swap amount (in USD)
-  if (!pendingSendAmount && _coinChipsCache.length && _usdMode) {
-    const top = _coinChipsCache[0];
-    if (top.val >= 1) {
-      const amt95 = top.val * 0.95;
-      pendingSendAmount = _fmtUsd(amt95);
-      selectedCoinSymbol = top.key.toUpperCase();
-    }
+  // Auto-select highest-value token if none selected
+  if (!selectedCoinSymbol && _coinChipsCache.length) {
+    selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
   }
-  const _selKey = selectedCoinSymbol?.toLowerCase() ?? '';
-  const _selIdx = _coinChipsCache.findIndex(c => c.key === _selKey);
+  let _selKey = selectedCoinSymbol?.toLowerCase() ?? '';
+  let _selIdx = _coinChipsCache.findIndex(c => c.key === _selKey);
+  if (_selIdx < 0 && _coinChipsCache.length) {
+    // Selected coin no longer exists — reset to highest value
+    _selIdx = 0;
+    selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
+    _selKey = _coinChipsCache[0].key;
+  } else if (!_userManuallySelectedCoin && _coinChipsCache.length && _selIdx !== 0) {
+    // User hasn't manually picked — keep selecting highest-value token as data loads
+    _selIdx = 0;
+    selectedCoinSymbol = _coinChipsCache[0].key.toUpperCase();
+    _selKey = _coinChipsCache[0].key;
+  }
   const _selChip = _selIdx >= 0 ? _coinChipsCache[_selIdx] : _coinChipsCache[0];
-  const _showArrows = _coinChipsCache.length > 1;
-  const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown">${_showArrows ? '<button class="wk-coin-arrow wk-coin-arrow--left" id="wk-coin-prev" type="button">\u2039</button>' : ''}<span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span>${_showArrows ? '<button class="wk-coin-arrow wk-coin-arrow--right" id="wk-coin-next" type="button">\u203A</button>' : ''}</div>` : '';
+  const _canCycle = _coinChipsCache.length > 1;
+  const _arrowDisabled = _canCycle ? '' : ' disabled';
+  const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left" id="wk-coin-prev" type="button"${_arrowDisabled}>\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right" id="wk-coin-next" type="button"${_arrowDisabled}>\u203A</button></div>` : '';
 
   const _nsInitVariant = _nsVariant();
   const _nsInitLooksAvailable = nsAvail === 'available' || (nsAvail === null && _nsInitVariant === 'green-circle');
@@ -4723,6 +4760,9 @@ function renderSkiMenu() {
                 <div class="wk-send-row">
                   <span class="wk-send-dollar">$</span>
                   <input id="wk-send-amount" class="wk-send-amount" type="number" step="any" min="0" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
+                </div>
+                <div class="wk-send-row-below">
+                  <button id="wk-send-all" class="wk-send-all" type="button" title="Use full balance">ALL</button>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
@@ -4744,17 +4784,17 @@ function renderSkiMenu() {
   // Coin chip arrow navigation
   function _selectCoinByIndex(idx: number) {
     if (!_coinChipsCache.length) return;
+    _userManuallySelectedCoin = true;
     const wrapped = ((idx % _coinChipsCache.length) + _coinChipsCache.length) % _coinChipsCache.length;
     const chip = _coinChipsCache[wrapped];
     selectedCoinSymbol = chip.key.toUpperCase();
-    // Update amount
+    // Zero out amount on coin change
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
     if (amountInput) {
-      const pct = selectedCoinSymbol === 'SUI' ? 0.95 : 1.0;
-      pendingSendAmount = _fmtUsd(chip.val * pct);
-      amountInput.value = pendingSendAmount;
+      pendingSendAmount = '';
+      amountInput.value = '';
       const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-      if (sendBtn) sendBtn.disabled = false;
+      if (sendBtn) sendBtn.disabled = true;
     }
     _debounceSwapQuote();
     _updateSendBtnMode();
@@ -4905,11 +4945,12 @@ function renderSkiMenu() {
     const suiamiGreen = !hasLabel && !!app.suinsName; // empty input = sign own identity
     const suiamiPurple = (isSelfTarget || isOwned) && hasLabel; // owned name in input
     const suiamiMode = suiamiGreen || suiamiPurple;
-    const marketMode = !suiamiMode && !mintMode && (isTaken || hasListing) && hasLabel;
-    const resolving = !suiamiMode && !mintMode && !marketMode && hasLabel && !nsAvail;
     const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
     const selfTarget = isSelfTarget || isOwned || (!hasLabel && !!app.suinsName);
     const sendingToOther = hasLabel && !isSelfTarget && !isOwned && nsTargetAddress != null;
+    // SEND/SWAP take priority over market when balance section is open
+    const marketMode = !suiamiMode && !mintMode && (isTaken || hasListing) && hasLabel && !coinChipsOpen;
+    const resolving = !suiamiMode && !mintMode && !marketMode && hasLabel && !nsAvail;
     // SWAP: input ≠ output AND target is self (or empty)
     const swapMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !inEqualsOut && !sendingToOther;
     // SUIAMI: input = output AND target is self
@@ -4968,8 +5009,12 @@ function renderSkiMenu() {
       btn.title = `Mint ${nsLabel.trim()}.sui`;
     } else if (swapMode) {
       btn.textContent = 'SWAP';
-      btn.title = 'Swap tokens';
+      const inSym = selectedCoinSymbol ?? 'SUI';
+      const outOpt = SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey);
+      const outLabel = outOpt ? outOpt.label : swapOutputKey.toUpperCase();
       const val = pendingSendAmount;
+      const amtStr = val && Number(val) > 0 ? `$${_fmtUsd(Number(val))} ` : '';
+      btn.title = `Swap ${inSym} to ${amtStr}${outLabel}`;
       btn.disabled = !val || Number(val) <= 0;
     } else if (suiamiSendMode) {
       btn.disabled = false;
@@ -4977,8 +5022,11 @@ function renderSkiMenu() {
       btn.title = 'SuiAMI — SUI-Authenticated Message Identity';
     } else if (sendMode) {
       btn.textContent = 'SEND';
-      btn.title = 'Send tokens';
+      const sendSym = selectedCoinSymbol ?? 'SUI';
       const val = pendingSendAmount;
+      const sendAmtStr = val && Number(val) > 0 ? `$${_fmtUsd(Number(val))} ` : '';
+      const sendTarget = nsLabel.trim() ? `${nsLabel.trim()}.sui` : '';
+      btn.title = `Send ${sendAmtStr}${sendSym}${sendTarget ? ` to ${sendTarget}` : ''}`;
       btn.disabled = !val || Number(val) <= 0;
     } else if (suiamiMode) {
       btn.disabled = false;
@@ -5219,6 +5267,7 @@ function renderSkiMenu() {
       _swapQuotes = {};
       _updateSwapEstimates();
       _setMutationMs();
+      _userManuallySelectedCoin = false;
       if (ws2.address) try { localStorage.removeItem(`ski:balances:${ws2.address}`); } catch {}
       walletCoins = [];
       appBalanceFetched = false;
@@ -5243,12 +5292,35 @@ function renderSkiMenu() {
     const val = amountInput.value.trim();
     pendingSendAmount = val;
     sendBtn.disabled = !val || Number(val) <= 0;
+    _updateSendBtnMode();
     _debounceSwapQuote();
   });
 
   // Select all on focus so typing replaces the value
   document.getElementById('wk-send-amount')?.addEventListener('focus', (e) => {
     (e.target as HTMLInputElement).select();
+  });
+
+  // ALL button — fill with selected chip's actual balance, floored to nearest cent
+  document.getElementById('wk-send-all')?.addEventListener('click', () => {
+    const selKey = selectedCoinSymbol?.toLowerCase() ?? '';
+    const chip = _coinChipsCache.find(c => c.key === selKey) ?? _coinChipsCache[0];
+    if (!chip) return;
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (!amountInput) return;
+    // Use actual token balance for stablecoins, chip.val (USD estimate) for others
+    const sym = selectedCoinSymbol ?? '';
+    const wc = walletCoins.find(c => c.symbol === sym || c.symbol.toLowerCase() === selKey)
+      ?? (chip.colorCls === 'wk-coin-item--usd' ? walletCoins.find(c => c.isStable) : null);
+    const rawVal = wc?.isStable ? wc.balance : chip.val;
+    // Floor to nearest cent
+    const floored = Math.floor(rawVal * 100) / 100;
+    pendingSendAmount = _fmtUsd(floored);
+    amountInput.value = pendingSendAmount;
+    const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (sendBtn) sendBtn.disabled = false;
+    _updateSendBtnMode();
+    _debounceSwapQuote();
   });
 
   // Custom swap output select
@@ -5434,6 +5506,12 @@ function renderSkiMenu() {
     nsAvail = null;
     nsGraceEndMs = 0;
     nsTargetAddress = null;
+    // Zero out send amount on name change
+    pendingSendAmount = '';
+    const _amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_amtInput) _amtInput.value = '';
+    const _sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (_sendBtn) _sendBtn.disabled = true;
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;

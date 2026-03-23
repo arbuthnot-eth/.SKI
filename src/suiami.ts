@@ -27,11 +27,13 @@ export interface SuiamiProof {
 export function buildSuiamiMessage(name: string, address: string, nftId: string): SuiamiMessage {
   const now = Date.now();
   const d = new Date(now);
-  const art = new Intl.DateTimeFormat('en-GB', {
+  const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'America/Argentina/Buenos_Aires',
     day: 'numeric', month: 'numeric', year: '2-digit',
     hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(d);
+  }).formatToParts(d);
+  const p = (t: string) => parts.find(x => x.type === t)?.value ?? '';
+  const art = `${p('hour')}:${p('minute')} ${p('day')}/${parseInt(p('month'), 10)}/${p('year')}`;
   return {
     suiami: `I am ${name}`,
     datetime: art,

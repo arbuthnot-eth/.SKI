@@ -484,6 +484,7 @@ body {
   gap: 6px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  text-decoration: none;
   cursor: pointer;
   transition: all 0.16s ease;
   min-height: 38px;
@@ -793,9 +794,9 @@ body {
   max-height: 500px;
   opacity: 1;
   transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.2s ease;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   display: flex;
-  gap: 10px;
+  gap: 6px;
   align-items: stretch;
 }
 .wk-qr-collapse--hidden {
@@ -808,9 +809,9 @@ body {
 /* QR + content 2-column layout */
 .wk-qr-content-row {
   display: flex;
-  gap: 10px;
+  gap: 6px;
   align-items: flex-start;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .wk-qr-content-left {
   flex-shrink: 0;
@@ -845,7 +846,7 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 8px;
+  gap: 4px;
   overflow: visible;
 }
 
@@ -913,6 +914,25 @@ body {
 .wk-send-amount::-webkit-inner-spin-button,
 .wk-send-amount::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .wk-send-amount { -moz-appearance: textfield; }
+.wk-send-all {
+  all: unset;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.15s ease;
+}
+.wk-send-all:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
 .wk-send-token {
   font-size: 0.75rem;
   font-weight: 600;
@@ -1053,6 +1073,12 @@ body {
   color: #7c3aed;
 }
 
+.wk-send-row-below {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
 /* Swap output select — icon-only */
 .wk-swap-select {
   position: relative;
@@ -1064,9 +1090,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: rgba(255, 255, 255, 0.06);
   transition: border-color 0.15s, background 0.15s;
@@ -1175,8 +1201,8 @@ body {
 /* ─── NS domain registration row (SKI menu) ──────────────────────── */
 
 .wk-dd-ns-section {
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 2px;
+  padding-top: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
 
@@ -2146,7 +2172,7 @@ body {
 
 .wk-dropdown--large {
   width: 100%;
-  padding: 12px;
+  padding: 8px;
   overflow: hidden;
 }
 
@@ -2356,7 +2382,7 @@ body {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .wk-popout-bal-display {
@@ -2393,6 +2419,9 @@ body {
 
 .wk-popout-bal-val--usd {
   color: #86efac;
+}
+.wk-popout-bal-val--usd .wk-bal-decimals {
+  color: #4ade80;
 }
 
 .wk-popout-bal-val--sui {
@@ -2449,9 +2478,13 @@ body {
   padding: 0;
   margin: 0 1px;
 }
-.wk-coin-arrow:hover {
+.wk-coin-arrow:hover:not(:disabled) {
   border-color: rgba(59, 130, 246, 0.86);
   background: linear-gradient(135deg, rgba(13, 38, 94, 0.66), rgba(10, 24, 56, 0.75));
+}
+.wk-coin-arrow:disabled {
+  cursor: default;
+  opacity: 0.25;
 }
 
 .wk-coin-network {
@@ -2510,6 +2543,7 @@ body {
 .wk-coin-frac { font-weight: 400; }
 .wk-coin-frac--sui { color: rgba(147, 197, 253, 0.6); }
 .wk-coin-frac--usd { color: rgba(74, 222, 128, 0.7); }
+.wk-coin-frac--gold { color: rgba(212, 160, 23, 0.7); }
 .wk-coin-frac--other { color: rgba(165, 148, 249, 0.6); }
 
 .wk-coin-item--other:hover,

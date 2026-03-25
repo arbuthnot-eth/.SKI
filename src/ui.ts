@@ -2400,16 +2400,29 @@ function _renderSwapSelect() {
   const selDisplay = selectedQuote ? _quoteToUsd(swapOutputKey, selectedQuote.returnAmount) : '';
   const isSame = selected.coinType === inType;
   let optionsHtml = '';
+  const _outUsdTip = (key: string, label: string) => {
+    const chip = _coinChipsCache.find(c => c.colorCls === `wk-coin-item--${key}`);
+    if (chip && chip.val > 0) {
+      const usd = chip.val < 100 ? chip.val.toFixed(2) : chip.val < 10_000 ? chip.val.toFixed(0) : (chip.val / 1_000).toFixed(1) + 'k';
+      return `$${usd} ${label}`;
+    }
+    if (key === 'sui' && app.sui > 0) {
+      const p = suiPriceCache?.price ?? 0;
+      const usd = p > 0 ? app.sui * p : 0;
+      return usd > 0 ? `$${usd < 100 ? usd.toFixed(2) : usd.toFixed(0)} ${label}` : label;
+    }
+    return label;
+  };
   if (_swapSelectOpen) {
     optionsHtml = '<div class="wk-swap-options">';
     for (const o of SWAP_OUT_OPTIONS) {
       const activeCls = o.key === swapOutputKey ? ' wk-swap-opt--active' : '';
-      optionsHtml += `<button class="wk-swap-opt wk-swap-opt--${o.key}${activeCls}" data-key="${esc(o.key)}" type="button" title="${esc(o.label)}">${_SWAP_ICONS[o.key] ?? ''}</button>`;
+      optionsHtml += `<button class="wk-swap-opt wk-swap-opt--${o.key}${activeCls}" data-key="${esc(o.key)}" type="button" title="${esc(_outUsdTip(o.key, o.label))}">${_SWAP_ICONS[o.key] ?? ''}</button>`;
     }
     optionsHtml += '</div>';
   }
 
-  el.innerHTML = `<button class="wk-swap-trigger wk-swap-trigger--${swapOutputKey}" type="button" id="wk-swap-trigger" title="${esc(selected.label)}">${_SWAP_ICONS[swapOutputKey] ?? ''}</button>${optionsHtml}`;
+  el.innerHTML = `<button class="wk-swap-trigger wk-swap-trigger--${swapOutputKey}" type="button" id="wk-swap-trigger" title="${esc(_outUsdTip(swapOutputKey, selected.label))}">${_SWAP_ICONS[swapOutputKey] ?? ''}</button>${optionsHtml}`;
 }
 
 function _updateSwapEstimates() {
@@ -5165,9 +5178,16 @@ function renderSkiMenu() {
         const totalSui = suiAmt + fee;
         const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
         const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
-        // Check if total portfolio covers the listing price (swap flow can use any balance)
-        const totalUsd = app.usd ?? 0;
-        const canAfford = usdVal != null ? totalUsd >= usdVal * 0.95 : true;
+        // Check if selected balance + output token balance covers the listing price
+        // The swap flow uses: selected token → SUI + output token → SUI
+        const tradeSelKey = selectedCoinSymbol?.toLowerCase() ?? '';
+        const tradeSelChip = _coinChipsCache.find(c => c.key === tradeSelKey) ?? _coinChipsCache[0];
+        const tradeSelVal = tradeSelChip?.val ?? 0;
+        const tradeOutOpt = SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey);
+        const tradeOutChip = tradeOutOpt ? _coinChipsCache.find(c => c.colorCls === `wk-coin-item--${tradeOutOpt.key}`) : null;
+        const tradeOutVal = tradeOutChip?.val ?? (swapOutputKey === 'sui' ? (app.sui * (suiPriceCache?.price ?? 0)) : 0);
+        const tradeAvailable = tradeSelVal + tradeOutVal;
+        const canAfford = usdVal != null ? tradeAvailable >= usdVal * 0.95 : true;
         btn.disabled = !canAfford;
         btn.classList.toggle('wk-send-btn--cant-afford', !canAfford);
         document.querySelector('.wk-ns-dot-sui')?.classList.toggle('wk-ns-dot-sui--insufficient', !canAfford);
@@ -5208,13 +5228,17 @@ function renderSkiMenu() {
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
     if (!amountInput) return;
     const val = Number(pendingSendAmount);
-    // In market/trade mode, use total portfolio (swap flow can use any balance)
+    // In market/trade mode, use selected + output token balance
     const hasListing = !!(nsKioskListing || nsTradeportListing);
-    const maxVal = hasListing ? (app.usd ?? 0) : (() => {
-      const selKey = selectedCoinSymbol?.toLowerCase() ?? '';
-      const selChip = _coinChipsCache.find(c => c.key === selKey) ?? _coinChipsCache[0];
-      return selChip?.val ?? 0;
-    })();
+    const selKey = selectedCoinSymbol?.toLowerCase() ?? '';
+    const selChip = _coinChipsCache.find(c => c.key === selKey) ?? _coinChipsCache[0];
+    const selVal = selChip?.val ?? 0;
+    const maxVal = hasListing ? (() => {
+      const outOpt = SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey);
+      const outChip = outOpt ? _coinChipsCache.find(c => c.colorCls === `wk-coin-item--${outOpt.key}`) : null;
+      const outVal = outChip?.val ?? (swapOutputKey === 'sui' ? (app.sui * (suiPriceCache?.price ?? 0)) : 0);
+      return selVal + outVal;
+    })() : selVal;
     const isOver = val > 0 && maxVal > 0 && val > maxVal * 1.01;
     amountInput.classList.toggle('wk-send-amount--over', isOver);
     document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', isOver);

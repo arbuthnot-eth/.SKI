@@ -55,12 +55,11 @@ function getClient(): IkaClient {
 
     const suiClientProxy = new Proxy({}, {
       get(_target, prop: string) {
+        // Only intercept known RPC methods — return undefined for everything else
+        // so the SDK can do normal property checks (typeof, in, etc.)
+        if (!(prop in methodMap)) return undefined;
         return async (...args: any[]) => {
-          const rpcMethod = methodMap[prop];
-          if (!rpcMethod) {
-            console.warn(`[ika] Unknown SuiClient method: ${prop}`, args);
-            throw new Error(`SuiClient.${prop} not mapped to JSON-RPC`);
-          }
+          const rpcMethod = methodMap[prop]!;
           // Flatten params based on method signature
           const p = args[0] ?? {};
           switch (prop) {

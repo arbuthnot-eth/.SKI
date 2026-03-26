@@ -149,32 +149,12 @@ async function establishSession(address: string, signature: string, bytes: strin
     // Agent might not be deployed yet — that's OK for local dev
   }
 
-  // Check for existing Ika dWallets — if none and user has SuiNS, auto-provision
-  loadIka().then(async ({ getCrossChainStatus, provisionDWallet }) => {
+  // Check for existing Ika dWallets (non-blocking)
+  // DKG provisioning is triggered manually via the "Create dWallet" button in the UI
+  loadIka().then(async ({ getCrossChainStatus }) => {
     const status = await getCrossChainStatus(address);
     if (status.ika) {
       updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress, ethAddress: status.ethAddress });
-      return;
-    }
-
-    // No dWallet — try auto-provision (server checks SuiNS gate)
-    try {
-      showToast('Creating dWallet...');
-      const result = await provisionDWallet(address, {
-        signTransaction: (txBytes: Uint8Array) => signTransaction(txBytes),
-        onStatus: (msg: string) => showToast(msg),
-      });
-      if (result.ika) {
-        updateAppState({
-          ikaWalletId: result.dwalletId,
-          btcAddress: result.btcAddress,
-          ethAddress: result.ethAddress,
-        });
-        showToast('dWallet active — BTC + ETH addresses ready');
-      }
-    } catch (err) {
-      // SuiNS gate rejection or other failure — not critical, just log
-      console.warn('[ski:ika] DKG provision failed:', err instanceof Error ? err.message : err);
     }
   }).catch(() => {});
 

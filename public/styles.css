@@ -716,6 +716,17 @@ body {
 .wk-dd-address-banner--btc .wk-dd-address-text {
   color: #f7931a;
 }
+.wk-dd-dwallet-setup .wk-dd-address-text {
+  text-align: center;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.wk-dd-dwallet-setup:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
 .wk-dd-address-banner--eth {
   border-color: rgba(98, 126, 234, 0.4);
   background: linear-gradient(135deg, rgba(20, 20, 50, 0.5), rgba(15, 15, 40, 0.6));

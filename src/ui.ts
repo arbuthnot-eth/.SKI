@@ -4650,6 +4650,7 @@ function renderSkiMenu() {
     };
   };
   const { addr: displayAddr, scan: scanUrl, explorer: explorerTitle, cls: addrBannerCls } = _netAddr();
+  const needsDWallet = networkView === 'btc' && !app.btcAddress && !app.ethAddress;
 
   const addrShort = truncAddr(displayAddr);
 
@@ -4899,10 +4900,14 @@ function renderSkiMenu() {
               <div class="wk-badge-collapse-inner">
                 <div class="wk-dd-address-row">
                   <div id="wk-network-select" class="wk-dd-network-select"></div>
-                  <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${addrBannerCls ? ' ' + addrBannerCls : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
-                    <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
-                  </button>
-                  <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="${esc(explorerTitle)}">\u2197</a>
+                  ${needsDWallet
+                    ? `<button class="wk-dd-address-banner wk-dd-address-banner--btc wk-dd-dwallet-setup" id="wk-dd-dwallet-setup" type="button" title="Create a dWallet to get BTC + ETH addresses">
+                        <span class="wk-dd-address-text">Create dWallet \u2192</span>
+                      </button>`
+                    : `<button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${addrBannerCls ? ' ' + addrBannerCls : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
+                        <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
+                      </button>
+                      <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="${esc(explorerTitle)}">\u2197</a>`}
                 </div>
               </div>
             </div>
@@ -4937,6 +4942,37 @@ function renderSkiMenu() {
       </div>`;
 
   document.getElementById('wk-dd-copy')?.addEventListener('click', menuCopyAddress);
+  document.getElementById('wk-dd-dwallet-setup')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.querySelector('.wk-dd-address-text')!.textContent = 'Creating\u2026';
+    try {
+      const { provisionDWallet } = await import('./client/ika.js');
+      const { signTransaction } = await import('./wallet.js');
+      const status = await provisionDWallet(getState().address, {
+        signTransaction: (txBytes: Uint8Array) => signTransaction(txBytes),
+        onStatus: (msg: string) => {
+          const txt = btn.querySelector('.wk-dd-address-text');
+          if (txt) txt.textContent = msg;
+        },
+      });
+      if (status.ika) {
+        updateAppState({
+          ikaWalletId: status.dwalletId,
+          btcAddress: status.btcAddress,
+          ethAddress: status.ethAddress,
+        });
+        showToast('dWallet active \u2014 BTC + ETH addresses ready');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      showToast(msg);
+      btn.disabled = false;
+      const txt = btn.querySelector('.wk-dd-address-text');
+      if (txt) txt.textContent = 'Create dWallet \u2192';
+    }
+  });
   document.getElementById('wk-dd-switch')?.addEventListener('click', menuLockin);
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);

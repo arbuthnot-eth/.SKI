@@ -259,24 +259,80 @@ export async function provisionDWallet(
   const suiCoin = tx.splitCoins(tx.object(userSuiCoinId), [tx.pure.u64(100_000_000)]);
 
   const ikaTx = new IkaTransaction({ ikaClient: client, transaction: tx, userShareEncryptionKeys });
-  await ikaTx.registerEncryptionKey({ curve });
+  // Register encryption key in a SEPARATE transaction first
+  // (must be finalized on-chain before DKG can reference it)
+  log('Registering key...');
+  const regTx = new Transaction();
+  regTx.setSender(userAddress);
+  regTx.setGasOwner(keeperAddress);
+  regTx.setGasPayment(suiCoins.slice(0, 1));
+  const regIkaTx = new IkaTransaction({ ikaClient: client, transaction: regTx, userShareEncryptionKeys });
+  await regIkaTx.registerEncryptionKey({ curve });
 
-  const dkgResult = await ikaTx.requestDWalletDKG({
+  const regBytes = await regTx.build({ client: getJsonRpc() as any });
+  const regB64 = btoa(String.fromCharCode(...regBytes));
+  const regSponsorRes = await fetch('/api/sponsor-gas', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ txBytes: regB64, senderAddress: userAddress }),
+  });
+  if (regSponsorRes.ok) {
+    const { sponsorSig: regSponsorSig } = await regSponsorRes.json() as { sponsorSig: string };
+    const { signature: regUserSig } = await callbacks.signTransaction(regBytes);
+    try {
+      await getJsonRpc().executeTransactionBlock({
+        transactionBlock: regB64,
+        signature: [regUserSig, regSponsorSig],
+        options: { showEffects: true },
+        requestType: 'WaitForLocalExecution',
+      });
+    } catch {
+      // May already be registered — continue
+    }
+    // Wait for registration to finalize
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  // Now build the DKG transaction (encryption key is on-chain)
+  log('Building...');
+  const dkgTx = new Transaction();
+  dkgTx.setSender(userAddress);
+  dkgTx.setGasOwner(keeperAddress);
+  // Re-fetch keeper coins (may have changed after reg tx)
+  const refreshProv = await fetch('/api/ika/provision', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ address: userAddress }),
+  });
+  const refreshData = await refreshProv.json() as any;
+  dkgTx.setGasPayment((refreshData.suiCoins ?? suiCoins).slice(0, 3));
+
+  const userSuiCheck2 = await getJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
+  const userSuiCoinId2 = (userSuiCheck2 as any)?.data?.[0]?.coinObjectId;
+  const userIkaCheck2 = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
+  const userIkaCoinId2 = (userIkaCheck2 as any)?.data?.[0]?.coinObjectId;
+
+  const ikaCoin2 = dkgTx.object(userIkaCoinId2 || userIkaCoinId);
+  const suiCoin2 = dkgTx.splitCoins(dkgTx.object(userSuiCoinId2 || userSuiCoinId), [dkgTx.pure.u64(100_000_000)]);
+
+  const ikaTx2 = new IkaTransaction({ ikaClient: client, transaction: dkgTx, userShareEncryptionKeys });
+
+  const dkgResult = await ikaTx2.requestDWalletDKG({
     curve,
     dkgRequestInput: dkgInput,
-    sessionIdentifier: ikaTx.registerSessionIdentifier(sessionIdentifier),
-    ikaCoin,
-    suiCoin,
+    sessionIdentifier: ikaTx2.registerSessionIdentifier(sessionIdentifier),
+    ikaCoin: ikaCoin2,
+    suiCoin: suiCoin2,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
   // DKG returns [DWalletCap, Option<ID>] — transfer cap to user
-  tx.transferObjects([dkgResult[0]], tx.pure.address(userAddress));
-  // SUI split survives &mut borrow — merge back into user's coin
-  tx.transferObjects([suiCoin], tx.pure.address(userAddress));
+  dkgTx.transferObjects([dkgResult[0]], dkgTx.pure.address(userAddress));
+  // SUI split survives &mut borrow — send back to user
+  dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing...');
-  const txBytes = await tx.build({ client: getJsonRpc() as any });
+  const txBytes = await dkgTx.build({ client: getJsonRpc() as any });
 
   // Get keeper's gas sponsor signature
   const b64Tx = btoa(String.fromCharCode(...txBytes));

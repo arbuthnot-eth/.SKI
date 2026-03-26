@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { raceJsonRpc } from './rpc.js';
-import { buildProvisionTx } from './ika-provision.js';
+// ika-provision.ts is available for server-side DKG if needed in future,
+// but DKG WASM must run client-side (browser) — Workers can't run it.
 
 interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
@@ -195,13 +196,13 @@ app.get('/api/sponsor-info', async (c) => {
 /**
  * POST /api/ika/provision
  * Body: { address: string }
- * Returns: { success, txBytes?, sponsorSig?, dwalletId?, error? }
+ * Returns: { success, keeperAddress, suiCoins, ikaCoins }
  *
- * Builds a sponsored DKG transaction for the user:
- *   - sender = user (owns the DWalletCap)
- *   - gasOwner = keeper (pays gas + IKA fees)
- * Returns tx bytes + sponsor sig. Client signs as user and submits.
- * Gated behind SuiNS NFT ownership.
+ * SuiNS-gated. Returns keeper wallet info so the client can build
+ * a DKG transaction with the keeper as gas sponsor. The DKG WASM
+ * runs in the browser. Once built, the client sends the tx bytes
+ * to /api/sponsor-gas for the keeper's gas signature (which also
+ * has the SuiNS gate), then co-signs and submits.
  */
 app.post('/api/ika/provision', async (c) => {
   const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
@@ -215,8 +216,45 @@ app.post('/api/ika/provision', async (c) => {
     const hasNft = await hasSuinsNft(address);
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
-    const result = await buildProvisionTx(address, key);
-    return c.json(result, result.success ? 200 : 500);
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Fetch keeper's gas coins + IKA coins via GraphQL
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+
+    const [suiRes, ikaRes] = await Promise.all([
+      fetch(GQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($a:SuiAddress!){ address(address:$a){ coins(type:"0x2::sui::SUI",first:5){ nodes{ address version digest } } } }`,
+          variables: { a: keeperAddress },
+        }),
+      }).then(r => r.json()) as Promise<any>,
+      fetch(GQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($a:SuiAddress!,$t:String!){ address(address:$a){ coins(type:$t,first:3){ nodes{ address version digest contents { json } } } } }`,
+          variables: { a: keeperAddress, t: IKA_TYPE },
+        }),
+      }).then(r => r.json()) as Promise<any>,
+    ]);
+
+    const suiCoins = (suiRes?.data?.address?.coins?.nodes ?? []).map((n: any) => ({
+      objectId: n.address, version: String(n.version), digest: n.digest,
+    }));
+    const ikaCoins = (ikaRes?.data?.address?.coins?.nodes ?? []).map((n: any) => ({
+      objectId: n.address, version: String(n.version), digest: n.digest,
+    }));
+
+    return c.json({
+      success: true,
+      keeperAddress,
+      suiCoins,
+      ikaCoins,
+    });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

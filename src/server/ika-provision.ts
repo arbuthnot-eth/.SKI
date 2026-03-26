@@ -25,7 +25,16 @@ import { createGrpc7kAdapter } from './grpc-7k-adapter.js';
 
 const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 const SUI_TYPE = '0x2::sui::SUI';
-const _7K_API = 'https://aggregator.api.sui-prod.bluefin.io';
+
+// ── Cetus CLMM constants (IKA/SUI pool) ─────────────────────────────
+// Direct swap via Cetus router — no SDK needed, just a Move call.
+const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
+const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
+const CETUS_IKA_SUI_POOL = '0xc23e7e8a74f0b18af4dfb7c3280e2a56916ec4d41e14416f85184a8aab6b7789';
+const SUI_CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
+// sqrt price limits from Cetus CLMM (tick math bounds)
+const MIN_SQRT_PRICE = '4295048016';
+const MAX_SQRT_PRICE = '79226673515401279992447579055';
 
 export interface ProvisionResult {
   success: boolean;
@@ -38,20 +47,6 @@ export interface ProvisionResult {
   error?: string;
 }
 
-/**
- * Get a swap quote from the 7K aggregator REST API (no SDK dependency).
- */
-async function get7kQuote(tokenIn: string, tokenOut: string, amountIn: string) {
-  const params = new URLSearchParams({
-    amount: amountIn,
-    from: tokenIn,
-    to: tokenOut,
-    sources: 'cetus,aftermath,turbos,deepbook_v3,bluefin,flowx,flowx_v3',
-  });
-  const res = await fetch(`${_7K_API}/v3/quote?${params}`);
-  if (!res.ok) throw new Error(`7K quote failed: ${await res.text()}`);
-  return res.json();
-}
 
 /**
  * Build a sponsored DKG provisioning transaction.
@@ -112,17 +107,51 @@ export async function buildProvisionTx(
     digest: c.digest,
   })));
 
-  // TODO: Swap SUI→IKA in same PTB once 7K SDK v2 compat is resolved.
-  // For now, the keeper must hold IKA tokens.
-  // The IKA coin will be fetched from the keeper's balance.
+  // Swap SUI→IKA via direct Cetus CLMM call in the same PTB.
+  // The keeper's gas coins provide the SUI; output IKA is used for DKG fee.
+  // Fallback: if keeper already holds IKA, use that directly.
   const keeperIkaCoins = await grpc.listCoins({ owner: keeperAddress, coinType: IKA_TYPE });
-  if (!keeperIkaCoins.objects.length) {
-    return { success: false, error: 'Keeper has no IKA tokens for DKG fee' };
+  let ikaCoin;
+
+  if (keeperIkaCoins.objects.length > 0) {
+    // Keeper has IKA buffer — use it directly (faster, no swap slippage)
+    ikaCoin = tx.object(keeperIkaCoins.objects[0].objectId);
+  } else {
+    // No IKA on keeper — swap SUI→IKA via Cetus in this PTB
+    // In the IKA/SUI pool, SUI is coinX and IKA is coinY (SUI→IKA = X→Y = a2b)
+    const swapAmount = tx.splitCoins(tx.gas, [tx.pure.u64(500_000_000)]); // 0.5 SUI
+    const swapAmountValue = tx.moveCall({
+      target: '0x2::coin::value',
+      typeArguments: [SUI_TYPE],
+      arguments: [swapAmount],
+    });
+    const [zeroIka] = tx.moveCall({
+      target: '0x2::coin::zero',
+      typeArguments: [IKA_TYPE],
+    });
+    const [receiveA, receiveB] = tx.moveCall({
+      target: `${CETUS_ROUTER}::router::swap`,
+      typeArguments: [SUI_TYPE, IKA_TYPE],
+      arguments: [
+        tx.object(CETUS_GLOBAL_CONFIG),
+        tx.object(CETUS_IKA_SUI_POOL),
+        swapAmount,       // coin A (SUI in)
+        zeroIka,          // coin B (zero — we're swapping A→B)
+        tx.pure.bool(true),   // a_to_b = true (SUI→IKA)
+        tx.pure.bool(true),   // by_amount_in = true (exact input)
+        swapAmountValue,      // amount
+        tx.pure.u128(MIN_SQRT_PRICE), // sqrt_price_limit for a→b
+        tx.pure.bool(false),  // is_exact_out
+        tx.object(SUI_CLOCK),
+      ],
+    });
+    // receiveA = leftover SUI (dust), receiveB = IKA output
+    // Return leftover SUI dust to keeper
+    tx.transferObjects([receiveA], tx.pure.address(keeperAddress));
+    ikaCoin = receiveB;
   }
 
-  // Split coins for DKG fees (from keeper's coins, transferred to user in the PTB)
-  const ikaCoin = tx.object(keeperIkaCoins.objects[0].objectId);
-  const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]); // 0.1 SUI
+  const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]); // 0.1 SUI for DKG gas reimbursement
 
   // DKG request — user is the sender, so DWalletCap goes to them
   const ikaTx = new IkaTransaction({ ikaClient, transaction: tx, userShareEncryptionKeys });

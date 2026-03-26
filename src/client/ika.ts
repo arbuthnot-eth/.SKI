@@ -178,7 +178,7 @@ export async function provisionDWallet(
   const log = callbacks.onStatus ?? (() => {});
 
   // Step 1: Check eligibility + get keeper info
-  log('Checking SuiNS eligibility...');
+  log('Checking...');
   const provRes = await fetch('/api/ika/provision', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -197,7 +197,7 @@ export async function provisionDWallet(
   if (!suiCoins.length) throw new Error('Keeper has no SUI for gas');
 
   // Step 2: Prepare DKG crypto (WASM — runs in browser)
-  log('Preparing DKG cryptography...');
+  log('Preparing...');
   const client = await getClient();
   const curve = Curve.SECP256K1;
   const seed = new TextEncoder().encode(`ski:dwallet:${userAddress}`);
@@ -208,11 +208,11 @@ export async function provisionDWallet(
   );
 
   // Step 3: Get network encryption key
-  log('Fetching network encryption key...');
+  log('Fetching keys...');
   const encKey = await client.getLatestNetworkEncryptionKey();
 
   // Step 4: Build the PTB
-  log('Building DKG transaction...');
+  log('Building...');
   const tx = new Transaction();
   tx.setSender(userAddress);
   tx.setGasOwner(keeperAddress);
@@ -228,7 +228,7 @@ export async function provisionDWallet(
 
   if (!userIkaCoinId) {
     // Request IKA funding from keeper
-    log('Funding IKA tokens...');
+    log('Funding...');
     const fundRes = await fetch('/api/ika/fund', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -269,10 +269,11 @@ export async function provisionDWallet(
   });
   // DKG returns [DWalletCap, Option<ID>] — transfer cap to user
   tx.transferObjects([dkgResult[0]], tx.pure.address(userAddress));
-  // IKA coin stays with user (they own it), SUI coin merges back to gas automatically
+  // Merge leftover SUI back into gas (splitCoins result survives &mut borrow)
+  tx.mergeCoins(tx.gas, [suiCoin]);
 
   // Step 5: Build bytes, get sponsor sig, user signs
-  log('Signing transaction...');
+  log('Signing...');
   const txBytes = await tx.build({ client: getJsonRpc() as any });
 
   // Get keeper's gas sponsor signature
@@ -292,7 +293,7 @@ export async function provisionDWallet(
   const { signature: userSig } = await callbacks.signTransaction(txBytes);
 
   // Step 6: Submit with both signatures
-  log('Submitting DKG transaction...');
+  log('Submitting...');
   const rpcSubmit = getJsonRpc();
   const execResult = await rpcSubmit.executeTransactionBlock({
     transactionBlock: btoa(String.fromCharCode(...txBytes)),
@@ -303,14 +304,14 @@ export async function provisionDWallet(
   const digest = execResult?.digest;
   if (!digest) throw new Error('DKG transaction failed');
 
-  log('DKG submitted! Waiting for dWallet activation...');
+  log('Activating...');
 
   // Step 7: Poll for dWallet to become active
   for (let i = 0; i < 24; i++) { // 2 minutes max
     await new Promise(r => setTimeout(r, 5000));
     const status = await getCrossChainStatus(userAddress);
     if (status.ika && status.btcAddress) {
-      log('dWallet active!');
+      log('Active!');
       return status;
     }
     log(`Waiting for activation... (${i + 1}/24)`);

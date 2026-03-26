@@ -2872,18 +2872,15 @@ function _renderProfileEl(el: HTMLElement) {
   }
 
   // Ika cross-chain badge
-  const ikaHtml = app.ikaWalletId
-    ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">\ud83e\udd91</span>'
-    : '';
+  const ikaHtml = ''; // squid emoji now inline with the name
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
   const innerHtml = `${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
-            <span class="wk-widget-primary-name">${esc(label)}</span>
+            <span class="wk-widget-primary-name">${esc(label)}${app.ikaWalletId ? ' \ud83e\udd91' : ''}</span>
           </span>
-        </span>
-        ${ikaHtml}`;
+        </span>`;
 
   el.innerHTML = hasSuins
     ? `<div class="wk-widget">

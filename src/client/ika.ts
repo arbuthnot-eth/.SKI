@@ -16,14 +16,13 @@ import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
+import { grpcClient } from '../rpc.js';
 
 let ikaClient: IkaClient | null = null;
 let jsonRpcClient: SuiJsonRpcClient | null = null;
 
 function getJsonRpc(): SuiJsonRpcClient {
   if (!jsonRpcClient) {
-    // Point at our same-origin proxy — avoids CORS, routes to PublicNode/Mysten
-    // network param is required for Move type resolution (MVR)
     jsonRpcClient = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
   }
   return jsonRpcClient;
@@ -36,11 +35,11 @@ async function getClient(): Promise<IkaClient> {
     const config = getNetworkConfig('mainnet');
     const rpc = getJsonRpc();
 
-    // IKA SDK expects a JSON-RPC SuiClient (getObject, multiGetObjects, etc.)
-    // SuiJsonRpcClient is the real thing — no Proxy, no shims.
+    // IKA SDK 0.3.1 calls client.core.getObjects/listOwnedObjects/listDynamicFields
+    // These are v2 CoreClient methods — SuiGrpcClient implements them natively.
     ikaClient = new IkaClient({
       config,
-      suiClient: rpc as any,
+      suiClient: grpcClient as any,
     });
     // Pre-fetch coordinator objects, encryption keys, and protocol state.
     // initialize() may partially fail on mainnet (SDK bug with table vector parsing)
@@ -277,7 +276,7 @@ export async function provisionDWallet(
   const regIkaTx = new IkaTransaction({ ikaClient: client, transaction: regTx, userShareEncryptionKeys });
   await regIkaTx.registerEncryptionKey({ curve });
 
-  const regBytes = await regTx.build({ client: getJsonRpc() as any });
+  const regBytes = await regTx.build({ client: grpcClient as any });
   const regB64 = btoa(String.fromCharCode(...regBytes));
   const regSponsorRes = await fetch('/api/sponsor-gas', {
     method: 'POST',
@@ -340,7 +339,7 @@ export async function provisionDWallet(
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing...');
-  const txBytes = await dkgTx.build({ client: getJsonRpc() as any });
+  const txBytes = await dkgTx.build({ client: grpcClient as any });
 
   // Get keeper's gas sponsor signature
   const b64Tx = btoa(String.fromCharCode(...txBytes));

@@ -382,29 +382,31 @@ app.post('/api/ika/create', async (c) => {
     };
     const COORDINATOR_ID = '0x5ea59bce034008a006425df777da925633ef384ce25761657ea89e2a08ec75f3';
 
+    const { bcs } = await import('@mysten/sui/bcs');
+    const coordRef = tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true });
+
     // Register encryption key
     tx.moveCall({
       target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::register_encryption_key`,
       arguments: [
-        tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true }),
+        coordRef,
         tx.pure.u32(dkgData.curve),
-        tx.pure('vector<u8>', dkgData.encryptionKeyBytes),
-        tx.pure('vector<u8>', dkgData.encryptionKeySignature),
-        tx.pure('vector<u8>', dkgData.signingPublicKeyBytes),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.encryptionKeyBytes))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.encryptionKeySignature))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.signingPublicKeyBytes))),
       ],
     });
 
     // Register session identifier
-    const sessionId = tx.moveCall({
+    const [sessionId] = tx.moveCall({
       target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::register_session_identifier`,
       arguments: [
-        tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true }),
-        tx.pure('vector<u8>', dkgData.sessionIdentifier),
+        coordRef,
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.sessionIdentifier))),
       ],
     });
 
     // Fetch latest encryption key ID from coordinator
-    // For now use a known encryption key object — TODO: fetch dynamically
     const encKeyRes = await fetch(SUI_RPC_URLS[0], {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -416,32 +418,39 @@ app.post('/api/ika/create', async (c) => {
     });
     const encKeyJson = await encKeyRes.json() as any;
     const encKeyObjId = encKeyJson?.result?.data?.[0]?.objectId;
+    if (!encKeyObjId) return c.json({ error: 'Could not find encryption key on coordinator' }, 500);
+
+    // Build Option::none for signDuringDKGRequest
+    const [noneOpt] = tx.moveCall({
+      target: '0x1::option::none',
+      typeArguments: [`${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator_inner::SignDuringDKGRequest`],
+    });
 
     // Request shared dWallet DKG (public user secret key share)
     const [dWalletCap] = tx.moveCall({
       target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::request_dwallet_dkg_with_public_user_secret_key_share`,
       arguments: [
-        tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true }),
-        tx.pure.id(encKeyObjId || '0x0'),
+        coordRef,
+        tx.pure.id(encKeyObjId),
         tx.pure.u32(dkgData.curve),
-        tx.pure('vector<u8>', dkgData.userDKGMessage),
-        tx.pure('vector<u8>', dkgData.userSecretKeyShare),
-        tx.pure('vector<u8>', dkgData.userPublicOutput),
-        tx.object(sessionId),
-        tx.moveCall({
-          target: '0x1::option::none',
-          typeArguments: [`${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator_inner::SignDuringDKGRequest`],
-        }),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.userDKGMessage))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.userSecretKeyShare))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.userPublicOutput))),
+        sessionId,
+        noneOpt,
         ikaCoin,
         suiCoin,
       ],
     });
 
-    // Transfer DWalletCap to the user
+    // Transfer DWalletCap to the user + return leftover coins to keeper
     tx.transferObjects([dWalletCap], tx.pure.address(address));
+    tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
 
-    // Build, sign with keeper, submit
-    const txBytes = await tx.build({ client: { url: SUI_RPC_URLS[0] } as any });
+    // Build with a real JSON-RPC client (Workers can't use gRPC)
+    const { SuiJsonRpcClient: BuildClient } = await import('@mysten/sui/jsonRpc');
+    const buildClient = new BuildClient({ url: SUI_RPC_URLS[0], network: 'mainnet' });
+    const txBytes = await tx.build({ client: buildClient as any });
     const { signature } = await keypair.signTransaction(txBytes);
     const b64 = btoa(String.fromCharCode(...txBytes));
 

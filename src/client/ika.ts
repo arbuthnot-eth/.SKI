@@ -223,7 +223,7 @@ export async function provisionDWallet(
   const SUI_TYPE = '0x2::sui::SUI';
 
   // Check if user already has IKA
-  const userIkaCheck = await rpc.getCoins({ owner: userAddress, coinType: IKA_TYPE });
+  const userIkaCheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
   let userIkaCoinId = (userIkaCheck as any)?.data?.[0]?.coinObjectId;
 
   if (!userIkaCoinId) {
@@ -241,7 +241,7 @@ export async function provisionDWallet(
     // Wait a moment for the tx to be indexed
     await new Promise(r => setTimeout(r, 2000));
     // Re-fetch user's IKA coins
-    const recheck = await rpc.getCoins({ owner: userAddress, coinType: IKA_TYPE });
+    const recheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: IKA_TYPE });
     userIkaCoinId = (recheck as any)?.data?.[0]?.coinObjectId;
     if (!userIkaCoinId) throw new Error('IKA funding succeeded but coin not found yet — try again');
   }

@@ -716,6 +716,16 @@ body {
 .wk-dd-address-banner--btc .wk-dd-address-text {
   color: #f7931a;
 }
+.wk-dd-address-banner--eth {
+  border-color: rgba(98, 126, 234, 0.4);
+  background: linear-gradient(135deg, rgba(20, 20, 50, 0.5), rgba(15, 15, 40, 0.6));
+}
+.wk-dd-address-banner--eth:hover {
+  background: linear-gradient(135deg, rgba(25, 25, 60, 0.6), rgba(20, 20, 50, 0.7));
+}
+.wk-dd-address-banner--eth .wk-dd-address-text {
+  color: #627eea;
+}
 
 .wk-dd-item {
   width: 100%;

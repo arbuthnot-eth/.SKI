@@ -149,6 +149,7 @@ export interface AppState {
   suinsName: string;
   ikaWalletId: string;
   btcAddress: string;
+  ethAddress: string;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -162,6 +163,7 @@ const app: AppState = {
   suinsName: '',
   ikaWalletId: '',
   btcAddress: '',
+  ethAddress: '',
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -2821,8 +2823,10 @@ function stopPolling() {
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 function copyAddress() {
-  const isBtcView = networkView === 'btc' && !!app.btcAddress;
-  const addr = isBtcView ? app.btcAddress : getState().address;
+  // Copy the address for the currently selected network
+  const addr = networkView === 'btc'
+    ? (app.btcAddress || app.ethAddress || getState().address)
+    : getState().address;
   if (!addr) return;
   navigator.clipboard?.writeText(addr).then(() => {
     if (copiedTimer) clearTimeout(copiedTimer);
@@ -4623,12 +4627,29 @@ function renderSkiMenu() {
     return;
   }
 
-  const isBtcView = networkView === 'btc' && !!app.btcAddress;
-  const displayAddr = isBtcView ? app.btcAddress : ws.address;
-  const scanUrl = isBtcView
-    ? `https://mempool.space/address/${app.btcAddress}`
-    : `https://suiscan.xyz/mainnet/account/${ws.address}`;
-  const explorerTitle = isBtcView ? 'View on Mempool' : 'View on Suiscan';
+  // Network-aware address: switches immediately on network selector change
+  const _netAddr = (): { addr: string; scan: string; explorer: string; cls: string } => {
+    if (networkView === 'btc' && app.btcAddress) return {
+      addr: app.btcAddress,
+      scan: `https://mempool.space/address/${app.btcAddress}`,
+      explorer: 'View on Mempool',
+      cls: 'wk-dd-address-banner--btc',
+    };
+    // BTC selected but no BTC address yet — show ETH if available (same dWallet key)
+    if (networkView === 'btc' && app.ethAddress) return {
+      addr: app.ethAddress,
+      scan: `https://etherscan.io/address/${app.ethAddress}`,
+      explorer: 'View on Etherscan',
+      cls: 'wk-dd-address-banner--eth',
+    };
+    return {
+      addr: ws.address,
+      scan: `https://suiscan.xyz/mainnet/account/${ws.address}`,
+      explorer: 'View on Suiscan',
+      cls: '',
+    };
+  };
+  const { addr: displayAddr, scan: scanUrl, explorer: explorerTitle, cls: addrBannerCls } = _netAddr();
 
   const addrShort = truncAddr(displayAddr);
 
@@ -4878,7 +4899,7 @@ function renderSkiMenu() {
               <div class="wk-badge-collapse-inner">
                 <div class="wk-dd-address-row">
                   <div id="wk-network-select" class="wk-dd-network-select"></div>
-                  <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${isBtcView ? ' wk-dd-address-banner--btc' : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
+                  <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${addrBannerCls ? ' ' + addrBannerCls : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
                     <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
                   </button>
                   <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="${esc(explorerTitle)}">\u2197</a>
@@ -7154,6 +7175,7 @@ export function initUI() {
       app.suinsName = '';
       app.ikaWalletId = '';
       app.btcAddress = '';
+      app.ethAddress = '';
       app.skiMenuOpen = false;
       try { localStorage.setItem('ski:lift', '0'); } catch {}
       app.copied = false;

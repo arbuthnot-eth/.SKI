@@ -153,7 +153,7 @@ async function establishSession(address: string, signature: string, bytes: strin
   loadIka().then(async ({ getCrossChainStatus }) => {
     const status = await getCrossChainStatus(address);
     if (status.ika) {
-      updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress });
+      updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress, ethAddress: status.ethAddress });
       return;
     }
 
@@ -180,7 +180,7 @@ async function establishSession(address: string, signature: string, bytes: strin
       // Already provisioned (server found existing dWallet)
       if (result.dwalletId) {
         const refreshed = await getCrossChainStatus(address);
-        updateAppState({ ikaWalletId: refreshed.dwalletId, btcAddress: refreshed.btcAddress });
+        updateAppState({ ikaWalletId: refreshed.dwalletId, btcAddress: refreshed.btcAddress, ethAddress: refreshed.ethAddress });
         return;
       }
 
@@ -202,7 +202,7 @@ async function establishSession(address: string, signature: string, bytes: strin
             const s = await getCrossChainStatus(address);
             if (s.ika && s.btcAddress) {
               clearInterval(poll);
-              updateAppState({ ikaWalletId: s.dwalletId, btcAddress: s.btcAddress });
+              updateAppState({ ikaWalletId: s.dwalletId, btcAddress: s.btcAddress, ethAddress: s.ethAddress });
             }
           }, 5000);
           setTimeout(() => clearInterval(poll), 120_000);

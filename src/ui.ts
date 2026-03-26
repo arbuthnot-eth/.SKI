@@ -690,8 +690,8 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
 
 /** Generate a QR SVG for a Sui address with a center logo. Uses 'H' error correction to tolerate the overlay.
  *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
-async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' = 'sui'): Promise<string> {
-  const dark = mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 'sui'): Promise<string> {
+  const dark = mode === 'btc' ? '#f7931a' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
   const mod = await import('qrcode');
@@ -708,6 +708,9 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' = 'sui'): 
     if (mode === 'usd') {
       const fill = '#22c55e';
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.3}" font-weight="700" fill="white">$</text>`;
+    } else if (mode === 'btc') {
+      const fill = '#f7931a';
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" stroke="white" stroke-width="${r * 0.15}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.4}" font-weight="700" fill="white">\u20BF</text>`;
     } else if (mode === 'bw') {
       const d = r * 0.85;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#050505" stroke="white" stroke-width="${d * 0.25}"/>`;
@@ -5853,10 +5856,11 @@ function renderSkiMenu() {
     _toggleAddresses();
   });
 
-  // ─── Address QR code with Sui drop center logo ─────────────────────
+  // ─── Address QR code — network-aware ────────────────────────────────
   const addrQrSlot = document.getElementById('wk-addr-qr');
   if (addrQrSlot && ws.address) {
-    _getAddrQrSvg(ws.address, balView).then(svg => {
+    const qrAddr = (networkView === 'btc' && app.btcAddress) ? app.btcAddress : ws.address;
+    _getAddrQrSvg(qrAddr, networkView === 'btc' ? 'btc' : balView).then(svg => {
       if (document.getElementById('wk-addr-qr')) addrQrSlot.innerHTML = svg;
     }).catch(() => {});
   }

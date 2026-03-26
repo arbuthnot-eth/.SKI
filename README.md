@@ -285,6 +285,8 @@ Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https
 | 2026-03-26 | Direct Cetus SUI→IKA swap in DKG PTB, IKA buffer fallback | `37d8345` |
 | 2026-03-26 | CAIP-2 chain registry for multi-chain address derivation | `3871a7f` |
 | 2026-03-26 | 2PC-MPC signing ceremony adapter with browser presign pool | `ce66411` |
+| 2026-03-26 | EVM address derivation — secp256k1 decompression + keccak256 + EIP-55 checksum | `d18cf69` |
+| 2026-03-26 | CrossChainStatus returns ETH address + full multi-chain address array | `9465bd0` |
 
 ---
 

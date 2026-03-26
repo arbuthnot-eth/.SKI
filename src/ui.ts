@@ -313,16 +313,13 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
 
   let copied = false;
   const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
-  const timer = setTimeout(remove, durationMs);
-
+  // Error toasts stay until dismissed — no auto-timeout
   toast.addEventListener('click', () => {
     if (copied) { remove(); return; }
     copied = true;
-    clearTimeout(timer);
     navigator.clipboard.writeText(fullText).catch(() => {});
-    hint.textContent = '\u2713 Copied';
+    hint.textContent = '\u2713 Copied — click again to dismiss';
     hint.style.color = '#4ade80';
-    setTimeout(remove, 1400);
   });
 }
 

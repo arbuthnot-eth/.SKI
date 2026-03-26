@@ -200,7 +200,10 @@ export async function provisionDWallet(
   log('Preparing...');
   const client = await getClient();
   const curve = Curve.SECP256K1;
-  const seed = new TextEncoder().encode(`ski:dwallet:${userAddress}`);
+  // Random seed per attempt — deterministic seeds cause session conflicts on retry
+  const seedBytes = new Uint8Array(32);
+  crypto.getRandomValues(seedBytes);
+  const seed = seedBytes;
   const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
   const sessionIdentifier = createRandomSessionIdentifier();
   const dkgInput = await prepareDKGAsync(

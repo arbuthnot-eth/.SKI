@@ -630,9 +630,9 @@ body {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: rgba(168, 132, 252, 0.95);
-  background: rgba(124, 58, 237, 0.14);
-  border: 1px solid rgba(124, 58, 237, 0.28);
+  color: #1cdada;
+  background: rgba(28, 219, 218, 0.12);
+  border: 1px solid rgba(28, 219, 218, 0.3);
   border-radius: 4px;
   padding: 1px 4px;
   line-height: 1.2;

@@ -2873,7 +2873,7 @@ function _renderProfileEl(el: HTMLElement) {
 
   // Ika cross-chain badge
   const ikaHtml = app.ikaWalletId
-    ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">ika</span>'
+    ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">\ud83e\udd91</span>'
     : '';
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';

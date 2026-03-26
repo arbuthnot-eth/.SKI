@@ -14,131 +14,30 @@ import {
 } from '@ika.xyz/sdk';
 import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
 
 let ikaClient: IkaClient | null = null;
-let suiRpcProxy: any = null; // The Proxy SuiClient — exposed for tx.build()
+let jsonRpcClient: SuiJsonRpcClient | null = null;
+
+function getJsonRpc(): SuiJsonRpcClient {
+  if (!jsonRpcClient) {
+    // Point at our same-origin proxy — avoids CORS, routes to PublicNode/Mysten
+    jsonRpcClient = new SuiJsonRpcClient({ url: '/api/rpc' });
+  }
+  return jsonRpcClient;
+}
 
 function getClient(): IkaClient {
   if (!ikaClient) {
-    // Dynamic import of SuiClient — Ika SDK expects @mysten/sui/client SuiClient
-    // which may be re-exported or aliased in @mysten/sui v2
     const config = getNetworkConfig('mainnet');
+    const rpc = getJsonRpc();
 
-    // Generic JSON-RPC proxy client — handles any method the IKA SDK calls.
-    // Routes through /api/rpc (same-origin Worker proxy) to avoid CORS.
-    const rpc = async (method: string, params: unknown[]) => {
-      console.log(`[ika:rpc] ${method}`, params);
-      const res = await fetch('/api/rpc', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      });
-      if (!res.ok) throw new Error(`RPC ${method}: HTTP ${res.status}`);
-      const json = await res.json() as { result?: unknown; error?: unknown };
-      if (json.error) throw new Error(`RPC ${method}: ${JSON.stringify(json.error)}`);
-      console.log(`[ika:rpc] ${method} → ok`);
-      return json.result;
-    };
-
-    // Proxy object: intercepts any method call and routes to JSON-RPC.
-    // Maps SuiClient method names to their JSON-RPC equivalents.
-    const methodMap: Record<string, string> = {
-      getObject: 'sui_getObject',
-      multiGetObjects: 'sui_multiGetObjects',
-      getOwnedObjects: 'suix_getOwnedObjects',
-      getDynamicFields: 'suix_getDynamicFields',
-      getNormalizedMoveFunction: 'sui_getNormalizedMoveFunction',
-      getMoveFunction: 'sui_getNormalizedMoveFunction',
-      getReferenceGasPrice: 'suix_getReferenceGasPrice',
-      getCoins: 'suix_getCoins',
-      dryRunTransactionBlock: 'sui_dryRunTransactionBlock',
-      devInspectTransactionBlock: 'sui_devInspectTransactionBlock',
-      executeTransactionBlock: 'sui_executeTransactionBlock',
-    };
-
-    // Auto-batching: queue individual getObject calls and batch them via multiGetObjects
-    let batchQueue: Map<string, { resolve: (v: any) => void; reject: (e: any) => void; options: any }> = new Map();
-    let batchTimer: ReturnType<typeof setTimeout> | null = null;
-    const flushBatch = async () => {
-      batchTimer = null;
-      const queue = batchQueue;
-      batchQueue = new Map();
-      if (queue.size === 0) return;
-      const ids = [...queue.keys()];
-      const firstOpts = [...queue.values()][0].options;
-      try {
-        const results = await rpc('sui_multiGetObjects', [ids, firstOpts || { showContent: true, showBcs: true }]) as any[];
-        ids.forEach((id, i) => queue.get(id)!.resolve(results[i]));
-      } catch (err) {
-        queue.forEach(({ reject }) => reject(err));
-      }
-    };
-    const batchGetObject = (id: string, options: any): Promise<any> => {
-      return new Promise((resolve, reject) => {
-        batchQueue.set(id, { resolve, reject, options });
-        if (batchTimer) clearTimeout(batchTimer);
-        // Flush after 30ms of no new calls, or when batch hits 50
-        if (batchQueue.size >= 50) flushBatch();
-        else batchTimer = setTimeout(flushBatch, 30);
-      });
-    };
-
-    const suiClientProxy = new Proxy({} as any, {
-      get(_target, prop: string) {
-        // 'core' property — the v2 @mysten/sui transaction resolver accesses client.core.getMoveFunction
-        // Return self so client.core.getMoveFunction works the same as client.getMoveFunction
-        if (prop === 'core') return suiClientProxy;
-        // resolveTransactionPlugin — Transaction.build() needs this to resolve Move calls.
-        // Returns a plugin function that provides gas price + object resolution.
-        if (prop === 'resolveTransactionPlugin') return () => ({
-          step: 'resolve',
-          async run({ transaction, next }: any) {
-            // Just pass through — the transaction should already have gas info set
-            await next();
-          },
-        });
-        // Prevent Proxy from being treated as a Promise (breaks await detection)
-        if (prop === 'then') return undefined;
-        // Only intercept known RPC methods
-        if (!(prop in methodMap)) return undefined;
-        return async (...args: any[]) => {
-          const rpcMethod = methodMap[prop]!;
-          // Flatten params based on method signature
-          const p = args[0] ?? {};
-          switch (prop) {
-            case 'getObject':
-              return batchGetObject(p.id, p.options || { showContent: true, showBcs: true });
-            case 'multiGetObjects':
-              return rpc(rpcMethod, [p.ids, p.options || { showContent: true, showBcs: true }]);
-            case 'getOwnedObjects':
-              return rpc(rpcMethod, [p.owner, { filter: p.filter, options: p.options || { showContent: true, showBcs: true } }, p.cursor || null, p.limit || 50]);
-            case 'getDynamicFields':
-              return rpc(rpcMethod, [p.parentId, p.cursor || null, p.limit || 50]);
-            case 'getNormalizedMoveFunction':
-            case 'getMoveFunction':
-              return rpc(rpcMethod, [p.package || p.packageId, p.module || p.moduleName, p.function || p.name || p.functionName]);
-            case 'getReferenceGasPrice':
-              return rpc(rpcMethod, []);
-            case 'getCoins':
-              return rpc(rpcMethod, [p.owner, p.coinType, p.cursor || null, p.limit || 50]);
-            case 'dryRunTransactionBlock':
-              return rpc(rpcMethod, [p.transactionBlock]);
-            case 'devInspectTransactionBlock':
-              return rpc(rpcMethod, [p.sender, p.transactionBlock, p.gasPrice || null, p.epoch || null]);
-            case 'executeTransactionBlock':
-              return rpc(rpcMethod, [p.transactionBlock, p.signature, p.options || { showEffects: true }, p.requestType || 'WaitForLocalExecution']);
-            default:
-              return rpc(rpcMethod, Array.isArray(args[0]) ? args[0] : [args[0]]);
-          }
-        };
-      },
-    });
-
-    suiRpcProxy = suiClientProxy;
+    // IKA SDK expects a JSON-RPC SuiClient (getObject, multiGetObjects, etc.)
+    // SuiJsonRpcClient is the real thing — no Proxy, no shims.
     ikaClient = new IkaClient({
       config,
-      suiClient: suiClientProxy as any,
+      suiClient: rpc as any,
     });
   }
   return ikaClient;
@@ -370,7 +269,7 @@ export async function provisionDWallet(
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing transaction...');
-  const txBytes = await tx.build({ client: suiRpcProxy });
+  const txBytes = await tx.build({ client: getJsonRpc() as any });
 
   // Get keeper's gas sponsor signature
   const b64Tx = btoa(String.fromCharCode(...txBytes));
@@ -390,18 +289,15 @@ export async function provisionDWallet(
 
   // Step 6: Submit with both signatures
   log('Submitting DKG transaction...');
-  const submitRes = await fetch('/api/rpc', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id: 1,
-      method: 'sui_executeTransactionBlock',
-      params: [b64Tx, [userSig, sponsorSig], { showEffects: true }, 'WaitForLocalExecution'],
-    }),
-  });
-  const submitJson = await submitRes.json() as any;
-  const digest = submitJson?.result?.digest;
-  if (!digest) throw new Error('DKG transaction failed: ' + JSON.stringify(submitJson?.error ?? submitJson));
+  const rpcSubmit = getJsonRpc();
+  const execResult = await rpcSubmit.executeTransactionBlock({
+    transactionBlock: btoa(String.fromCharCode(...txBytes)),
+    signature: [userSig, sponsorSig],
+    options: { showEffects: true },
+    requestType: 'WaitForLocalExecution',
+  }) as any;
+  const digest = execResult?.digest;
+  if (!digest) throw new Error('DKG transaction failed');
 
   log('DKG submitted! Waiting for dWallet activation...');
 

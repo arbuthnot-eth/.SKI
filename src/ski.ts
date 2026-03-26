@@ -130,6 +130,7 @@ async function establishSession(address: string, signature: string, bytes: strin
   connectSession(sessionKey, (state) => {
     if (state.suinsName) updateAppState({ suinsName: state.suinsName });
     if (state.ikaWalletId) updateAppState({ ikaWalletId: state.ikaWalletId });
+    if ((state as any).btcAddress) updateAppState({ btcAddress: (state as any).btcAddress });
   });
 
   try {
@@ -148,11 +149,66 @@ async function establishSession(address: string, signature: string, bytes: strin
     // Agent might not be deployed yet — that's OK for local dev
   }
 
-  // Check for existing Ika dWallets (non-blocking)
-  loadIka().then(({ getCrossChainStatus }) => getCrossChainStatus(address)).then((status) => {
+  // Check for existing Ika dWallets — if none and user has SuiNS, auto-provision
+  loadIka().then(async ({ getCrossChainStatus }) => {
+    const status = await getCrossChainStatus(address);
     if (status.ika) {
-      updateAppState({ ikaWalletId: status.dwalletId });
+      updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress });
+      return;
     }
+
+    // No dWallet — check if user has a SuiNS name (qualifies for sponsored DKG)
+    const suinsName = (() => { try { return localStorage.getItem(`ski:suins:${address}`); } catch { return null; } })();
+    if (!suinsName) return;
+
+    // Request sponsored DKG from server
+    try {
+      const res = await fetch('/api/ika/provision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address }),
+      });
+      if (!res.ok) return;
+      const result = await res.json() as {
+        success: boolean;
+        txBytes?: string;
+        sponsorSig?: string;
+        dwalletId?: string;
+      };
+      if (!result.success) return;
+
+      // Already provisioned (server found existing dWallet)
+      if (result.dwalletId) {
+        const refreshed = await getCrossChainStatus(address);
+        updateAppState({ ikaWalletId: refreshed.dwalletId, btcAddress: refreshed.btcAddress });
+        return;
+      }
+
+      // Server returned sponsored tx bytes — user needs to co-sign and submit
+      if (result.txBytes && result.sponsorSig) {
+        const txBytes = Uint8Array.from(atob(result.txBytes), ch => ch.charCodeAt(0));
+        const { signature: userSig } = await signTransaction(txBytes);
+
+        // Submit with both signatures (user + sponsor)
+        const execResult = await (grpcClient as any).core.executeTransaction({
+          transaction: txBytes,
+          signatures: [userSig, result.sponsorSig],
+        });
+
+        const digest = execResult?.digest ?? execResult?.Transaction?.digest ?? '';
+        if (digest) {
+          // Poll for dWallet to become active (DKG is async)
+          const poll = setInterval(async () => {
+            const s = await getCrossChainStatus(address);
+            if (s.ika && s.btcAddress) {
+              clearInterval(poll);
+              updateAppState({ ikaWalletId: s.dwalletId, btcAddress: s.btcAddress });
+            }
+          }, 5000);
+          setTimeout(() => clearInterval(poll), 120_000);
+        }
+      }
+    } catch {}
   }).catch(() => {});
 
   return true;

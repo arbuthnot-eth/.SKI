@@ -271,6 +271,9 @@ export async function provisionDWallet(
     suiCoin,
     dwalletNetworkEncryptionKeyId: encKey.id,
   });
+  // Transfer any leftover IKA/SUI back to keeper (DKG may not consume the full coin)
+  tx.transferObjects([ikaCoin], tx.pure.address(keeperAddress));
+  tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
   // DWalletCap stays with sender (user)
 
   // Step 5: Build bytes, get sponsor sig, user signs

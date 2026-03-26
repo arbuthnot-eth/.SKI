@@ -246,12 +246,55 @@ API routes served by the worker:
 | `/api/shade/*` | Shade order management (poke, status, schedule) |
 | `/api/tradeport/listing/:label` | TradePort listing proxy |
 
+## IKA dWallet Integration (feat/ika-btc)
+
+Native Bitcoin addresses via IKA's 2PC-MPC threshold signatures. A single secp256k1 dWallet controls a real Bitcoin address — no bridges, no wrapping, no custodians.
+
+### Architecture
+
+| Layer | File | Purpose |
+|-------|------|---------|
+| Chain registry | `src/client/chains.ts` | CAIP-2 chain → IKA curve/algo/derivation mapping |
+| Address derivation | `src/client/ika.ts` | Extract pubkey from dWallet → derive chain addresses |
+| Signing ceremony | `src/client/ika-signing.ts` | 5-phase 2PC-MPC signing with browser presign pool |
+| gRPC adapter | `src/server/grpc-7k-adapter.ts` | Wraps SuiGrpcClient for 7K SDK compatibility |
+| DKG provisioning | `src/server/ika-provision.ts` | Server-side sponsored dWallet creation |
+| SuiNS gate | `src/server/index.ts` | Gas sponsorship gated by SuiNS NFT ownership |
+
+### How it works
+
+1. **Sign in** → check for existing dWallet via `getCrossChainStatus()`
+2. **No dWallet + has SuiNS** → server builds sponsored DKG tx (SUI→IKA swap via Cetus CLMM in same PTB), user co-signs, submits
+3. **dWallet active** → derive `bc1q...` address from secp256k1 public output
+4. **BTC network view** → orange address row, mempool.space explorer, BTC QR code
+
+### Credits
+
+Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https://github.com/inkwell-finance/ows-ika) (MIT) — Inkwell Finance's OpenWallet Standard adapter for IKA dWallets.
+
+### Development log
+
+| Date | Change | Commit |
+|------|--------|--------|
+| 2026-03-26 | gRPC adapter for Bluefin 7K aggregator SDK (4-method shim, no JSON-RPC) | `0f3818a` |
+| 2026-03-26 | SuiNS NFT ownership gate on `/api/sponsor-gas` | `5a8b8fe` |
+| 2026-03-26 | Bitcoin bech32 address derivation from dWallet pubkey | `65982ea` |
+| 2026-03-26 | Orange BTC address display, mempool.space link, network-aware copy/QR | `674d8ab` |
+| 2026-03-26 | Server-side sponsored DKG provisioning endpoint | `14c17ab` |
+| 2026-03-26 | Auto-provision dWallet at sign-in for SuiNS holders | `d361082` |
+| 2026-03-26 | Direct Cetus SUI→IKA swap in DKG PTB, IKA buffer fallback | `37d8345` |
+| 2026-03-26 | CAIP-2 chain registry for multi-chain address derivation | `3871a7f` |
+| 2026-03-26 | 2PC-MPC signing ceremony adapter with browser presign pool | `ce66411` |
+
+---
+
 ## Stack
 
-- `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2
+- `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2, `@ika.xyz/sdk` ^0.3.1
 - Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
+- Crypto: `@noble/hashes` (SHA-256, RIPEMD-160), `@scure/base` (bech32)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
-- Deploy: Cloudflare Workers + Wrangler 4.71
+- Deploy: Cloudflare Workers + Wrangler 4.77
 
 ## Local development
 

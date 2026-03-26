@@ -228,9 +228,11 @@ export async function provisionDWallet(
     const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
     const CETUS_IKA_SUI_POOL = '0xc23e7e8a74f0b18af4dfb7c3280e2a56916ec4d41e14416f85184a8aab6b7789';
     const SUI_CLOCK = '0x0000000000000000000000000000000000000000000000000000000000000006';
-    const MIN_SQRT_PRICE = '4295048016';
+    // Pool is Pool<IKA, SUI> — IKA=coinA, SUI=coinB
+    // We swap SUI(B)→IKA(A), so a_to_b=false, use MAX_SQRT_PRICE
+    const MAX_SQRT_PRICE = '79226673515401279992447579055';
 
-    const swapAmount = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI (~$0.05 worth of IKA)
+    const swapAmount = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI
     const swapAmountValue = tx.moveCall({
       target: '0x2::coin::value',
       typeArguments: [SUI_TYPE],
@@ -242,23 +244,23 @@ export async function provisionDWallet(
     });
     const [receiveA, receiveB] = tx.moveCall({
       target: `${CETUS_ROUTER}::router::swap`,
-      typeArguments: [SUI_TYPE, IKA_TYPE],
+      typeArguments: [IKA_TYPE, SUI_TYPE],  // Pool<IKA, SUI> ordering
       arguments: [
         tx.object(CETUS_GLOBAL_CONFIG),
         tx.object(CETUS_IKA_SUI_POOL),
-        swapAmount,
-        zeroIka,
-        tx.pure.bool(true),          // a_to_b (SUI→IKA)
-        tx.pure.bool(true),          // by_amount_in
+        zeroIka,             // coinA in (IKA — zero, we're receiving IKA)
+        swapAmount,          // coinB in (SUI — what we're spending)
+        tx.pure.bool(false),          // a_to_b = false (B→A = SUI→IKA)
+        tx.pure.bool(true),           // by_amount_in
         swapAmountValue,
-        tx.pure.u128(MIN_SQRT_PRICE),
+        tx.pure.u128(MAX_SQRT_PRICE), // sqrt price limit for B→A
         tx.pure.bool(false),
         tx.object(SUI_CLOCK),
       ],
     });
-    // Return leftover SUI dust to keeper
-    tx.transferObjects([receiveA], tx.pure.address(keeperAddress));
-    ikaCoin = receiveB;
+    // receiveA = IKA output, receiveB = leftover SUI dust
+    tx.transferObjects([receiveB], tx.pure.address(keeperAddress));
+    ikaCoin = receiveA;
   }
   // SUI for DKG gas reimbursement (from keeper's gas coins)
   const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);

@@ -187,6 +187,7 @@ export async function provisionDWallet(
   callbacks: ProvisionCallbacks,
 ): Promise<CrossChainStatus> {
   const log = callbacks.onStatus ?? (() => {});
+  console.log('[ika:dkg] provisionDWallet called for', userAddress, 'isWaap:', callbacks.isWaap);
 
   // Step 1: Check eligibility + get keeper info
   log('Checking...');
@@ -209,6 +210,7 @@ export async function provisionDWallet(
 
   // Step 2: Prepare DKG crypto (WASM — runs in browser)
   log('Preparing...');
+  console.log('[ika:dkg] Starting prepareDKGAsync — this fetches 250+ objects and may take 2-5 minutes');
   const client = await getClient();
   const curve = Curve.SECP256K1;
   // Random seed per attempt — deterministic seeds cause session conflicts on retry

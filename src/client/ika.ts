@@ -17,6 +17,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
 
 let ikaClient: IkaClient | null = null;
+let suiRpcProxy: any = null; // The Proxy SuiClient — exposed for tx.build()
 
 function getClient(): IkaClient {
   if (!ikaClient) {
@@ -125,6 +126,7 @@ function getClient(): IkaClient {
       },
     });
 
+    suiRpcProxy = suiClientProxy;
     ikaClient = new IkaClient({
       config,
       suiClient: suiClientProxy as any,
@@ -359,7 +361,7 @@ export async function provisionDWallet(
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing transaction...');
-  const txBytes = await tx.build({ client: client as any });
+  const txBytes = await tx.build({ client: suiRpcProxy });
 
   // Get keeper's gas sponsor signature
   const b64Tx = btoa(String.fromCharCode(...txBytes));

@@ -56,10 +56,41 @@ function getClient(): IkaClient {
       executeTransactionBlock: 'sui_executeTransactionBlock',
     };
 
-    const suiClientProxy = new Proxy({}, {
+    // Auto-batching: queue individual getObject calls and batch them via multiGetObjects
+    let batchQueue: Map<string, { resolve: (v: any) => void; reject: (e: any) => void; options: any }> = new Map();
+    let batchTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushBatch = async () => {
+      batchTimer = null;
+      const queue = batchQueue;
+      batchQueue = new Map();
+      if (queue.size === 0) return;
+      const ids = [...queue.keys()];
+      const firstOpts = [...queue.values()][0].options;
+      try {
+        const results = await rpc('sui_multiGetObjects', [ids, firstOpts || { showContent: true, showBcs: true }]) as any[];
+        ids.forEach((id, i) => queue.get(id)!.resolve(results[i]));
+      } catch (err) {
+        queue.forEach(({ reject }) => reject(err));
+      }
+    };
+    const batchGetObject = (id: string, options: any): Promise<any> => {
+      return new Promise((resolve, reject) => {
+        batchQueue.set(id, { resolve, reject, options });
+        if (batchTimer) clearTimeout(batchTimer);
+        // Flush after 30ms of no new calls, or when batch hits 50
+        if (batchQueue.size >= 50) flushBatch();
+        else batchTimer = setTimeout(flushBatch, 30);
+      });
+    };
+
+    const suiClientProxy = new Proxy({} as any, {
       get(_target, prop: string) {
-        // Only intercept known RPC methods — return undefined for everything else
-        // so the SDK can do normal property checks (typeof, in, etc.)
+        // 'core' property — the v2 @mysten/sui transaction resolver accesses client.core.getMoveFunction
+        // Return self so client.core.getMoveFunction works the same as client.getMoveFunction
+        if (prop === 'core') return suiClientProxy;
+        // Prevent Proxy from being treated as a Promise (breaks await detection)
+        if (prop === 'then') return undefined;
+        // Only intercept known RPC methods
         if (!(prop in methodMap)) return undefined;
         return async (...args: any[]) => {
           const rpcMethod = methodMap[prop]!;

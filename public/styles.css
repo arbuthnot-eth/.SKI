@@ -976,8 +976,8 @@ body {
   outline: none;
 }
 .wk-send-amount:focus {
-  border-color: rgba(96, 165, 250, 0.5);
-  background: rgba(59, 130, 246, 0.06);
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
 }
 .wk-send-amount--over {
   color: #f87171 !important;

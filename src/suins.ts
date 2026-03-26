@@ -1339,7 +1339,7 @@ async function buildCommitment(
   // keccak256 — use SubtleCrypto SHA-256 as a standin until we wire keccak.
   // The Move contract uses sui::hash::keccak256, so we need to match.
   // We import keccak from @noble/hashes which @mysten/sui bundles.
-  const { keccak_256 } = await import('@noble/hashes/sha3');
+  const { keccak_256 } = await import('@noble/hashes/sha3.js');
   return keccak_256(preimage);
 }
 

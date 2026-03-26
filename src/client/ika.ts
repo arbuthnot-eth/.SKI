@@ -161,6 +161,10 @@ export interface CrossChainStatus {
 export interface ProvisionCallbacks {
   /** Sign a transaction as the user (wallet popup). Returns base64 signature. */
   signTransaction: (txBytes: Uint8Array) => Promise<{ signature: string }>;
+  /** WaaP fallback: sign AND execute a Transaction object (no sponsorship). */
+  signAndExecuteTransaction?: (tx: any) => Promise<{ digest: string }>;
+  /** Whether the wallet is WaaP (uses non-sponsored path). */
+  isWaap?: boolean;
   /** Called with status updates during provisioning. */
   onStatus?: (msg: string) => void;
 }
@@ -337,36 +341,64 @@ export async function provisionDWallet(
   // SUI split survives &mut borrow — send back to user
   dkgTx.transferObjects([suiCoin2], dkgTx.pure.address(userAddress));
 
-  // Step 5: Build bytes, get sponsor sig, user signs
+  // Step 5: Sign and submit
   log('Signing...');
-  const txBytes = await dkgTx.build({ client: grpcClient as any });
+  let digest: string;
 
-  // Get keeper's gas sponsor signature
-  const b64Tx = btoa(String.fromCharCode(...txBytes));
-  const sponsorRes = await fetch('/api/sponsor-gas', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ txBytes: b64Tx, senderAddress: userAddress }),
-  });
-  if (!sponsorRes.ok) {
-    const err = await sponsorRes.json().catch(() => ({ error: 'Sponsor signing failed' })) as { error?: string };
-    throw new Error(err.error ?? 'Gas sponsorship failed');
+  if (callbacks.isWaap && callbacks.signAndExecuteTransaction) {
+    // WaaP path: non-sponsored, user pays own gas via signAndExecuteTransaction
+    // Remove gas sponsor settings — user is both sender and gas payer
+    // Build a fresh non-sponsored tx
+    const waapTx = new Transaction();
+    waapTx.setSender(userAddress);
+
+    const waapIkaTx = new IkaTransaction({ ikaClient: client, transaction: waapTx, userShareEncryptionKeys });
+    await waapIkaTx.registerEncryptionKey({ curve });
+
+    const waapIka = waapTx.object(userIkaCoinId2 || userIkaCoinId);
+    const waapSui = waapTx.splitCoins(waapTx.gas, [waapTx.pure.u64(100_000_000)]);
+
+    const waapDkg = await waapIkaTx.requestDWalletDKG({
+      curve,
+      dkgRequestInput: dkgInput,
+      sessionIdentifier: waapIkaTx.registerSessionIdentifier(sessionIdentifier),
+      ikaCoin: waapIka,
+      suiCoin: waapSui,
+      dwalletNetworkEncryptionKeyId: encKey.id,
+    });
+    waapTx.transferObjects([waapDkg[0]], waapTx.pure.address(userAddress));
+    waapTx.transferObjects([waapSui], waapTx.pure.address(userAddress));
+
+    log('Submitting...');
+    const result = await callbacks.signAndExecuteTransaction(waapTx);
+    digest = result?.digest ?? '';
+  } else {
+    // Normal path: sponsored tx (Phantom/Backpack)
+    const txBytes = await dkgTx.build({ client: grpcClient as any });
+    const b64Tx = btoa(String.fromCharCode(...txBytes));
+    const sponsorRes = await fetch('/api/sponsor-gas', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ txBytes: b64Tx, senderAddress: userAddress }),
+    });
+    if (!sponsorRes.ok) {
+      const err = await sponsorRes.json().catch(() => ({ error: 'Sponsor signing failed' })) as { error?: string };
+      throw new Error(err.error ?? 'Gas sponsorship failed');
+    }
+    const { sponsorSig } = await sponsorRes.json() as { sponsorSig: string };
+    const { signature: userSig } = await callbacks.signTransaction(txBytes);
+
+    log('Submitting...');
+    const rpcSubmit = getJsonRpc();
+    const execResult = await rpcSubmit.executeTransactionBlock({
+      transactionBlock: b64Tx,
+      signature: [userSig, sponsorSig],
+      options: { showEffects: true },
+      requestType: 'WaitForLocalExecution',
+    }) as any;
+    digest = execResult?.digest ?? '';
   }
-  const { sponsorSig } = await sponsorRes.json() as { sponsorSig: string };
 
-  // User signs
-  const { signature: userSig } = await callbacks.signTransaction(txBytes);
-
-  // Step 6: Submit with both signatures
-  log('Submitting...');
-  const rpcSubmit = getJsonRpc();
-  const execResult = await rpcSubmit.executeTransactionBlock({
-    transactionBlock: btoa(String.fromCharCode(...txBytes)),
-    signature: [userSig, sponsorSig],
-    options: { showEffects: true },
-    requestType: 'WaitForLocalExecution',
-  }) as any;
-  const digest = execResult?.digest;
   if (!digest) throw new Error('DKG transaction failed');
 
   log('Activating...');

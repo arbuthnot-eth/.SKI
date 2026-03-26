@@ -4975,9 +4975,15 @@ function renderSkiMenu() {
     btn.querySelector('.wk-dd-address-text')!.textContent = 'Creating\u2026';
     try {
       const { provisionDWallet } = await import('./client/ika.js');
-      const { signTransaction } = await import('./wallet.js');
+      const wallet = await import('./wallet.js');
+      const isWaap = /waap/i.test(getState().walletName);
       const status = await provisionDWallet(getState().address, {
-        signTransaction: (txBytes: Uint8Array) => signTransaction(txBytes),
+        signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
+        // WaaP can't do sponsored txs — use signAndExecuteTransaction instead
+        signAndExecuteTransaction: isWaap
+          ? (tx: any) => wallet.signAndExecuteTransaction(tx)
+          : undefined,
+        isWaap,
         onStatus: (msg: string) => {
           const txt = btn.querySelector('.wk-dd-address-text');
           if (txt) txt.textContent = msg;

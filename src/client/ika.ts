@@ -28,7 +28,9 @@ function getJsonRpc(): SuiJsonRpcClient {
   return jsonRpcClient;
 }
 
-function getClient(): IkaClient {
+let initPromise: Promise<void> | null = null;
+
+async function getClient(): Promise<IkaClient> {
   if (!ikaClient) {
     const config = getNetworkConfig('mainnet');
     const rpc = getJsonRpc();
@@ -39,6 +41,12 @@ function getClient(): IkaClient {
       config,
       suiClient: rpc as any,
     });
+    // Pre-fetch coordinator objects, encryption keys, and protocol state.
+    // Without this, the SDK lazily fetches 250+ objects individually (slow/timeout).
+    if (!initPromise) {
+      initPromise = ikaClient.initialize();
+    }
+    await initPromise;
   }
   return ikaClient;
 }
@@ -53,7 +61,7 @@ export async function checkExistingDWallets(address: string): Promise<{
   count: number;
 }> {
   try {
-    const client = getClient();
+    const client = await getClient();
     const result = await client.getOwnedDWalletCaps(address, undefined, 10);
     return {
       hasDWallet: result.dWalletCaps.length > 0,
@@ -186,7 +194,7 @@ export async function provisionDWallet(
 
   // Step 2: Prepare DKG crypto (WASM — runs in browser)
   log('Preparing DKG cryptography...');
-  const client = getClient();
+  const client = await getClient();
   const curve = Curve.SECP256K1;
   const seed = new TextEncoder().encode(`ski:dwallet:${userAddress}`);
   const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
@@ -323,7 +331,7 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
   let addresses: Array<{ chain: string; name: string; address: string }> = [];
   if (hasDWallet && caps[0]) {
     try {
-      const client = getClient();
+      const client = await getClient();
       const dWallet = await client.getDWallet(caps[0].dwallet_id);
       const publicOutput = (dWallet as any)?.state?.Active?.public_output;
       if (publicOutput) {

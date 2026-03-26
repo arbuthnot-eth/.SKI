@@ -5859,8 +5859,10 @@ function renderSkiMenu() {
   // ─── Address QR code — network-aware ────────────────────────────────
   const addrQrSlot = document.getElementById('wk-addr-qr');
   if (addrQrSlot && ws.address) {
-    const qrAddr = (networkView === 'btc' && app.btcAddress) ? app.btcAddress : ws.address;
-    _getAddrQrSvg(qrAddr, networkView === 'btc' ? 'btc' : balView).then(svg => {
+    const hasBtc = networkView === 'btc' && !!app.btcAddress;
+    const qrAddr = hasBtc ? app.btcAddress : ws.address;
+    const qrMode = hasBtc ? 'btc' : balView;
+    _getAddrQrSvg(qrAddr, qrMode).then(svg => {
       if (document.getElementById('wk-addr-qr')) addrQrSlot.innerHTML = svg;
     }).catch(() => {});
   }

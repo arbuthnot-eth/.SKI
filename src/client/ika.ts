@@ -99,7 +99,7 @@ function getClient(): IkaClient {
           const p = args[0] ?? {};
           switch (prop) {
             case 'getObject':
-              return rpc(rpcMethod, [p.id, p.options || { showContent: true, showBcs: true }]);
+              return batchGetObject(p.id, p.options || { showContent: true, showBcs: true });
             case 'multiGetObjects':
               return rpc(rpcMethod, [p.ids, p.options || { showContent: true, showBcs: true }]);
             case 'getOwnedObjects':

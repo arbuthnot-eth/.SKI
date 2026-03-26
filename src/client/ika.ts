@@ -404,7 +404,9 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
       options: { showContent: true },
       limit: 1,
     });
+    console.log('[ika:status] owned response:', JSON.stringify(owned).slice(0, 200));
     const cap = (owned as any)?.data?.[0]?.data;
+    console.log('[ika:status] cap:', cap ? 'found' : 'null');
     if (cap) {
       hasDWallet = true;
       dwalletId = cap.content?.fields?.dwallet_id ?? '';
@@ -412,6 +414,7 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
       // Fetch the dWallet object to get public_output
       if (dwalletId) {
         const dw = await rpc.getObject({ id: dwalletId, options: { showContent: true } });
+        console.log('[ika:status] dw response:', JSON.stringify(dw).slice(0, 300));
         const state = (dw as any)?.data?.content?.fields?.state?.fields;
         // Check Active or AwaitingKeyHolderSignature (both have public_output)
         const publicOutput = state?.public_output;

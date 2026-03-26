@@ -249,8 +249,11 @@ export async function provisionDWallet(
   let ikaCoin = tx.object(userIkaCoinId);
 
   const _ = SUI_TYPE; // keep import used
-  // SUI for DKG gas reimbursement (from keeper's gas coins)
-  const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);
+  // SUI for DKG gas reimbursement — use user's own SUI (not gas, which is keeper-owned)
+  const userSuiCheck = await getJsonRpc().getCoins({ owner: userAddress, coinType: '0x2::sui::SUI' });
+  const userSuiCoinId = (userSuiCheck as any)?.data?.[0]?.coinObjectId;
+  if (!userSuiCoinId) throw new Error('No SUI coins found');
+  const suiCoin = tx.splitCoins(tx.object(userSuiCoinId), [tx.pure.u64(100_000_000)]);
 
   const ikaTx = new IkaTransaction({ ikaClient: client, transaction: tx, userShareEncryptionKeys });
   // registerEncryptionKey returns a Move object the SDK doesn't consume,
@@ -269,8 +272,8 @@ export async function provisionDWallet(
   });
   // DKG returns [DWalletCap, Option<ID>] — transfer cap to user
   tx.transferObjects([dkgResult[0]], tx.pure.address(userAddress));
-  // SUI split from gas survives &mut borrow — send back to keeper (gas owner)
-  tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
+  // SUI split survives &mut borrow — merge back into user's coin
+  tx.transferObjects([suiCoin], tx.pure.address(userAddress));
 
   // Step 5: Build bytes, get sponsor sig, user signs
   log('Signing...');

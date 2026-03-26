@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { raceJsonRpc } from './rpc.js';
+import { buildProvisionTx } from './ika-provision.js';
 
 interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
@@ -184,6 +185,38 @@ app.get('/api/sponsor-info', async (c) => {
     }));
 
     return c.json({ sponsorAddress, gasCoins });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── IKA dWallet provisioning ─────────────────────────────────────────
+
+/**
+ * POST /api/ika/provision
+ * Body: { address: string }
+ * Returns: { success, txBytes?, sponsorSig?, dwalletId?, error? }
+ *
+ * Builds a sponsored DKG transaction for the user:
+ *   - sender = user (owns the DWalletCap)
+ *   - gasOwner = keeper (pays gas + IKA fees)
+ * Returns tx bytes + sponsor sig. Client signs as user and submits.
+ * Gated behind SuiNS NFT ownership.
+ */
+app.post('/api/ika/provision', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+
+  try {
+    const { address } = await c.req.json<{ address: string }>();
+    if (!address) return c.json({ error: 'Missing address' }, 400);
+
+    // SuiNS gate
+    const hasNft = await hasSuinsNft(address);
+    if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    const result = await buildProvisionTx(address, key);
+    return c.json(result, result.success ? 200 : 500);
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

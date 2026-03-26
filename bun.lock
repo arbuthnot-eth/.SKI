@@ -6,6 +6,7 @@
       "name": "sui.ski",
       "dependencies": {
         "@7kprotocol/sdk-ts": "^4.0.0",
+        "@bluefin-exchange/bluefin7k-aggregator-sdk": "^5.5.1",
         "@fingerprintjs/fingerprintjs": "^5.1.0",
         "@human.tech/waap-sdk": "^1.2.2",
         "@ika.xyz/sdk": "^0.2.7",

@@ -256,11 +256,7 @@ export async function provisionDWallet(
   const suiCoin = tx.splitCoins(tx.object(userSuiCoinId), [tx.pure.u64(100_000_000)]);
 
   const ikaTx = new IkaTransaction({ ikaClient: client, transaction: tx, userShareEncryptionKeys });
-  // registerEncryptionKey returns a Move object the SDK doesn't consume,
-  // causing UnusedValueWithoutDrop. Skip if first-time — the DKG call
-  // handles key registration internally when needed.
-  // TODO: check if already registered and only call when necessary
-  // await ikaTx.registerEncryptionKey({ curve });
+  await ikaTx.registerEncryptionKey({ curve });
 
   const dkgResult = await ikaTx.requestDWalletDKG({
     curve,

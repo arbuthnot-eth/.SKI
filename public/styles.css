@@ -873,12 +873,82 @@ body {
   align-items: stretch;
 }
 
-.wk-dd-address-network-icon {
-  width: 18px;
-  height: 18px;
+.wk-dd-network-select {
+  position: relative;
   flex-shrink: 0;
-  align-self: center;
-  opacity: 0.7;
+}
+.wk-dd-network-trigger {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  transition: border-color 0.15s, background 0.15s;
+}
+.wk-dd-network-trigger:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.1);
+}
+.wk-dd-network-trigger--sui {
+  border-color: rgba(77, 162, 255, 0.3);
+  background: rgba(37, 99, 235, 0.12);
+}
+.wk-dd-network-trigger--sui:hover {
+  border-color: rgba(77, 162, 255, 0.6);
+  background: rgba(37, 99, 235, 0.22);
+}
+.wk-dd-network-trigger--btc {
+  border-color: rgba(247, 147, 26, 0.3);
+  background: rgba(247, 147, 26, 0.12);
+}
+.wk-dd-network-trigger--btc:hover {
+  border-color: rgba(247, 147, 26, 0.6);
+  background: rgba(247, 147, 26, 0.22);
+}
+.wk-dd-network-trigger svg, .wk-dd-network-trigger img { display: block; }
+.wk-dd-network-options {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  background: #1a1a2e;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 9999;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  gap: 4px;
+}
+.wk-dd-network-opt {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+.wk-dd-network-opt:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.wk-dd-network-opt--sui { background: rgba(37, 99, 235, 0.08); }
+.wk-dd-network-opt--sui:hover { background: rgba(37, 99, 235, 0.18); }
+.wk-dd-network-opt--sui.wk-dd-network-opt--active { background: rgba(37, 99, 235, 0.2); box-shadow: 0 0 0 1px rgba(77, 162, 255, 0.4); }
+.wk-dd-network-opt--btc { background: rgba(247, 147, 26, 0.08); }
+.wk-dd-network-opt--btc:hover { background: rgba(247, 147, 26, 0.18); }
+.wk-dd-network-opt--btc.wk-dd-network-opt--active { background: rgba(247, 147, 26, 0.2); box-shadow: 0 0 0 1px rgba(247, 147, 26, 0.5); }
+.wk-dd-network-opt svg, .wk-dd-network-opt img { display: block; }
+.wk-dd-address-network-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
 }
 
 /* Send row — visible when address is collapsed */
@@ -1277,20 +1347,24 @@ body {
 .wk-badge-collapse {
   display: grid;
   grid-template-rows: 1fr;
-  overflow: hidden;
+  overflow: visible;
   transition: grid-template-rows 0.25s ease, opacity 0.25s ease;
   opacity: 1;
 }
 
 .wk-badge-collapse-inner {
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   margin: -2px 0 6px;
 }
 
 .wk-badge-collapse--hidden {
   grid-template-rows: 0fr;
   opacity: 0;
+  overflow: hidden;
+}
+.wk-badge-collapse--hidden .wk-badge-collapse-inner {
+  overflow: hidden;
 }
 
 .wk-dd-ns-domain-row {
@@ -2244,7 +2318,7 @@ body {
 .wk-dropdown--large {
   width: 100%;
   padding: 8px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* ─── Dual-panel slider (main ↔ settings) ─────────────────────────── */

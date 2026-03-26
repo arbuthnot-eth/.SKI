@@ -79,6 +79,8 @@ async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest:
 // ─── Assets ──────────────────────────────────────────────────────────
 
 export const SUI_DROP_URI = `data:image/svg+xml,${encodeURIComponent(SUI_DROP_SVG_TEXT)}`;
+const BTC_ICON_SVG = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#f7931a" stroke="white" stroke-width="3"/><text x="20" y="21" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">\u20BF</text></svg>`;
+const BTC_ICON_URI = `data:image/svg+xml,${encodeURIComponent(BTC_ICON_SVG)}`;
 const SKI_SVG_URI     = `data:image/svg+xml,${encodeURIComponent(SKI_SVG_TEXT)}`;
 const SUI_SKI_QR_URI  = `data:image/svg+xml,${encodeURIComponent(SUI_SKI_QR_SVG_TEXT)}`;
 const NS_ICON_URI     = 'https://coin-images.coingecko.com/coins/images/40110/small/NS_coin.png';
@@ -564,7 +566,7 @@ function buildDiamondPng(): string {
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
   const half = size / 2;
-  ctx.fillStyle = '#000000';
+  ctx.fillStyle = '#1a1a2e';
   ctx.beginPath();
   ctx.moveTo(half, 8);
   ctx.lineTo(size - 8, half);
@@ -731,7 +733,7 @@ function keyPfpHtml(addr: string, suinsName: string | null): string {
     return `<button type="button" class="ski-key-pfp ski-key-pfp--blue${splashClass}" data-splash-addr="${escaped}" title="${splashTitle} for ${esc(bare)}.sui"><img src="${SUI_DROP_URI}" class="ski-key-pfp-drop" alt=""></button>`;
   }
   const dropOverlay = splashOn ? `<img src="${SUI_DROP_URI}" class="ski-key-pfp-splash-drop" alt="" aria-hidden="true">` : '';
-  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
+  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
 }
 
 /** Subname creator column rendered inside each secondary key card. */
@@ -1376,11 +1378,11 @@ function walletListShape(w: Wallet): string {
   if (hasSuins) {
     return `<span class="ski-list-shape ski-list-shape--blue${sponsorClass}${deviceClass}">${hoverDrop}${dropOverlay}</span>`;
   } else if (hasAddrs) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   // WaaP: always black diamond even before first connect
   if (/waap/i.test(w.name)) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   // Green circle — no known addresses. Google/Discord: wrap with social X badge.
   const greenSvg = `<svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
@@ -2536,6 +2538,33 @@ let suiPriceCache: { price: number; fetchedAt: number } | null = (() => {
 let balView: 'sui' | 'usd' = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'usd'; } catch { return 'usd'; }
 })();
+let networkView: 'sui' | 'btc' = (() => {
+  try { return (localStorage.getItem('ski:network-pref') as 'sui' | 'btc') || 'sui'; } catch { return 'sui'; }
+})();
+
+let _networkSelectOpen = false;
+const _NETWORK_ICON_SUI = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(20,20) scale(0.065)" fill="white"><path d="M-85-85C-50-130 0-100 0-70C0-40-50-50-50-20C-50 10 0 0 40-30" stroke="white" stroke-width="30" fill="none" stroke-linecap="round"/></g></svg>`;
+const _NETWORK_ICON_BTC = BTC_ICON_SVG;
+const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc'; label: string; icon: string }> = [
+  { key: 'sui', label: 'Sui', icon: `<img src="${SUI_DROP_URI}" class="wk-dd-address-network-icon" alt="Sui">` },
+  { key: 'btc', label: 'Bitcoin', icon: `<img src="${BTC_ICON_URI}" class="wk-dd-address-network-icon" alt="BTC">` },
+];
+
+function _renderNetworkSelect() {
+  const el = document.getElementById('wk-network-select');
+  if (!el) return;
+  const selected = _NETWORK_OPTIONS.find(o => o.key === networkView)!;
+  let optionsHtml = '';
+  if (_networkSelectOpen) {
+    optionsHtml = '<div class="wk-dd-network-options">';
+    for (const o of _NETWORK_OPTIONS) {
+      const activeCls = o.key === networkView ? ' wk-dd-network-opt--active' : '';
+      optionsHtml += `<button class="wk-dd-network-opt wk-dd-network-opt--${o.key}${activeCls}" data-network="${o.key}" type="button" title="${o.label}">${o.icon}</button>`;
+    }
+    optionsHtml += '</div>';
+  }
+  el.innerHTML = `<button class="wk-dd-network-trigger wk-dd-network-trigger--${networkView}" type="button" id="wk-network-trigger" title="${selected.label}">${selected.icon}</button>${optionsHtml}`;
+}
 
 // Token price cache — maps symbol → { price, fetchedAt }
 // CoinGecko IDs for known Sui tokens
@@ -3086,7 +3115,22 @@ function _persistShadeCancelled() {
   try { localStorage.setItem('ski:shade-cancelled', JSON.stringify([..._shadeCancelledIds])); } catch {}
 }
 let nsRosterOpen = (() => { try { return sessionStorage.getItem('ski:roster-open') === '1'; } catch { return false; } })();
-let nsRouteOpen = (() => { try { return sessionStorage.getItem('ski:route-open') !== '0'; } catch { return true; } })();
+let nsRouteOpen = (() => {
+  try {
+    const stored = sessionStorage.getItem('ski:route-open');
+    if (stored !== null) return stored === '1';
+    // Default: open for black diamond (no SuiNS), closed for blue square (has SuiNS)
+    const addr = JSON.parse(localStorage.getItem('ski:session') ?? '{}')?.address;
+    const cachedName = addr ? localStorage.getItem(`ski:suins:${addr}`) : null;
+    return !cachedName;
+  } catch { return false; }
+})();
+function _persistRouteOpen() {
+  const addr = (() => { try { return JSON.parse(localStorage.getItem('ski:session') ?? '{}')?.address; } catch { return null; } })();
+  const hasName = addr ? !!localStorage.getItem(`ski:suins:${addr}`) : !!app.suinsName;
+  if (hasName) { try { sessionStorage.removeItem('ski:route-open'); } catch {} return; }
+  _persistRouteOpen();
+}
 let _suiamiVerifyHtml = ''; // persists SuiAMI result across re-renders
 function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
 let nsSectionOpen = (() => {
@@ -3107,13 +3151,18 @@ let addrSectionOpen = (() => {
     const stored = sessionStorage.getItem('ski:addr-open');
     if (stored !== null) return stored === '1';
     // Default: open for black diamond (no SuiNS), closed for blue square (has SuiNS)
-    // Check localStorage cache since app.suinsName isn't set yet at init
     const addr = JSON.parse(localStorage.getItem('ski:session') ?? '{}')?.address;
     const cachedName = addr ? localStorage.getItem(`ski:suins:${addr}`) : null;
     return !cachedName;
   } catch { return false; }
 })();
-function _persistAddrSectionOpen() { try { sessionStorage.setItem('ski:addr-open', addrSectionOpen ? '1' : '0'); } catch {} }
+function _persistAddrSectionOpen() {
+  // For blue-square users (has SuiNS name), don't persist — always reset to closed on re-open
+  const addr = (() => { try { return JSON.parse(localStorage.getItem('ski:session') ?? '{}')?.address; } catch { return null; } })();
+  const hasName = addr ? !!localStorage.getItem(`ski:suins:${addr}`) : !!app.suinsName;
+  if (hasName) { try { sessionStorage.removeItem('ski:addr-open'); } catch {} return; }
+  try { sessionStorage.setItem('ski:addr-open', addrSectionOpen ? '1' : '0'); } catch {}
+}
 // Legacy alias — kept in sync with addrSectionOpen
 let balSectionOpen = addrSectionOpen;
 let skiSettingsOpen = false;
@@ -3929,7 +3978,7 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
   const innerPad = pad + sw * 1.1;
   const outerPath = `M${half},${outerPad} L${s - outerPad},${half} L${half},${s - outerPad} L${outerPad},${half}Z`;
   const innerPath = `M${half},${innerPad} L${s - innerPad},${half} L${half},${s - innerPad} L${innerPad},${half}Z`;
-  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#050505"/></svg>`;
+  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#1a1a2e"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -4820,6 +4869,7 @@ function renderSkiMenu() {
             <div id="wk-bal-collapse" class="wk-badge-collapse${addrSectionOpen ? '' : ' wk-badge-collapse--hidden'}">
               <div class="wk-badge-collapse-inner">
                 <div class="wk-dd-address-row">
+                  <div id="wk-network-select" class="wk-dd-network-select"></div>
                   <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="${esc(ws.address)}">
                     <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
                   </button>
@@ -4843,6 +4893,8 @@ function renderSkiMenu() {
                 </div>
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
+                  <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
+                  <div style="flex:1"></div>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
@@ -4859,6 +4911,23 @@ function renderSkiMenu() {
   document.getElementById('wk-dd-switch')?.addEventListener('click', menuLockin);
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
+  _renderNetworkSelect();
+  document.getElementById('wk-network-select')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const t = e.target as HTMLElement;
+    const opt = t.closest<HTMLElement>('.wk-dd-network-opt');
+    if (opt?.dataset.network) {
+      networkView = opt.dataset.network as 'sui' | 'btc';
+      try { localStorage.setItem('ski:network-pref', networkView); } catch {}
+      _networkSelectOpen = false;
+      _renderNetworkSelect();
+      return;
+    }
+    if (t.closest('#wk-network-trigger') || t.closest('.wk-dd-network-trigger')) {
+      _networkSelectOpen = !_networkSelectOpen;
+      _renderNetworkSelect();
+    }
+  });
 
   // Coin chip selection — independent of balView
   // Coin chip arrow navigation
@@ -5439,7 +5508,7 @@ function renderSkiMenu() {
           }
           if (routeEl) {
             nsRouteOpen = true;
-            try { sessionStorage.setItem('ski:route-open', '1'); } catch {}
+            _persistRouteOpen();
             routeEl.classList.remove('wk-ns-route-wrap--hidden');
             routeEl.innerHTML = _suiamiVerifyHtml;
           }
@@ -5602,6 +5671,20 @@ function renderSkiMenu() {
     _debounceSwapQuote();
   });
 
+  // 0.01 button — set minimum amount
+  document.getElementById('wk-send-min')?.addEventListener('click', () => {
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (!amountInput) return;
+    pendingSendAmount = '0.01';
+    amountInput.value = '0.01';
+    const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (sendBtn) sendBtn.disabled = false;
+    const clearBtn = document.getElementById('wk-send-clear');
+    if (clearBtn) clearBtn.style.display = '';
+    _updateSendBtnMode();
+    _debounceSwapQuote();
+  });
+
   // Clear button — zero out amount
   document.getElementById('wk-send-clear')?.addEventListener('click', () => {
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
@@ -5649,9 +5732,10 @@ function renderSkiMenu() {
       _renderSwapSelect();
     }
   });
-  // Close swap select when clicking outside
+  // Close swap/network selects when clicking outside
   document.addEventListener('click', () => {
     if (_swapSelectOpen) { _swapSelectOpen = false; _renderSwapSelect(); }
+    if (_networkSelectOpen) { _networkSelectOpen = false; _renderNetworkSelect(); }
   });
 
   // Toggle token chips when clicking the balance row
@@ -6054,7 +6138,7 @@ function renderSkiMenu() {
     // Green circle (available) → toggle target address row
     if (nsAvail === 'available' && label) {
       nsRouteOpen = !nsRouteOpen;
-      try { sessionStorage.setItem('ski:route-open', nsRouteOpen ? '1' : '0'); } catch {}
+      _persistRouteOpen();
       const route = document.getElementById('wk-ns-route');
       if (route) route.classList.toggle('wk-ns-route-wrap--hidden', !nsRouteOpen);
       return;
@@ -6130,7 +6214,7 @@ function renderSkiMenu() {
     const isSelfTarget = !!nsTargetAddress && nsTargetAddress.toLowerCase() === ws2.address.toLowerCase();
     if (!isSelfTarget && nsAvail !== 'owned') {
       nsRouteOpen = !nsRouteOpen;
-      try { sessionStorage.setItem('ski:route-open', nsRouteOpen ? '1' : '0'); } catch {}
+      _persistRouteOpen();
       const route = document.getElementById('wk-ns-route');
       if (route) route.classList.toggle('wk-ns-route-wrap--hidden', !nsRouteOpen);
       return;

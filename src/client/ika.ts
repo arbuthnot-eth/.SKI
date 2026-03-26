@@ -184,18 +184,26 @@ export interface CrossChainStatus {
   dwalletCount: number;
   dwalletId: string;
   btcAddress: string;
+  ethAddress: string;
+  /** All derivable addresses from this dWallet */
+  addresses: Array<{ chain: string; name: string; address: string }>;
 }
 
 export async function getCrossChainStatus(address: string): Promise<CrossChainStatus> {
   const { hasDWallet, caps, count } = await checkExistingDWallets(address);
   let btcAddress = '';
+  let ethAddress = '';
+  let addresses: Array<{ chain: string; name: string; address: string }> = [];
   if (hasDWallet && caps[0]) {
     try {
       const client = getClient();
       const dWallet = await client.getDWallet(caps[0].dwallet_id);
       const publicOutput = (dWallet as any)?.state?.Active?.public_output;
       if (publicOutput) {
-        btcAddress = await deriveBtcAddress(new Uint8Array(publicOutput));
+        const output = new Uint8Array(publicOutput);
+        addresses = await deriveAllAddresses(output);
+        btcAddress = addresses.find(a => a.name === 'Bitcoin')?.address ?? '';
+        ethAddress = addresses.find(a => a.name === 'Ethereum')?.address ?? '';
       }
     } catch {}
   }
@@ -204,5 +212,7 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
     dwalletCount: count,
     dwalletId: hasDWallet && caps[0] ? caps[0].dwallet_id : '',
     btcAddress,
+    ethAddress,
+    addresses,
   };
 }

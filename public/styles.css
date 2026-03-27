@@ -5195,30 +5195,32 @@ body {
   gap: 6px;
   flex-shrink: 0;
 }
-/* Collapsed: horizontal compact row */
-.ski-demo:not(.open) .ski-demo-top-row {
+/* Collapsed: inline row, hide QR + addr */
+.ski-demo:not(.open) .ski-demo-sidebar {
+  flex-direction: row;
+  align-items: center;
+}
+.ski-demo:not(.open) .ski-demo-top-row { display: none; }
+.ski-demo:not(.open) .ski-demo-addr { display: none; }
+.ski-demo:not(.open) .ski-demo-label-row {
   display: flex;
   align-items: center;
   gap: 6px;
 }
-.ski-demo:not(.open) .ski-demo-top-info { display: contents; }
-.ski-demo:not(.open) .ski-demo-qr { display: none; }
-.ski-demo:not(.open) .ski-demo-addr { display: none; }
-.ski-demo:not(.open) .ski-demo-nets--stacked { flex-direction: row; }
 
-/* Open: QR top-left, label+suiami to its right, nets stacked */
+/* Open: QR + nets row, label below */
 .ski-demo.open .ski-demo-top-row {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-}
-.ski-demo.open .ski-demo-top-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  gap: 10px;
 }
 .ski-demo.open .ski-demo-nets--stacked {
   flex-direction: column;
+}
+.ski-demo-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .ski-demo-card-label {
   font-size: 18px;

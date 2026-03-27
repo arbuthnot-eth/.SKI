@@ -5892,6 +5892,15 @@ function renderSkiMenu() {
   document.getElementById('wk-ns-clear-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
     _clearNsInput();
+    // Force clear amount — _clearNsInput resets pendingSendAmount but re-render may restore it
+    pendingSendAmount = '';
+    const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (_sb) _sb.disabled = true;
     const nsClearBtn = document.getElementById('wk-ns-clear-btn');
     if (nsClearBtn) nsClearBtn.style.display = 'none';
     _updateSendBtnMode();

@@ -5208,7 +5208,9 @@ body {
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.02em;
+  text-decoration: none;
 }
+.ski-demo-card-label:hover { opacity: 0.8; }
 .ski-demo-nets { display: flex; gap: 2px; }
 .ski-demo-qr {
   width: 120px;
@@ -5311,6 +5313,15 @@ body {
 .ski-chip--cetus { background: rgba(0,210,190,0.12); color: #00d2be; }
 .ski-chip--superteam { background: rgba(255,100,50,0.12); color: #ff6432; }
 .ski-chip--suiami { background: rgba(34,197,94,0.12); color: #22c55e; }
+.ski-chip--gear { opacity: 0.5; font-size: 12px; padding: 2px 6px; }
+.ski-chip--gear:hover { opacity: 1; }
+.ski-demo-chips-extra {
+  display: none;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+}
+.ski-demo-chips-extra.show { display: flex; }
 /* Mobile: stack vertically */
 @media (max-width: 600px) {
   .ski-demo.open .ski-demo-body { flex-direction: column-reverse; }

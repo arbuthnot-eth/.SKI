@@ -58,7 +58,7 @@
     <div class="ski-demo" id="ski-demo">
       <div class="ski-demo-body" id="ski-demo-card">
         <div class="ski-demo-sidebar">
-          <div class="ski-demo-card-label">Superteam</div>
+          <a class="ski-demo-card-label" href="/ar.superteam" target="_blank" onclick="event.stopPropagation()">Superteam</a>
           <button class="ski-chip ski-chip--suiami ski-demo-suiami" id="ski-demo-suiami" type="button" onclick="event.stopPropagation()">SUIAMI</button>
           <div class="ski-demo-nets">
             <button class="ski-demo-net ski-demo-net--btc active" data-net="btc" title="Bitcoin">
@@ -77,16 +77,18 @@
             <span class="ski-demo-play-hint">&#9654; Play</span>
           </div>
           <div class="ski-demo-chips">
-            <a class="ski-chip ski-chip--sui" href="https://sui.io" target="_blank" onclick="event.stopPropagation()">Sui</a>
-            <a class="ski-chip ski-chip--ika" href="https://docs.ika.xyz" target="_blank" onclick="event.stopPropagation()">IKA</a>
-            <a class="ski-chip ski-chip--sol" href="https://solana.com" target="_blank" onclick="event.stopPropagation()">Solana</a>
-            <a class="ski-chip ski-chip--btc" href="https://bitcoin.org" target="_blank" onclick="event.stopPropagation()">Bitcoin</a>
-            <a class="ski-chip ski-chip--walrus" href="https://docs.wal.app" target="_blank" onclick="event.stopPropagation()">Walrus</a>
-            <a class="ski-chip ski-chip--gh" href="https://github.com/arbuthnot-eth/.SKI" target="_blank" onclick="event.stopPropagation()">GitHub</a>
-            <a class="ski-chip ski-chip--bluefin" href="https://bluefin.io" target="_blank" onclick="event.stopPropagation()">Bluefin</a>
-            <a class="ski-chip ski-chip--tradeport" href="https://tradeport.xyz" target="_blank" onclick="event.stopPropagation()">TradePort</a>
-            <a class="ski-chip ski-chip--cetus" href="https://cetus.zone" target="_blank" onclick="event.stopPropagation()">Cetus</a>
-            <a class="ski-chip ski-chip--superteam" href="https://superteam.fun" target="_blank" onclick="event.stopPropagation()">Superteam</a>
+            <button class="ski-chip ski-chip--gear" id="ski-demo-gear" type="button" onclick="event.stopPropagation()">&#9881;</button>
+            <div class="ski-demo-chips-extra" id="ski-demo-chips-extra">
+              <a class="ski-chip ski-chip--sui" href="https://sui.io" target="_blank" onclick="event.stopPropagation()">Sui</a>
+              <a class="ski-chip ski-chip--ika" href="https://docs.ika.xyz" target="_blank" onclick="event.stopPropagation()">IKA</a>
+              <a class="ski-chip ski-chip--sol" href="https://solana.com" target="_blank" onclick="event.stopPropagation()">Solana</a>
+              <a class="ski-chip ski-chip--btc" href="https://bitcoin.org" target="_blank" onclick="event.stopPropagation()">Bitcoin</a>
+              <a class="ski-chip ski-chip--walrus" href="https://docs.wal.app" target="_blank" onclick="event.stopPropagation()">Walrus</a>
+              <a class="ski-chip ski-chip--gh" href="https://github.com/arbuthnot-eth/.SKI" target="_blank" onclick="event.stopPropagation()">GitHub</a>
+              <a class="ski-chip ski-chip--bluefin" href="https://bluefin.io" target="_blank" onclick="event.stopPropagation()">Bluefin</a>
+              <a class="ski-chip ski-chip--tradeport" href="https://tradeport.xyz" target="_blank" onclick="event.stopPropagation()">TradePort</a>
+              <a class="ski-chip ski-chip--cetus" href="https://cetus.zone" target="_blank" onclick="event.stopPropagation()">Cetus</a>
+            </div>
           </div>
         </div>
         <div class="ski-demo-player" id="ski-demo-player">
@@ -242,6 +244,11 @@
           updateAddr(target);
         }
         if (t < 60) lastSwitch = '';
+      });
+
+      // Gear toggle for extra chips
+      document.getElementById('ski-demo-gear').addEventListener('click', function() {
+        document.getElementById('ski-demo-chips-extra').classList.toggle('show');
       });
 
       // SUIAMI button — sign proof if connected, else open GitHub

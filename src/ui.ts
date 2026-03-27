@@ -677,10 +677,10 @@ function fmtTimeLeft(expiresAt: string): string {
 
 // One-time QR cache clear — old white-bg SVGs cached under ski:qr:*
 try {
-  if (!localStorage.getItem('ski:qr:v3')) {
+  if (!localStorage.getItem('ski:qr:v4')) {
     const keys = Object.keys(localStorage).filter(k => k.startsWith('ski:qr:'));
     keys.forEach(k => localStorage.removeItem(k));
-    localStorage.setItem('ski:qr:v3', '1');
+    localStorage.setItem('ski:qr:v4', '1');
   }
 } catch {}
 
@@ -692,7 +692,7 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   const svg = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'M' });
+    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'M' });
   try { localStorage.setItem(key, svg); } catch {}
   return svg;
 }
@@ -706,7 +706,7 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   let svg: string = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'H' });
+    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'H' });
   const vbMatch = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
   if (vbMatch) {
     const vw = Number(vbMatch[1]), vh = Number(vbMatch[2]);

@@ -313,6 +313,50 @@ window.addEventListener('ski:request-signin', async () => {
   await signIn();
 });
 
+// ─── SUIAMI from Superteam card ──────────────────────────────────────
+window.addEventListener('ski:request-suiami', async (e) => {
+  const { network } = (e as CustomEvent).detail ?? {};
+  const ws = getState();
+  if (!ws.address) return;
+  const name = ws.suinsName?.replace(/\.sui$/, '') ?? '';
+  if (!name) { showToast('Connect a wallet with a SuiNS name'); return; }
+
+  try {
+    const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
+
+    // Build message with network context
+    const message = buildSuiamiMessage(name, ws.address, '');
+    // Add network to the message
+    (message as any).chain = network || 'sui';
+
+    const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
+    const { bytes, signature } = await signPersonalMessage(msgBytes);
+    const proof = createSuiamiProof(message, bytes, signature);
+
+    // Copy to clipboard
+    try {
+      await navigator.clipboard.writeText(proof.token);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = proof.token;
+      ta.style.cssText = 'position:fixed;left:-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+
+    showToast(`SUIAMI signed for ${name}.sui (${network || 'sui'}) — copied`);
+
+    window.dispatchEvent(new CustomEvent('suiami:signed', {
+      detail: { proof: proof.token, message: proof.message, signature: proof.signature, name, address: ws.address, network },
+    }));
+  } catch (err) {
+    console.error('[suiami] Error:', err);
+    showToast(err instanceof Error ? err.message : 'SUIAMI signing failed');
+  }
+});
+
 // ─── Sign & Execute Transaction ──────────────────────────────────────
 //
 // Any window that imports sui.ski can request a transaction be signed and

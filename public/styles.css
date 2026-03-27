@@ -5255,6 +5255,7 @@ body {
   gap: 8px;
 }
 .ski-demo-badge { display: none; }
+.ski-demo-suiami { opacity: 1; }
 .ski-demo-play-hint {
   font-size: 12px;
   color: var(--muted);
@@ -5310,6 +5311,14 @@ body {
 .ski-chip--cetus { background: rgba(0,210,190,0.12); color: #00d2be; }
 .ski-chip--superteam { background: rgba(255,100,50,0.12); color: #ff6432; }
 .ski-chip--suiami { background: rgba(34,197,94,0.12); color: #22c55e; }
+/* Mobile: stack vertically */
+@media (max-width: 600px) {
+  .ski-demo.open .ski-demo-body { flex-direction: column-reverse; }
+  .ski-demo.open .ski-demo-player { max-width: 100%; }
+  .ski-demo.open .ski-demo-sidebar { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .ski-demo.open .ski-demo-qr { width: 80px; height: 80px; }
+  .ski-demo.open .ski-demo-chips { max-width: 100%; }
+}
 .ski-demo-player video {
   width: 100%;
   height: 100%;

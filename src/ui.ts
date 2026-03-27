@@ -7077,18 +7077,6 @@ function render() {
   });
   renderModalLogo();
 
-  // Auto-fit viewport on mobile — when content (e.g. squid emoji) causes overflow,
-  // scale down so everything is visible without horizontal scroll
-  requestAnimationFrame(() => {
-    const sw = document.documentElement.scrollWidth;
-    const vw = window.innerWidth;
-    if (sw > vw + 2) {
-      const scale = vw / sw;
-      const meta = document.querySelector('meta[name="viewport"]');
-      if (meta) meta.setAttribute('content', `width=device-width, initial-scale=${scale.toFixed(3)}, shrink-to-fit=yes`);
-    }
-  });
-
   // NOTE: Do NOT call renderModal() here — it does a full innerHTML rebuild which
   // causes visible flash/jitter. The modal manages its own updates via targeted
   // DOM patches (balance cyclers, renderModalLogo, showKeyDetail, buildSplashLegend).

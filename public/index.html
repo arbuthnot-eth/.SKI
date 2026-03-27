@@ -67,10 +67,10 @@
           <div class="ski-demo-top-row">
             <canvas class="ski-demo-qr" id="ski-demo-qr" width="120" height="120"></canvas>
             <div class="ski-demo-nets ski-demo-nets--stacked">
-            <button class="ski-demo-net ski-demo-net--btc active" data-net="btc" title="Bitcoin">
+            <button class="ski-demo-net ski-demo-net--btc" data-net="btc" title="Bitcoin">
               <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#F7931A" stroke="white" stroke-width="3"/><text x="20" y="21" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">&#8383;</text></svg>
             </button>
-            <button class="ski-demo-net ski-demo-net--sol" data-net="sol" title="Solana">
+            <button class="ski-demo-net ski-demo-net--sol active" data-net="sol" title="Solana">
               <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#ds1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#ds2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#ds3)"/></g><defs><linearGradient id="ds1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="ds2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="ds3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>
             </button>
             <button class="ski-demo-net ski-demo-net--sui" data-net="sui" title="Sui">
@@ -78,7 +78,7 @@
             </button>
             </div>
           </div>
-          <div class="ski-demo-addr ski-demo-addr--btc" id="ski-demo-addr" title="bc1qtxapc28p93g54gpv5jjllh2tk7axr9lrm7hw23">bc1qtx...7hw23</div>
+          <div class="ski-demo-addr ski-demo-addr--sol" id="ski-demo-addr" title="FtdgskzfMMZ87cZR1Qv5mxFSJJVgNp9kh7v59bp6L9dh">Ftdgsk...L9dh</div>
           <div class="ski-demo-hints">
             <span class="ski-demo-play-hint">&#9654; Play</span>
           </div>
@@ -119,7 +119,7 @@
       };
       var addrEl = document.getElementById('ski-demo-addr');
       var qrCanvas = document.getElementById('ski-demo-qr');
-      var currentNet = 'btc';
+      var currentNet = 'sol';
 
       var netLogoUrls = {
         btc: './assets/btc-icon.svg',
@@ -287,8 +287,8 @@
       });
 
       // Initial state
-      document.getElementById('ski-demo').classList.add('ski-demo--btc');
-      drawQR(qrCanvas, addrs.btc.full, addrs.btc.color, 'btc');
+      document.getElementById('ski-demo').classList.add('ski-demo--sol');
+      drawQR(qrCanvas, addrs.sol.full, addrs.sol.color, 'sol');
     })();
   </script>
 </body>

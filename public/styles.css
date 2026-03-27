@@ -2151,9 +2151,11 @@ body {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.wk-ns-owned-chip:hover {
-  border-color: rgba(77, 162, 255, 0.5);
-  background: rgba(77, 162, 255, 0.14);
+@media (hover: hover) {
+  .wk-ns-owned-chip:hover {
+    border-color: rgba(77, 162, 255, 0.5);
+    background: rgba(77, 162, 255, 0.14);
+  }
 }
 .wk-ns-owned-chip--dim {
   opacity: 0.25;
@@ -2163,9 +2165,11 @@ body {
   border-color: rgba(255, 121, 75, 0.3);
   background: rgba(255, 121, 75, 0.08);
 }
-.wk-ns-owned-chip--kiosk:hover {
-  border-color: rgba(255, 121, 75, 0.5);
-  background: rgba(255, 121, 75, 0.16);
+@media (hover: hover) {
+  .wk-ns-owned-chip--kiosk:hover {
+    border-color: rgba(255, 121, 75, 0.5);
+    background: rgba(255, 121, 75, 0.16);
+  }
 }
 /* Wishlist (black-diamond) chips */
 .wk-ns-owned-chip--wish {
@@ -2173,10 +2177,12 @@ body {
   background: rgba(255, 255, 255, 0.02);
   color: rgba(255, 255, 255, 0.4);
 }
-.wk-ns-owned-chip--wish:hover {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.6);
+@media (hover: hover) {
+  .wk-ns-owned-chip--wish:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.6);
+  }
 }
 .wk-ns-owned-cap {
   font-size: 0.45rem;
@@ -2228,9 +2234,11 @@ body {
   border-color: rgba(239, 68, 68, 0.3);
   background: rgba(239, 68, 68, 0.08);
 }
-.wk-ns-owned-chip--shade:hover {
-  border-color: rgba(239, 68, 68, 0.5);
-  background: rgba(239, 68, 68, 0.16);
+@media (hover: hover) {
+  .wk-ns-owned-chip--shade:hover {
+    border-color: rgba(239, 68, 68, 0.5);
+    background: rgba(239, 68, 68, 0.16);
+  }
 }
 .wk-ns-owned-shade {
   font-size: 0.45rem;

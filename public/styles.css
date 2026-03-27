@@ -5206,8 +5206,9 @@ body {
   gap: 10px;
 }
 .ski-demo:not(.open) .ski-demo-top-row {
-  display: flex;
-  align-items: center;
+  display: contents;
+}
+.ski-demo:not(.open) .ski-demo-qr {
   order: -1;
 }
 .ski-demo:not(.open) .ski-demo-qr {

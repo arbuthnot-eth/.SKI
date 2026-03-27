@@ -71,33 +71,20 @@ app.get('/superteam/embed', (c) => {
   });
 });
 
-// ── Superteam docs proxy with green dollar QR popup ──
-// Matches ar.superteam.sui.ski (hostname) or /ar.superteam (path fallback)
-app.get('*', async (c, next) => {
-  const host = c.req.header('host') || '';
-  if (!host.startsWith('ar.superteam.sui.ski')) return next();
-  const path = new URL(c.req.url).pathname;
-  if (path !== '/' && path !== '') {
-    // Sub-paths: proxy directly
-    const res = await fetch('https://superteam.fun' + path, { headers: { 'Accept': c.req.header('Accept') || '*/*' } });
-    return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'text/html' } });
-  }
-  // Root: proxy with QR popup
-  return proxySupertam(c);
-});
-app.get('/ar.superteam', (c) => proxySupertam(c));
-app.get('/ar.superteam/*', async (c) => {
-  const path = c.req.path.replace('/ar.superteam', '') || '/';
-  const res = await fetch('https://superteam.fun' + path, { headers: { 'Accept': c.req.header('Accept') || '*/*' } });
-  return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'text/html' } });
-});
-async function proxySupertam(c: any) {
-  const res = await fetch('https://superteam.fun', { headers: { 'Accept': 'text/html' } });
-  let html = await res.text();
-  // Inject QR popup overlay before </body>
-  const popup = `
-<div id="ski-st-overlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer" onclick="this.remove()">
-<div style="background:#0a0c14;border-radius:16px;padding:24px;text-align:center;max-width:340px" onclick="event.stopPropagation()">
+// ── Superteam iframe with green dollar QR popup ──
+const SUPERTEAM_PAGE = `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Superteam — sui.ski</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{overflow:hidden}
+iframe{width:100%;height:100vh;border:none}
+#ski-st-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer}
+#ski-st-card{background:#0a0c14;border-radius:16px;padding:24px;text-align:center;max-width:340px;cursor:default}
+</style>
+</head><body>
+<iframe src="https://superteam.fun" sandbox="allow-scripts allow-same-origin allow-popups allow-forms" loading="eager"></iframe>
+<div id="ski-st-overlay" onclick="this.style.display='none'">
+<div id="ski-st-card" onclick="event.stopPropagation()">
 <div style="font-size:20px;font-weight:700;color:#fff;margin-bottom:12px">Superteam</div>
 <div id="ski-st-nets" style="display:flex;gap:4px;justify-content:center;margin-bottom:12px">
 <button data-net="btc" style="all:unset;cursor:pointer;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px;border:1.5px solid rgba(247,147,26,0.6)"><img src="https://sui.ski/assets/btc-icon.svg" width="28" height="28"></button>
@@ -109,28 +96,25 @@ async function proxySupertam(c: any) {
 <div style="font-size:10px;color:#666;margin-top:8px">Powered by <a href="https://sui.ski" style="color:#4da2ff;text-decoration:none">sui.ski</a></div>
 </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
 (function(){
 var addrs={btc:{full:'bc1qtxapc28p93g54gpv5jjllh2tk7axr9lrm7hw23',color:'#F7931A'},sol:{full:'FtdgskzfMMZ87cZR1Qv5mxFSJJVgNp9kh7v59bp6L9dh',color:'#9945FF'},sui:{full:'0x3ca0da71d19d9a1837ad3da155f03aab776aa33963864064eb81569f10e5222b',color:'#4da2ff'}};
-var cur='btc',canvas=document.getElementById('ski-st-qr'),addrEl=document.getElementById('ski-st-addr');
-function draw(net){cur=net;var a=addrs[net],s=200,ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,s,s);
+var canvas=document.getElementById('ski-st-qr'),addrEl=document.getElementById('ski-st-addr');
+function draw(net){var a=addrs[net],s=200,ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,s,s);
 var qr=qrcode(0,'L');qr.addData(a.full);qr.make();var m=qr.getModuleCount(),p=8,c=(s-p*2)/m;
-ctx.fillStyle=net==='btc'?'#22c55e':net==='sol'?'#22c55e':'#22c55e';
+ctx.fillStyle='#22c55e';
 for(var r=0;r<m;r++)for(var cc=0;cc<m;cc++)if(qr.isDark(r,cc))ctx.fillRect(p+cc*c,p+r*c,c+.5,c+.5);
 addrEl.textContent=a.full.slice(0,6)+'...'+a.full.slice(-5);addrEl.title=a.full;addrEl.style.color=a.color;
-document.querySelectorAll('#ski-st-nets button').forEach(function(b){b.style.opacity=b.dataset.net===net?'1':'0.4';b.style.borderColor=b.dataset.net===net?a.color:'transparent';});
-}
+document.querySelectorAll('#ski-st-nets button').forEach(function(b){b.style.opacity=b.dataset.net===net?'1':'0.4';b.style.borderColor=b.dataset.net===net?a.color:'transparent';});}
 document.querySelectorAll('#ski-st-nets button').forEach(function(b){b.addEventListener('click',function(e){e.stopPropagation();draw(b.dataset.net);});});
 addrEl.addEventListener('click',function(e){e.stopPropagation();navigator.clipboard.writeText(addrEl.title).then(function(){var o=addrEl.textContent;addrEl.textContent='\\u2713 Copied';setTimeout(function(){addrEl.textContent=o;},1000);});});
 draw('btc');
 })();
-<\/script>`;
-  html = html.replace('</body>', popup + '</body>');
-  // Rewrite relative URLs to point back to superteam.fun
-  html = html.replace(/(href|src|action)="\/(?!\/)/g, '$1="https://superteam.fun/');
-  return c.html(html);
-}
+</script>
+</body></html>`;
+app.get('/ar.superteam', (c) => c.html(SUPERTEAM_PAGE));
+app.get('/ar.superteam/*', (c) => c.html(SUPERTEAM_PAGE));
 
 // ── JSON-RPC proxy (same-origin, avoids CORS for browser-side IKA SDK) ──
 // Forwards to multiple Sui fullnodes with fallback.

@@ -2584,10 +2584,10 @@ function _renderNetworkSelect() {
 
 // Token price cache — maps symbol → { price, fetchedAt }
 // CoinGecko IDs for known Sui tokens
-const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold' };
+const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.02, WAL: 0.08, DEEP: 0.03, XAUM: 4900 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.02, WAL: 0.08, DEEP: 0.03, XAUM: 4900, IKA: 0.01 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -4994,13 +4994,12 @@ function renderSkiMenu() {
                     <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
                     <button id="wk-send-clear" class="wk-send-input-clear" type="button" title="Clear" style="${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : 'display:none'}">\u2715</button>
                   </div>
+                  <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
                   <button id="wk-send-one" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 1">1</button>
                   <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
-                  <div style="flex:1"></div>
-                  <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
             </div>

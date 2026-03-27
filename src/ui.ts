@@ -2883,8 +2883,16 @@ function _renderProfileEl(el: HTMLElement) {
     iconHtml = `<span class="wk-widget-method-icon${social ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${xBadge}`;
   }
 
-  // Ika cross-chain badge
-  const ikaHtml = ''; // squid emoji now inline with the name
+  // Eagerly restore IKA cache so squid shows from the first render frame
+  if (!app.ikaWalletId && ws.address) {
+    try {
+      const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
+      if (ikaCached) {
+        const c = JSON.parse(ikaCached) as { btc: string; eth: string; id: string };
+        if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; }
+      }
+    } catch {}
+  }
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
   const innerHtml = `${iconHtml}

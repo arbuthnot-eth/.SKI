@@ -199,7 +199,7 @@
         var demo = document.getElementById('ski-demo');
         var video = demo.querySelector('video');
         demo.classList.toggle('open');
-        if (demo.classList.contains('open')) { video.volume = 0.07; video.muted = false; video.play(); }
+        if (demo.classList.contains('open')) { video.volume = 0.07; video.muted = false; video.play(); setTimeout(function(){ window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'}); }, 100); }
         else { video.pause(); video.muted = true; }
       });
 

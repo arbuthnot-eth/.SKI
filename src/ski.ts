@@ -358,10 +358,21 @@ window.addEventListener('ski:request-suiami', async (e) => {
       : network === 'eth' ? appState.ethAddress
       : '';
 
-    const message = buildSuiamiMessage(name, ws.address, '');
-    (message as any).chain = network || 'sui';
-    if (chainAddr) (message as any).chainAddress = chainAddr;
-    if (name === 'nobody') message.suiami = 'I am nobody';
+    const raw = buildSuiamiMessage(name, ws.address, '');
+    if (name === 'nobody') raw.suiami = 'I am nobody';
+    // Reorder fields: suiami, datetime, chain, chainAddress, ski, network, address, ...rest
+    const message: any = {
+      suiami: raw.suiami,
+      datetime: raw.datetime,
+      chain: network || 'sui',
+      ...(chainAddr ? { chainAddress: chainAddr } : {}),
+      ski: raw.ski,
+      network: raw.network,
+      address: raw.address,
+      nftId: raw.nftId,
+      timestamp: raw.timestamp,
+      version: raw.version,
+    };
 
     const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
     const { bytes, signature } = await signPersonalMessage(msgBytes);

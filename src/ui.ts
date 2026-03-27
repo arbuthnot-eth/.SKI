@@ -4997,6 +4997,7 @@ function renderSkiMenu() {
                 </div>
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
+                  <button id="wk-send-one" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 1">1</button>
                   <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
                   <div style="flex:1"></div>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
@@ -5812,6 +5813,20 @@ function renderSkiMenu() {
     amountInput.value = pendingSendAmount;
     const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
     if (sendBtn) sendBtn.disabled = false;
+    _updateSendBtnMode();
+    _debounceSwapQuote();
+  });
+
+  // 1 button — set $1
+  document.getElementById('wk-send-one')?.addEventListener('click', () => {
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (!amountInput) return;
+    pendingSendAmount = '1.00';
+    amountInput.value = '1.00';
+    const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (sendBtn) sendBtn.disabled = false;
+    const clearBtn = document.getElementById('wk-send-clear');
+    if (clearBtn) clearBtn.style.display = '';
     _updateSendBtnMode();
     _debounceSwapQuote();
   });

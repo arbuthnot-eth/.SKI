@@ -5276,12 +5276,49 @@ body {
   overflow: hidden;
   transition: max-width 0.4s ease, opacity 0.3s ease;
   opacity: 0;
+  visibility: hidden;
 }
 .ski-demo.open .ski-demo-player {
   max-width: calc(90vw - 170px);
   opacity: 1;
+  visibility: visible;
   flex: 1;
 }
+/* Chips row */
+.ski-demo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 16px 10px;
+}
+.ski-chip {
+  all: unset;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 5px;
+  letter-spacing: 0.03em;
+  transition: opacity 0.15s;
+  text-decoration: none;
+  opacity: 0.7;
+}
+.ski-chip:hover { opacity: 1; }
+.ski-chip--sui { background: rgba(77,162,255,0.12); color: #4da2ff; }
+.ski-chip--ika { background: rgba(238,43,91,0.12); color: #EE2B5B; }
+.ski-chip--sol { background: rgba(153,69,255,0.12); color: #9945FF; }
+.ski-chip--btc { background: rgba(247,147,26,0.12); color: #F7931A; }
+.ski-chip--walrus { background: rgba(77,162,255,0.12); color: #4da2ff; }
+.ski-chip--gh { background: rgba(255,255,255,0.08); color: var(--muted); }
+.ski-chip--bluefin { background: rgba(0,200,255,0.12); color: #00c8ff; }
+.ski-chip--tradeport { background: rgba(255,200,0,0.12); color: #ffc800; }
+.ski-chip--cetus { background: rgba(0,210,190,0.12); color: #00d2be; }
+.ski-chip--superteam { background: rgba(255,100,50,0.12); color: #ff6432; }
+.ski-chip--suiami { background: rgba(34,197,94,0.12); color: #22c55e; }
+.ski-demo-badge {
+  text-decoration: none;
+}
+
 .ski-demo-player video {
   width: 100%;
   height: 100%;

@@ -67,7 +67,7 @@
           <canvas class="ski-demo-qr" id="ski-demo-qr" width="120" height="120"></canvas>
           <div class="ski-demo-addr ski-demo-addr--btc" id="ski-demo-addr" title="bc1qtxapc28p93g54gpv5jjllh2tk7axr9lrm7hw23">bc1qtx...7hw23</div>
           <div class="ski-demo-hints">
-            <span class="ski-demo-badge">Walrus</span>
+            <a class="ski-demo-badge" href="https://docs.wal.app" target="_blank" onclick="event.stopPropagation()">Walrus</a>
             <span class="ski-demo-play-hint">&#9654; Play</span>
           </div>
         </div>
@@ -78,6 +78,19 @@
             poster="./assets/superteam-poster.jpg"
           ></video>
         </div>
+      </div>
+      <div class="ski-demo-chips">
+        <a class="ski-chip ski-chip--sui" href="https://sui.io" target="_blank">Sui</a>
+        <a class="ski-chip ski-chip--ika" href="https://docs.ika.xyz" target="_blank">IKA</a>
+        <a class="ski-chip ski-chip--sol" href="https://solana.com" target="_blank">Solana</a>
+        <a class="ski-chip ski-chip--btc" href="https://bitcoin.org" target="_blank">Bitcoin</a>
+        <a class="ski-chip ski-chip--walrus" href="https://docs.wal.app" target="_blank">Walrus</a>
+        <a class="ski-chip ski-chip--gh" href="https://github.com/arbuthnot-eth/.SKI" target="_blank">GitHub</a>
+        <a class="ski-chip ski-chip--bluefin" href="https://bluefin.io" target="_blank">Bluefin</a>
+        <a class="ski-chip ski-chip--tradeport" href="https://tradeport.xyz" target="_blank">TradePort</a>
+        <a class="ski-chip ski-chip--cetus" href="https://cetus.zone" target="_blank">Cetus</a>
+        <a class="ski-chip ski-chip--superteam" href="https://superteam.fun" target="_blank">Superteam</a>
+        <a class="ski-chip ski-chip--suiami" href="https://github.com/arbuthnot-eth/SUIAMI" target="_blank">SUIAMI</a>
       </div>
     </div>
   </main>
@@ -176,8 +189,8 @@
         var demo = document.getElementById('ski-demo');
         var video = demo.querySelector('video');
         demo.classList.toggle('open');
-        if (demo.classList.contains('open')) { video.volume = 0.07; video.muted = false; video.play(); }
-        else { video.pause(); }
+        if (demo.classList.contains('open')) { video.volume = 0.07; video.muted = false; video.play(); video.removeAttribute('tabindex'); }
+        else { video.pause(); video.currentTime = 0; video.setAttribute('tabindex', '-1'); }
       });
 
       // Network buttons switch address + QR
@@ -209,6 +222,21 @@
         document.querySelectorAll('.ski-demo-net').forEach(function(b) { b.classList.remove('active'); });
         document.querySelector('.ski-demo-net--' + next).classList.add('active');
         updateAddr(next);
+      });
+
+      // Auto-switch networks at video timestamps
+      var lastSwitch = '';
+      var video = document.querySelector('.ski-demo-player video');
+      video.addEventListener('timeupdate', function() {
+        var t = video.currentTime;
+        var target = t >= 76 ? 'sol' : t >= 72 ? 'sui' : t >= 69 ? 'btc' : t >= 60 ? 'sol' : null;
+        if (target && target !== lastSwitch) {
+          lastSwitch = target;
+          document.querySelectorAll('.ski-demo-net').forEach(function(b) { b.classList.remove('active'); });
+          document.querySelector('.ski-demo-net--' + target).classList.add('active');
+          updateAddr(target);
+        }
+        if (t < 60) lastSwitch = '';
       });
 
       // Initial state

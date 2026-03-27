@@ -2297,9 +2297,11 @@ function coinShortName(coinType: string): string {
   return parts.length >= 3 ? parts[parts.length - 1] : coinType.slice(0, 8);
 }
 // Decimals per coinType — fetched on-chain and cached
+// One-time purge of stale decimals cache (NS was incorrectly cached as 9)
+try { if (!localStorage.getItem('ski:dec:v2')) { localStorage.removeItem('ski:decimals'); localStorage.setItem('ski:dec:v2', '1'); } } catch {}
 const _decimalsCache: Record<string, number> = {
   ...(() => { try { const c = JSON.parse(localStorage.getItem('ski:decimals') ?? '{}'); return typeof c === 'object' ? c : {}; } catch { return {}; } })(),
-  // Hardcoded values override any stale cache
+  // Hardcoded values always win
   [USDC_TYPE]: 6,
   [NS_TYPE]: 6,
 };

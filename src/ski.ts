@@ -358,7 +358,39 @@ window.addEventListener('ski:request-suiami', async (e) => {
       : network === 'eth' ? appState.ethAddress
       : '';
 
-    const raw = buildSuiamiMessage(name, ws.address, '');
+    // Look up SuiNS NFT ID and expiry for the primary name
+    let nftId = '';
+    let expiresInDays = 0;
+    if (name !== 'nobody') {
+      try {
+        const SUINS_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration';
+        const rpcUrl = '/api/rpc';
+        let cursor: string | null = null;
+        for (let page = 0; page < 10 && !nftId; page++) {
+          const res = await fetch(rpcUrl, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getOwnedObjects', params: [ws.address, { filter: { StructType: SUINS_TYPE }, options: { showContent: true } }, cursor, 50] }),
+          });
+          const json = await res.json() as any;
+          const items = json?.result?.data ?? [];
+          for (const item of items) {
+            const fields = item?.data?.content?.fields;
+            if (fields?.domain_name === `${name}.sui`) {
+              nftId = item.data.objectId;
+              const expirationMs = parseInt(fields?.expiration_timestamp_ms || '0', 10);
+              if (expirationMs) {
+                expiresInDays = Math.max(0, Math.ceil((expirationMs - Date.now()) / 86400000));
+              }
+              break;
+            }
+          }
+          if (!json?.result?.hasNextPage) break;
+          cursor = json?.result?.nextCursor ?? null;
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    const raw = buildSuiamiMessage(name, ws.address, nftId);
     if (name === 'nobody') raw.suiami = 'I am nobody';
     // Reorder fields: suiami, datetime, chain, chainAddress, ski, network, address, ...rest
     const message: any = {
@@ -369,7 +401,8 @@ window.addEventListener('ski:request-suiami', async (e) => {
       ski: raw.ski,
       network: raw.network,
       address: raw.address,
-      nftId: raw.nftId,
+      nftId: nftId || '',
+      ...(expiresInDays > 0 ? { expiresInDays } : {}),
       timestamp: raw.timestamp,
       version: raw.version,
     };

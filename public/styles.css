@@ -5316,11 +5316,10 @@ body {
 .ski-demo-badge { display: none; }
 .ski-demo-suiami { opacity: 1; }
 .ski-demo.open .ski-demo-card-label { order: 1; }
-.ski-demo.open .ski-demo-suiami { order: 2; }
-.ski-demo.open .ski-demo-top-row { order: 3; }
-.ski-demo.open .ski-demo-addr-row { order: 4; display: flex; align-items: center; gap: 6px; }
-.ski-demo.open .ski-demo-hints { order: 6; }
-.ski-demo.open .ski-demo-chips { order: 7; }
+.ski-demo.open .ski-demo-top-row { order: 2; }
+.ski-demo.open .ski-demo-addr-row { order: 3; display: flex; align-items: center; gap: 6px; }
+.ski-demo.open .ski-demo-hints { order: 4; }
+.ski-demo.open .ski-demo-chips { order: 5; }
 .ski-demo-gear-abs {
   position: static;
   display: inline;

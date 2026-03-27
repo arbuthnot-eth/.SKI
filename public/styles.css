@@ -5331,11 +5331,40 @@ body {
 
 /* Medium and small screens: stack vertically */
 @media (max-width: 900px) {
-  .ski-demo.open .ski-demo-body { flex-direction: column; }
-  .ski-demo.open .ski-demo-player { max-width: 100%; }
-  .ski-demo.open .ski-demo-sidebar { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .ski-demo.open .ski-demo-qr { width: 80px; height: 80px; }
-  .ski-demo.open .ski-demo-chips { max-width: 100%; }
+  .ski-demo.open .ski-demo-body {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+  .ski-demo.open .ski-demo-sidebar {
+    grid-row: 1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .ski-demo.open .ski-demo-sidebar .ski-demo-qr { display: none; }
+  .ski-demo.open .ski-demo-sidebar .ski-demo-chips { display: none; }
+  .ski-demo.open .ski-demo-player {
+    grid-row: 2;
+    max-width: 100%;
+  }
+  /* Duplicate QR below video via a pseudo-approach won't work — use JS to move it */
+}
+
+/* Mobile QR below video */
+.ski-demo-qr-below { display: none; }
+@media (max-width: 900px) {
+  .ski-demo.open .ski-demo-qr-below {
+    display: block;
+    padding: 8px 16px 16px;
+  }
+  .ski-demo.open .ski-demo-qr-below canvas {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    border-radius: 10px;
+  }
 }
 .ski-demo-player video:fullscreen,
 .ski-demo-player video:-webkit-full-screen {

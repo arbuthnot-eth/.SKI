@@ -99,6 +99,9 @@
             poster="./assets/superteam-poster.jpg"
           ></video>
         </div>
+        <div class="ski-demo-qr-below">
+          <canvas id="ski-demo-qr-mobile" width="400" height="400"></canvas>
+        </div>
       </div>
     </div>
   </main>
@@ -187,6 +190,8 @@
         addrEl.dataset.short = truncAddr(a.full);
         addrEl.className = 'ski-demo-addr ski-demo-addr--' + net;
         drawQR(qrCanvas, a.full, a.color, net);
+        var mobileQr = document.getElementById('ski-demo-qr-mobile');
+        if (mobileQr) drawQR(mobileQr, a.full, a.color, net);
         var demo = document.getElementById('ski-demo');
         demo.className = demo.classList.contains('open') ? 'ski-demo open ski-demo--' + net : 'ski-demo ski-demo--' + net;
       }
@@ -274,6 +279,8 @@
       // Initial state
       document.getElementById('ski-demo').classList.add('ski-demo--btc');
       drawQR(qrCanvas, addrs.btc.full, addrs.btc.color, 'btc');
+      var mobileQrInit = document.getElementById('ski-demo-qr-mobile');
+      if (mobileQrInit) drawQR(mobileQrInit, addrs.btc.full, addrs.btc.color, 'btc');
     })();
   </script>
 </body>

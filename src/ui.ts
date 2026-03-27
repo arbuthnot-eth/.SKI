@@ -4995,12 +4995,13 @@ function renderSkiMenu() {
                   <div class="wk-send-amount-wrap">
                     <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
                   </div>
-                  <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
                   <button id="wk-send-one" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 1">1</button>
                   <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
+                  <div style="flex:1"></div>
+                  <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
             </div>

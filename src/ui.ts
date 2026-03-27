@@ -2298,9 +2298,10 @@ function coinShortName(coinType: string): string {
 }
 // Decimals per coinType — fetched on-chain and cached
 const _decimalsCache: Record<string, number> = {
+  ...(() => { try { const c = JSON.parse(localStorage.getItem('ski:decimals') ?? '{}'); return typeof c === 'object' ? c : {}; } catch { return {}; } })(),
+  // Hardcoded values override any stale cache
   [USDC_TYPE]: 6,
   [NS_TYPE]: 6,
-  ...(() => { try { const c = JSON.parse(localStorage.getItem('ski:decimals') ?? '{}'); return typeof c === 'object' ? c : {}; } catch { return {}; } })(),
 };
 function coinDecimals(coinType: string): number {
   return _decimalsCache[coinType] ?? 9;
@@ -4787,10 +4788,10 @@ function renderSkiMenu() {
     if (_usdMode && c.symbol === 'SUI' && usd <= 0 && _fallbackSuiUsd != null) {
       usd = _fallbackSuiUsd;
     }
-    // Filter dust: skip non-SUI tokens worth less than $0.01 in USD mode
+    // In USD mode, filter out coins worth less than $0.10 (except SUI — always show gas token)
     if (_usdMode && usd < 0.01 && c.symbol !== 'SUI') continue;
-    // Filter dust regardless of mode: skip truly empty balances
-    if (!c.isStable && c.symbol !== 'SUI' && c.balance <= 0) continue;
+    // Filter dust amounts regardless of mode
+    if (!c.isStable && c.symbol !== 'SUI' && c.balance < 0.001 && usd < 0.01) continue;
     const isSui = c.symbol === 'SUI';
     if (isSui) hasSuiChip = true;
     // Use on-chain icon if available, else known icons, else default letter
@@ -4996,13 +4997,11 @@ function renderSkiMenu() {
                     <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
                     <button id="wk-send-clear" class="wk-send-input-clear" type="button" title="Clear" style="${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : 'display:none'}">\u2715</button>
                   </div>
+                  <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
-                  <button id="wk-send-one" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 1">1</button>
                   <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
-                  <div style="flex:1"></div>
-                  <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
             </div>

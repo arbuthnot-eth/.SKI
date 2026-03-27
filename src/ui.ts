@@ -4003,12 +4003,12 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white outline with lighter fill for visibility on dark backgrounds
+  // black-diamond: white outline with dark fill visible on both dark and light backgrounds
   const outerPad = pad;
   const innerPad = pad + sw * 1.1;
   const outerPath = `M${half},${outerPad} L${s - outerPad},${half} L${half},${s - outerPad} L${outerPad},${half}Z`;
   const innerPath = `M${half},${innerPad} L${s - innerPad},${half} L${half},${s - innerPad} L${innerPad},${half}Z`;
-  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#3a3a5e"/></svg>`;
+  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#141424"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {

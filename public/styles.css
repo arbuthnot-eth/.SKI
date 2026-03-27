@@ -2917,7 +2917,7 @@ body {
 }
 
 .ski-btn {
-  min-height: 26px;
+  min-height: 0;
   border-radius: 10px;
   display: inline-flex;
   align-items: center;
@@ -2926,7 +2926,7 @@ body {
   border: 1.5px solid rgba(148, 163, 184, 0.42);
   cursor: pointer;
   transition: all 0.2s ease;
-  padding: 3px 7px;
+  padding: 2px 6px;
   box-shadow:
     0 10px 22px rgba(2, 6, 23, 0.45),
     0 0 0 1px rgba(148, 163, 184, 0.14) inset;
@@ -2995,11 +2995,12 @@ body {
 }
 
 .ski-btn-price-label {
-  font-size: 1.1rem;
+  font-size: 1.2rem;
   font-weight: 700;
   color: #e6ebf5;
   white-space: nowrap;
-  padding: 0 2px;
+  padding: 0 1px;
+  line-height: 1;
 }
 .ski-btn-bal-whole { color: #ffffff; }
 .ski-btn-bal-dec {

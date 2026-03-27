@@ -5213,8 +5213,8 @@ body {
   order: -1;
 }
 .ski-demo:not(.open) .ski-demo-qr {
-  width: 210px;
-  height: 210px;
+  width: 80px;
+  height: 80px;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -5297,6 +5297,13 @@ body {
 }
 .ski-demo-badge { display: none; }
 .ski-demo-suiami { opacity: 1; }
+.ski-demo.open .ski-demo-card-label { order: 1; }
+.ski-demo.open .ski-demo-suiami { order: 2; }
+.ski-demo.open .ski-demo-top-row { order: 3; }
+.ski-demo.open .ski-demo-addr { order: 4; }
+.ski-demo.open .ski-demo-gear-abs { order: 5; }
+.ski-demo.open .ski-demo-hints { order: 6; }
+.ski-demo.open .ski-demo-chips { order: 7; }
 .ski-demo-gear-abs {
   position: absolute;
   bottom: 4px;

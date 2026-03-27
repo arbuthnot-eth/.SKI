@@ -3323,6 +3323,7 @@ async function fetchAndShowNsPrice(label: string) {
       pendingSendAmount = '';
       const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
       if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+      document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
       const _ac = document.getElementById('wk-send-clear');
       if (_ac) _ac.style.display = 'none';
       const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
@@ -6049,6 +6050,7 @@ function renderSkiMenu() {
     pendingSendAmount = '';
     const _amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
     if (_amtInput) { _amtInput.value = ''; _amtInput.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
     const _amtClear = document.getElementById('wk-send-clear');
     if (_amtClear) _amtClear.style.display = 'none';
     const _sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;

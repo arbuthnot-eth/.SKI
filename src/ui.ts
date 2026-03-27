@@ -5290,6 +5290,8 @@ function renderSkiMenu() {
         if (amountInput && amountInput.value !== mintCost) {
           pendingSendAmount = mintCost;
           amountInput.value = mintCost;
+          const clr = document.getElementById('wk-send-clear');
+          if (clr) clr.style.display = '';
         }
       }
     }
@@ -5397,6 +5399,8 @@ function renderSkiMenu() {
           amountInput.value = pendingSendAmount;
           amountInput.classList.toggle('wk-send-amount--over', !canAfford);
           document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', !canAfford);
+          const clr = document.getElementById('wk-send-clear');
+          if (clr) clr.style.display = '';
         }
       } else {
         btn.disabled = false;
@@ -6027,7 +6031,9 @@ function renderSkiMenu() {
     nsTargetAddress = null;
     pendingSendAmount = '';
     const _amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-    if (_amtInput) _amtInput.value = '';
+    if (_amtInput) { _amtInput.value = ''; _amtInput.classList.remove('wk-send-amount--over'); }
+    const _amtClear = document.getElementById('wk-send-clear');
+    if (_amtClear) _amtClear.style.display = 'none';
     const _sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
     if (_sendBtn) _sendBtn.disabled = true;
     nsNftOwner = null;

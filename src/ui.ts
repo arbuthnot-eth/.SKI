@@ -7059,18 +7059,28 @@ function renderSkiMenu() {
 
     const domain = btn.dataset.domain;
     if (!domain) return;
-    // Set NS state directly
+    // Set NS state directly — chip is from our roster so it's owned
     nsLabel = domain;
     try { localStorage.setItem('ski:ns-label', domain); } catch {}
     nsPriceUsd = null;
     nsPriceFetchFor = '';
     nsGraceEndMs = 0;
-    nsAvail = null;
+    const _chipInRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === domain.toLowerCase());
+    nsAvail = _chipInRoster ? 'owned' : null;
     nsTargetAddress = null;
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;
     nsSubnameParent = null;
+    // Clear stale amount from previous name
+    if (_chipInRoster) {
+      pendingSendAmount = '';
+      const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+      document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+      const _ac = document.getElementById('wk-send-clear');
+      if (_ac) _ac.style.display = 'none';
+    }
     // Set input value and keep it set across re-renders
     skipNextFocusClear = true;
     const _setInput = () => {

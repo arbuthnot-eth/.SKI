@@ -5203,14 +5203,21 @@ body {
 }
 .ski-demo:not(.open) .ski-demo-sidebar {
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
+}
+.ski-demo:not(.open) .ski-demo-suiami {
+  order: 2;
 }
 .ski-demo:not(.open) .ski-demo-top-row {
   display: contents;
 }
 .ski-demo:not(.open) .ski-demo-qr {
   order: -1;
+}
+.ski-demo:not(.open) .ski-demo-card-label {
+  order: 1;
 }
 .ski-demo:not(.open) .ski-demo-qr {
   width: 80px;
@@ -5252,8 +5259,8 @@ body {
 .ski-demo-nets { display: flex; gap: 2px; }
 .ski-demo-nets--stacked { flex-direction: column; }
 .ski-demo-qr {
-  width: 120px;
-  height: 120px;
+  width: 180px;
+  height: 180px;
   border-radius: 8px;
   flex-shrink: 0;
 }

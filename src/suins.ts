@@ -2187,6 +2187,90 @@ export async function buildSwapTx(
     return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'XAUM', toSymbol: 'SUI' };
   }
 
+  // IKA ↔ SUI via Cetus CLMM (IKA/SUI pool — SUI is coinX, IKA is coinY)
+  const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+  const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
+  const CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
+  const CETUS_IKA_SUI_POOL = '0xc23e7e8a74f0b18af4dfb7c3280e2a56916ec4d41e14416f85184a8aab6b7789';
+  const CETUS_MIN_SQRT = '4295048016';
+  const CETUS_MAX_SQRT = '79226673515401279992447579055';
+
+  if (inputCoinType === IKA_TYPE && outputCoinType === SUI_TYPE) {
+    // IKA → SUI: sell IKA (coinY) for SUI (coinX) = b_to_a = !a_to_b
+    const ikaCoins = await listCoinsOfType(transport, walletAddress, IKA_TYPE);
+    if (!ikaCoins.length) throw new Error('No IKA found');
+    const ikaCoin = tx.objectRef(ikaCoins[0]);
+    if (ikaCoins.length > 1) tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
+    const [ikaForSwap] = tx.splitCoins(ikaCoin, [tx.pure.u64(amount)]);
+    const [zeroSui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [SUI_TYPE] });
+    const [ikaValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [IKA_TYPE], arguments: [ikaForSwap] });
+    const [receiveA, receiveB] = tx.moveCall({
+      target: `${CETUS_ROUTER}::router::swap`,
+      typeArguments: [SUI_TYPE, IKA_TYPE],
+      arguments: [
+        tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
+        zeroSui, ikaForSwap,
+        tx.pure.bool(false), tx.pure.bool(true), ikaValue,
+        tx.pure.u128(CETUS_MAX_SQRT), tx.pure.bool(false), tx.object('0x6'),
+      ],
+    });
+    tx.transferObjects([receiveA, receiveB, ikaCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'IKA', toSymbol: 'SUI' };
+  }
+
+  if (inputCoinType === SUI_TYPE && outputCoinType === IKA_TYPE) {
+    // SUI → IKA: buy IKA (coinY) with SUI (coinX) = a_to_b
+    const [suiForSwap] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+    const [zeroIka] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [IKA_TYPE] });
+    const [suiValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [SUI_TYPE], arguments: [suiForSwap] });
+    const [receiveA, receiveB] = tx.moveCall({
+      target: `${CETUS_ROUTER}::router::swap`,
+      typeArguments: [SUI_TYPE, IKA_TYPE],
+      arguments: [
+        tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
+        suiForSwap, zeroIka,
+        tx.pure.bool(true), tx.pure.bool(true), suiValue,
+        tx.pure.u128(CETUS_MIN_SQRT), tx.pure.bool(false), tx.object('0x6'),
+      ],
+    });
+    tx.transferObjects([receiveA, receiveB], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'SUI', toSymbol: 'IKA' };
+  }
+
+  if (inputCoinType === IKA_TYPE && outputCoinType === USDC_TYPE) {
+    // IKA → USDC: two hops — IKA→SUI via Cetus, then SUI→USDC via DeepBook
+    const ikaCoins = await listCoinsOfType(transport, walletAddress, IKA_TYPE);
+    if (!ikaCoins.length) throw new Error('No IKA found');
+    const ikaCoin = tx.objectRef(ikaCoins[0]);
+    if (ikaCoins.length > 1) tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
+    const [ikaForSwap] = tx.splitCoins(ikaCoin, [tx.pure.u64(amount)]);
+    // Step 1: IKA → SUI via Cetus
+    const [zeroSui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [SUI_TYPE] });
+    const [ikaValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [IKA_TYPE], arguments: [ikaForSwap] });
+    const [suiFromCetus, ikaDust] = tx.moveCall({
+      target: `${CETUS_ROUTER}::router::swap`,
+      typeArguments: [SUI_TYPE, IKA_TYPE],
+      arguments: [
+        tx.object(CETUS_GLOBAL_CONFIG), tx.object(CETUS_IKA_SUI_POOL),
+        zeroSui, ikaForSwap,
+        tx.pure.bool(false), tx.pure.bool(true), ikaValue,
+        tx.pure.u128(CETUS_MAX_SQRT), tx.pure.bool(false), tx.object('0x6'),
+      ],
+    });
+    // Step 2: SUI → USDC via DeepBook
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        suiFromCetus, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], ikaDust, ikaCoin], tx.pure.address(walletAddress));
+    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'IKA', toSymbol: 'USDC' };
+  }
+
   // Generic fallback: discover route via Bluefin aggregator, build PTB for single-hop swaps
   const AGG_URL = 'https://aggregator.api.sui-prod.bluefin.io';
   const AGG_SOURCES = 'deepbook_v3,bluefin,cetus,aftermath,flowx,flowx_v3,kriya,kriya_v3,turbos';

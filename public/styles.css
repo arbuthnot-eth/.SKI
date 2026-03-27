@@ -2748,6 +2748,12 @@ body {
   border-color: rgba(212, 160, 23, 0.7);
   background: linear-gradient(135deg, rgba(120, 83, 9, 0.5), rgba(146, 100, 12, 0.4));
 }
+.wk-coin-arrow--to-ika { color: rgba(238, 43, 91, 0.5); }
+.wk-coin-arrow--to-ika:hover:not(:disabled) {
+  color: #EE2B5B;
+  border-color: rgba(238, 43, 91, 0.7);
+  background: linear-gradient(135deg, rgba(120, 20, 45, 0.5), rgba(150, 25, 55, 0.4));
+}
 .wk-coin-arrow--to-other { color: rgba(165, 148, 249, 0.5); }
 .wk-coin-arrow--to-other:hover:not(:disabled) {
   color: #a594f9;

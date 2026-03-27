@@ -351,8 +351,16 @@ window.addEventListener('ski:request-suiami', async (e) => {
   try {
     const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
 
+    // Get chain-specific address from app state
+    const appState = getAppState();
+    const chainAddr = network === 'btc' ? appState.btcAddress
+      : network === 'sol' ? appState.solAddress
+      : network === 'eth' ? appState.ethAddress
+      : '';
+
     const message = buildSuiamiMessage(name, ws.address, '');
     (message as any).chain = network || 'sui';
+    if (chainAddr) (message as any).chainAddress = chainAddr;
     if (name === 'nobody') message.suiami = 'I am nobody';
 
     const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));

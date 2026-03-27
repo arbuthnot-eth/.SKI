@@ -5170,12 +5170,15 @@ function renderSkiMenu() {
     e.stopPropagation();
     const ws2 = getState();
     if (!ws2.address) return;
-    // Switch output selector to USDC since we're consolidating to stables
+    // Switch output selector to USDC and update all UI before the wallet popup
     if (balView === 'usd') {
       swapOutputKey = 'usd';
       _persistSwapOutput();
       _renderSwapSelect();
+      _updateSendBtnMode();
     }
+    // Let the UI repaint before the wallet popup blocks
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     // Check for eligible non-stable, non-SUI tokens
     const eligible = walletCoins.filter(c => !c.isStable && c.symbol !== 'SUI' && c.balance > 0);
     if (!eligible.length) { showToast('No tokens to consolidate'); return; }

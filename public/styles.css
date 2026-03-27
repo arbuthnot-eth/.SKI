@@ -2693,11 +2693,13 @@ body {
 .wk-coin-grid-item--usd:hover { border-color: rgba(74, 222, 128, 0.5); background: rgba(34, 197, 94, 0.1); box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.15) inset; }
 .wk-coin-grid-item--gold { border-color: rgba(212, 160, 23, 0.3); }
 .wk-coin-grid-item--gold:hover { border-color: rgba(212, 160, 23, 0.5); background: rgba(212, 160, 23, 0.1); box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.15) inset; }
+.wk-coin-grid-item--ika { border-color: rgba(238, 43, 91, 0.3); }
+.wk-coin-grid-item--ika:hover { border-color: rgba(238, 43, 91, 0.5); background: rgba(238, 43, 91, 0.1); box-shadow: 0 0 0 1px rgba(238, 43, 91, 0.15) inset; }
 .wk-coin-grid-item--other { border-color: rgba(129, 140, 248, 0.3); }
 .wk-coin-grid-item--other:hover { border-color: rgba(129, 140, 248, 0.5); background: rgba(99, 102, 241, 0.1); box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.15) inset; }
-.wk-coin-grid-item .wk-popout-coin-icon { width: 16px; height: 16px; flex-shrink: 0; }
+.wk-coin-grid-item .wk-popout-coin-icon { width: 20px; height: 20px; flex-shrink: 0; }
 .wk-coin-grid-val {
-  font-size: 0.78rem;
+  font-size: 0.95rem;
   font-weight: 600;
   color: #e2e8f0;
 }

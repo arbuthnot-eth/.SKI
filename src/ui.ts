@@ -7219,7 +7219,7 @@ function render() {
   // Scale the header to fit viewport width on mobile.
   // Measures the actual bounding box of first-to-last child to detect overflow.
   requestAnimationFrame(() => {
-    const header = (slots.widget as HTMLElement | null)?.closest('.ski-header') as HTMLElement | null;
+    const header = (els.widget as HTMLElement | null)?.closest('.ski-header') as HTMLElement | null;
     if (!header) return;
     // Reset previous zoom
     header.style.zoom = '';

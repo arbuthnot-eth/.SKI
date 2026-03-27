@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { raceJsonRpc } from './rpc.js';
+// ika-provision.ts is available for server-side DKG if needed in future,
+// but DKG WASM must run client-side (browser) — Workers can't run it.
 
 interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
@@ -16,6 +18,69 @@ app.use('/agents/*', agentsMiddleware());
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
+
+// ── Superteam demo video player ──
+const WALRUS_VIDEO_URL = 'https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI';
+const POSTER_URL = 'https://sui.ski/assets/superteam-poster.jpg';
+app.get('/superteam', (c) => c.html(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>.SKI — Native Bitcoin &amp; Solana via IKA dWallets</title>
+<meta name="description" content="Real Bitcoin, Ethereum, and Solana addresses controlled by your Sui account — no bridges, no wrapping. Powered by IKA 2PC-MPC threshold signatures.">
+<meta property="og:title" content=".SKI — Native Bitcoin &amp; Solana via IKA dWallets">
+<meta property="og:description" content="Two DKGs. Two dWallets. Seven chains. One Sui account. Powered by IKA 2PC-MPC + Walrus decentralized storage.">
+<meta property="og:type" content="video.other">
+<meta property="og:video" content="${WALRUS_VIDEO_URL}">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="1920">
+<meta property="og:video:height" content="1080">
+<meta property="og:image" content="${POSTER_URL}">
+<meta property="og:url" content="https://sui.ski/superteam">
+<meta property="og:site_name" content="sui.ski">
+<meta name="twitter:card" content="player">
+<meta name="twitter:title" content=".SKI — Native Bitcoin &amp; Solana via IKA dWallets">
+<meta name="twitter:description" content="Two DKGs. Two dWallets. Seven chains. One Sui account.">
+<meta name="twitter:player" content="https://sui.ski/superteam/embed">
+<meta name="twitter:player:width" content="1920">
+<meta name="twitter:player:height" content="1080">
+<meta name="twitter:image" content="${POSTER_URL}">
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0a1a;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui,sans-serif}
+.wrap{max-width:960px;width:100%;padding:16px}video{width:100%;border-radius:12px;box-shadow:0 0 40px rgba(0,200,255,.15)}
+p{color:#888;text-align:center;margin-top:12px;font-size:13px}a{color:#4da2ff}</style>
+</head><body><div class="wrap">
+<video src="${WALRUS_VIDEO_URL}" controls autoplay muted playsinline poster="${POSTER_URL}"></video>
+<p>Hosted on <a href="https://walrus.xyz">Walrus</a> — Sui's decentralized storage. <a href="https://sui.ski">sui.ski</a></p>
+</div></body></html>`));
+
+// Twitter player embed (iframe src for twitter:player card)
+app.get('/superteam/embed', (c) => c.html(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>*{margin:0;padding:0}body{background:#000}video{width:100%;height:100vh;object-fit:contain}</style></head>
+<body><video src="${WALRUS_VIDEO_URL}" controls autoplay muted playsinline></video></body></html>`));
+
+// ── JSON-RPC proxy (same-origin, avoids CORS for browser-side IKA SDK) ──
+// Forwards to multiple Sui fullnodes with fallback.
+const SUI_RPC_URLS = [
+  'https://sui-rpc.publicnode.com',
+  'https://fullnode.mainnet.sui.io:443',
+];
+app.post('/api/rpc', async (c) => {
+  const body = await c.req.text();
+  for (const url of SUI_RPC_URLS) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      // Accept any response that has JSON content (even non-200)
+      const json = await res.text();
+      if (json && json.startsWith('{')) {
+        return c.text(json, 200, { 'content-type': 'application/json' });
+      }
+    } catch {}
+  }
+  return c.json({ error: 'All RPC endpoints failed' }, 502);
+});
 
 // ── Shade monitoring & manual poke ──────────────────────────────────
 
@@ -74,26 +139,66 @@ app.post('/api/shade/schedule/:address', async (c) => {
   }
 });
 
+// ── SuiNS ownership gate ────────────────────────────────────────────
+
+const SUINS_REGISTRATION_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration';
+const SUINS_GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+
+/** Check if an address owns at least one SuiNS registration NFT. */
+async function hasSuinsNft(address: string): Promise<boolean> {
+  try {
+    const res = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($owner:SuiAddress!,$type:String!){
+          address(address:$owner){
+            objects(filter:{type:$type},first:1){
+              nodes{ address }
+            }
+          }
+        }`,
+        variables: { owner: address, type: SUINS_REGISTRATION_TYPE },
+      }),
+    });
+    const json = await res.json() as {
+      data?: { address?: { objects?: { nodes?: unknown[] } } };
+    };
+    return (json?.data?.address?.objects?.nodes?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ── Gas sponsorship via Shade keeper ─────────────────────────────────
 
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 /**
  * POST /api/sponsor-gas
- * Body: { txBytes: string } (base64-encoded transaction bytes)
+ * Body: { txBytes: string, senderAddress?: string } (base64-encoded transaction bytes)
  * Returns: { sponsorSig: string, sponsorAddress: string }
  *
  * Signs the transaction as gas sponsor using the Shade keeper keypair.
  * The client must have built the tx with setGasOwner(sponsorAddress)
  * and setGasPayment pointing to the keeper's SUI coins.
+ *
+ * When senderAddress is provided, requires the sender to own a SuiNS
+ * registration NFT (403 if not).
  */
 app.post('/api/sponsor-gas', async (c) => {
   const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
   if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);
 
   try {
-    const { txBytes } = await c.req.json<{ txBytes: string }>();
+    const { txBytes, senderAddress } = await c.req.json<{ txBytes: string; senderAddress?: string }>();
     if (!txBytes) return c.json({ error: 'Missing txBytes' }, 400);
+
+    // SuiNS gate: require sender to own a SuiNS registration NFT
+    if (senderAddress) {
+      const hasNft = await hasSuinsNft(senderAddress);
+      if (!hasNft) return c.json({ error: 'SuiNS name required for gas sponsorship' }, 403);
+    }
 
     const keypair = Ed25519Keypair.fromSecretKey(key);
     const bytes = Uint8Array.from(atob(txBytes), ch => ch.charCodeAt(0));
@@ -144,6 +249,332 @@ app.get('/api/sponsor-info', async (c) => {
     }));
 
     return c.json({ sponsorAddress, gasCoins });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── IKA token funding (keeper → user) ────────────────────────────────
+
+import { Transaction } from '@mysten/sui/transactions';
+
+const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
+
+/**
+ * POST /api/ika/fund
+ * Body: { address: string }
+ *
+ * Transfers a small amount of IKA from the keeper to the user.
+ * SuiNS-gated. Called before DKG so the user has IKA for the DKG fee.
+ * Keeper signs and submits directly (no user signature needed).
+ */
+app.post('/api/ika/fund', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+
+  try {
+    const { address } = await c.req.json<{ address: string }>();
+    if (!address) return c.json({ error: 'Missing address' }, 400);
+
+    // SuiNS gate
+    const hasNft = await hasSuinsNft(address);
+    if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Find keeper's IKA coin
+    const coinRes = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!,$t:String!){
+          address(address:$a){
+            objects(filter:{type:$t},first:1){
+              nodes{ address version digest contents { json } }
+            }
+          }
+        }`,
+        variables: { a: keeperAddress, t: `0x2::coin::Coin<${IKA_COIN_TYPE}>` },
+      }),
+    });
+    const coinJson = await coinRes.json() as any;
+    const ikaCoinObj = coinJson?.data?.address?.objects?.nodes?.[0];
+    if (!ikaCoinObj) return c.json({ error: 'Keeper has no IKA' }, 503);
+
+    // Build tx: split IKA and transfer to user
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+    const ikaSplit = tx.splitCoins(tx.object(ikaCoinObj.address), [tx.pure.u64(IKA_FUND_AMOUNT.toString())]);
+    tx.transferObjects([ikaSplit], tx.pure.address(address));
+
+    // Sign and submit via RPC
+    const txBytes = await tx.build({ client: { url: SUI_RPC_URLS[0] } as any });
+
+    // Use JSON-RPC for submission since we're server-side
+    const { signature } = await keypair.signTransaction(txBytes);
+    const b64 = btoa(String.fromCharCode(...txBytes));
+
+    const submitRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_executeTransactionBlock',
+        params: [b64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as any;
+    const digest = submitJson?.result?.digest;
+
+    if (!digest) return c.json({ error: 'Fund tx failed', detail: submitJson?.error }, 500);
+    return c.json({ success: true, digest });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── IKA dWallet creation (keeper-submitted, for WaaP) ────────────────
+
+/**
+ * POST /api/ika/create
+ * Body: { address, authSignature, authBytes, dkgData }
+ *
+ * WaaP path: user can't sign transactions, so the keeper submits the DKG tx.
+ * The user proves intent via signPersonalMessage (authSignature).
+ * Browser runs WASM prepareDKGAsync and sends the results as dkgData.
+ * Keeper builds + signs + submits the tx, transfers DWalletCap to user.
+ *
+ * Uses requestDWalletDKGWithPublicUserShare (shared dWallet).
+ */
+app.post('/api/ika/create', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+
+  try {
+    const { address, authSignature, dkgData } = await c.req.json<{
+      address: string;
+      authSignature: string;
+      dkgData: {
+        userDKGMessage: number[];
+        userSecretKeyShare: number[];
+        userPublicOutput: number[];
+        sessionIdentifier: number[];
+        encryptionKeyBytes: number[];
+        signingPublicKeyBytes: number[];
+        encryptionKeySignature: number[];
+        curve: number;
+      };
+    }>();
+    if (!address || !authSignature || !dkgData) return c.json({ error: 'Missing params' }, 400);
+
+    // SuiNS gate
+    const hasNft = await hasSuinsNft(address);
+    if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    // TODO: verify authSignature matches address (cryptographic proof of intent)
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Fetch keeper's coins
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+
+    const coinQuery = (coinType: string, limit: number) => fetch(GQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!,$t:String!){ address(address:$a){ objects(filter:{type:$t},first:${limit}){ nodes{ address version digest } } } }`,
+        variables: { a: keeperAddress, t: `0x2::coin::Coin<${coinType}>` },
+      }),
+    }).then(r => r.json()) as Promise<any>;
+
+    const [suiRes, ikaRes] = await Promise.all([
+      coinQuery('0x2::sui::SUI', 5),
+      coinQuery(IKA_COIN_TYPE, 3),
+    ]);
+    const mapCoins = (res: any) => (res?.data?.address?.objects?.nodes ?? []).map((n: any) => ({
+      objectId: n.address, version: String(n.version), digest: n.digest,
+    }));
+    const suiCoins = mapCoins(suiRes);
+    const ikaCoins = mapCoins(ikaRes);
+
+    if (!suiCoins.length) return c.json({ error: 'Keeper has no SUI' }, 503);
+    if (!ikaCoins.length) return c.json({ error: 'Keeper has no IKA' }, 503);
+
+    // Build the DKG transaction — keeper is sender
+    const tx = new Transaction();
+    tx.setSender(keeperAddress);
+    tx.setGasPayment(suiCoins.slice(0, 3));
+
+    const ikaCoin = tx.object(ikaCoins[0].objectId);
+    const suiCoin = tx.splitCoins(tx.gas, [tx.pure.u64(100_000_000)]);
+
+    // IKA package constants
+    const IKA_CONFIG = {
+      packages: {
+        ikaDwallet2pcMpcPackage: '0x23b5bd96051923f800c3a2150aacdcdd8d39e1df2dce4dac69a00d2d8c7f7e77',
+      },
+    };
+    const COORDINATOR_ID = '0x5ea59bce034008a006425df777da925633ef384ce25761657ea89e2a08ec75f3';
+
+    const { bcs } = await import('@mysten/sui/bcs');
+    const coordRef = tx.sharedObjectRef({ objectId: COORDINATOR_ID, initialSharedVersion: 595876492, mutable: true });
+
+    // Register encryption key
+    tx.moveCall({
+      target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::register_encryption_key`,
+      arguments: [
+        coordRef,
+        tx.pure.u32(dkgData.curve),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.encryptionKeyBytes))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.encryptionKeySignature))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.signingPublicKeyBytes))),
+      ],
+    });
+
+    // Register session identifier
+    const [sessionId] = tx.moveCall({
+      target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::register_session_identifier`,
+      arguments: [
+        coordRef,
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.sessionIdentifier))),
+      ],
+    });
+
+    // Fetch latest encryption key ID from coordinator
+    const encKeyRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'suix_getDynamicFields',
+        params: [COORDINATOR_ID, null, 1],
+      }),
+    });
+    const encKeyJson = await encKeyRes.json() as any;
+    const encKeyObjId = encKeyJson?.result?.data?.[0]?.objectId;
+    if (!encKeyObjId) return c.json({ error: 'Could not find encryption key on coordinator' }, 500);
+
+    // Build Option::none for signDuringDKGRequest
+    const [noneOpt] = tx.moveCall({
+      target: '0x1::option::none',
+      typeArguments: [`${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator_inner::SignDuringDKGRequest`],
+    });
+
+    // Request shared dWallet DKG (public user secret key share)
+    const [dWalletCap] = tx.moveCall({
+      target: `${IKA_CONFIG.packages.ikaDwallet2pcMpcPackage}::coordinator::request_dwallet_dkg_with_public_user_secret_key_share`,
+      arguments: [
+        coordRef,
+        tx.pure.id(encKeyObjId),
+        tx.pure.u32(dkgData.curve),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.userDKGMessage))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.userSecretKeyShare))),
+        tx.pure(bcs.vector(bcs.u8()).serialize(new Uint8Array(dkgData.userPublicOutput))),
+        sessionId,
+        noneOpt,
+        ikaCoin,
+        suiCoin,
+      ],
+    });
+
+    // Transfer DWalletCap to the user + return leftover coins to keeper
+    tx.transferObjects([dWalletCap], tx.pure.address(address));
+    tx.transferObjects([suiCoin], tx.pure.address(keeperAddress));
+
+    // Build with a real JSON-RPC client (Workers can't use gRPC)
+    const { SuiJsonRpcClient: BuildClient } = await import('@mysten/sui/jsonRpc');
+    const buildClient = new BuildClient({ url: SUI_RPC_URLS[0], network: 'mainnet' });
+    const txBytes = await tx.build({ client: buildClient as any });
+    const { signature } = await keypair.signTransaction(txBytes);
+    const b64 = btoa(String.fromCharCode(...txBytes));
+
+    const submitRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_executeTransactionBlock',
+        params: [b64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as any;
+    const digest = submitJson?.result?.digest;
+
+    if (!digest) return c.json({ error: 'DKG tx failed', detail: submitJson?.error }, 500);
+    return c.json({ success: true, digest });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── IKA dWallet provisioning ─────────────────────────────────────────
+
+/**
+ * POST /api/ika/provision
+ * Body: { address: string }
+ * Returns: { success, keeperAddress, suiCoins, ikaCoins }
+ *
+ * SuiNS-gated. Returns keeper wallet info so the client can build
+ * a DKG transaction with the keeper as gas sponsor. The DKG WASM
+ * runs in the browser. Once built, the client sends the tx bytes
+ * to /api/sponsor-gas for the keeper's gas signature (which also
+ * has the SuiNS gate), then co-signs and submits.
+ */
+app.post('/api/ika/provision', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+
+  try {
+    const { address } = await c.req.json<{ address: string }>();
+    if (!address) return c.json({ error: 'Missing address' }, 400);
+
+    // SuiNS gate
+    const hasNft = await hasSuinsNft(address);
+    if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
+
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keeperAddress = keypair.toSuiAddress();
+
+    // Fetch keeper's gas coins + IKA coins via GraphQL
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+
+    const coinQuery = (coinType: string, limit: number) => fetch(GQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!,$t:String!){
+          address(address:$a){
+            objects(filter:{type:$t},first:${limit}){
+              nodes{ address version digest }
+            }
+          }
+        }`,
+        variables: { a: keeperAddress, t: `0x2::coin::Coin<${coinType}>` },
+      }),
+    }).then(r => r.json()) as Promise<any>;
+
+    const [suiRes, ikaRes] = await Promise.all([
+      coinQuery('0x2::sui::SUI', 5),
+      coinQuery(IKA_TYPE, 3),
+    ]);
+
+    const mapCoins = (res: any) => (res?.data?.address?.objects?.nodes ?? []).map((n: any) => ({
+      objectId: n.address, version: String(n.version), digest: n.digest,
+    }));
+    const suiCoins = mapCoins(suiRes);
+    const ikaCoins = mapCoins(ikaRes);
+
+    return c.json({
+      success: true,
+      keeperAddress,
+      suiCoins,
+      ikaCoins,
+    });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

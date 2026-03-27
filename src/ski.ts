@@ -130,6 +130,7 @@ async function establishSession(address: string, signature: string, bytes: strin
   connectSession(sessionKey, (state) => {
     if (state.suinsName) updateAppState({ suinsName: state.suinsName });
     if (state.ikaWalletId) updateAppState({ ikaWalletId: state.ikaWalletId });
+    if ((state as any).btcAddress) updateAppState({ btcAddress: (state as any).btcAddress });
   });
 
   try {
@@ -148,11 +149,15 @@ async function establishSession(address: string, signature: string, bytes: strin
     // Agent might not be deployed yet — that's OK for local dev
   }
 
-  // Check for existing Ika dWallets (non-blocking)
-  loadIka().then(({ getCrossChainStatus }) => getCrossChainStatus(address)).then((status) => {
-    if (status.ika) {
-      updateAppState({ ikaWalletId: status.dwalletId });
-    }
+  // Check for existing Ika dWallets (non-blocking, fully silent)
+  // DKG provisioning is triggered manually via the "Create dWallet" button in the UI
+  loadIka().then(async ({ getCrossChainStatus }) => {
+    try {
+      const status = await getCrossChainStatus(address);
+      if (status.ika) {
+        updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress, ethAddress: status.ethAddress });
+      }
+    } catch {}
   }).catch(() => {});
 
   return true;

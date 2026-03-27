@@ -9,6 +9,31 @@ Your Sui wallet, everywhere. Connect once, authenticate everywhere.
 
 ---
 
+## Native Cross-Chain Wallets via IKA dWallets
+
+Real Bitcoin, Ethereum, and Solana addresses controlled by your Sui account — no bridges, no wrapping, no custodians. Powered by [IKA](https://docs.ika.xyz)'s 2PC-MPC threshold signatures.
+
+[![Superteam Demo](public/assets/superteam-poster.jpg)](https://sui.ski/superteam)
+
+> *[▶ Watch the demo](https://sui.ski/superteam) — streamed from [Walrus](https://walrus.xyz), Sui's decentralized storage protocol.*
+
+### What One Sui Account Controls
+
+| Curve | Chains | Address Format |
+|-------|--------|----------------|
+| **secp256k1** (1 DKG) | Bitcoin, Ethereum, Base, Polygon, Arbitrum, Optimism | `bc1q...`, `0x...` |
+| **ed25519** (1 DKG) | Solana | base58 |
+
+Two DKG ceremonies. Two dWallets. Seven chains. One Sui account.
+
+### Why This Matters
+
+- **No bridges** — BTC stays on Bitcoin, SOL stays on Solana. IKA generates real native addresses whose signing is governed by Sui smart contracts.
+- **Non-collusive security** — 2PC-MPC means neither the user nor the network can sign alone. 100+ mainnet operators with Byzantine threshold.
+- **Quantum-ready architecture** — Sui's flag-byte signature scheme (`flag || sig || pk`) lets the network add post-quantum primitives via a new flag byte — no hard fork, no address migration. IKA's per-curve DKG is inherently modular, so post-quantum dWallets slot in alongside existing ones. See [Mysten Labs' research on post-quantum readiness in EdDSA chains](https://eprint.iacr.org/2025/1368) and our full analysis in [`docs/ika-quantum-resistance.md`](docs/ika-quantum-resistance.md).
+
+---
+
 ## Domain structure
 
 | Domain | Purpose |
@@ -246,12 +271,55 @@ API routes served by the worker:
 | `/api/shade/*` | Shade order management (poke, status, schedule) |
 | `/api/tradeport/listing/:label` | TradePort listing proxy |
 
+## IKA dWallet Integration
+
+Native cross-chain addresses via IKA's 2PC-MPC threshold signatures. Two dWallets (secp256k1 + ed25519) control real Bitcoin, Ethereum, and Solana addresses — no bridges, no wrapping, no custodians.
+
+### Architecture
+
+| Layer | File | Purpose |
+|-------|------|---------|
+| Chain registry | `src/client/chains.ts` | CAIP-2 chain → IKA curve/algo/derivation mapping |
+| Address derivation | `src/client/ika.ts` | Extract pubkey from dWallet → derive chain addresses |
+| Multi-curve DKG | `src/client/ika.ts` | `Curve.SECP256K1` (BTC/EVM) + `Curve.ED25519` (Solana) |
+| Signing ceremony | `src/client/ika-signing.ts` | 5-phase 2PC-MPC signing with browser presign pool |
+| gRPC adapter | `src/server/grpc-7k-adapter.ts` | Wraps SuiGrpcClient for 7K SDK compatibility |
+| DKG provisioning | `src/server/ika-provision.ts` | Server-side sponsored dWallet creation |
+| SuiNS gate | `src/server/index.ts` | Gas sponsorship gated by SuiNS NFT ownership |
+| Quantum analysis | `docs/ika-quantum-resistance.md` | Signature schemes, Shor's algorithm impact, migration paths |
+
+### How it works
+
+1. **Sign in** → check for existing dWallets via `getCrossChainStatus()` (scans all caps, detects curve)
+2. **No dWallet + has SuiNS** → sponsored DKG tx (SUI→IKA swap via Cetus CLMM in same PTB), user co-signs
+3. **Network selector** → choose Sui, Bitcoin, or Solana view
+4. **Create** → runs DKG for the correct curve (secp256k1 for BTC, ed25519 for Solana), skips if already exists
+5. **dWallet active** → derive native address from public output (P2WPKH, EVM keccak, or base58)
+
+### Post-Quantum Readiness
+
+Both secp256k1 and ed25519 are vulnerable to Shor's algorithm. The architecture is designed for the transition:
+
+- **Sui's flag-byte scheme** — adding post-quantum signatures = new flag byte + verifier, no hard fork
+- **IKA's per-curve DKG** — post-quantum dWallets coexist with existing ones, users migrate at their own pace
+- **Defense in depth** — even before target chains go post-quantum, Sui's authorization layer can adopt quantum-safe auth independently
+- **Mysten Labs research** — [ePrint 2025/1368](https://eprint.iacr.org/2025/1368) describes backward-compatible quantum-safe migration for EdDSA chains (Sui, Solana, Near, Stellar, Cosmos)
+
+Full analysis: [`docs/ika-quantum-resistance.md`](docs/ika-quantum-resistance.md)
+
+### Credits
+
+Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https://github.com/inkwell-finance/ows-ika) (MIT) — Inkwell Finance's OpenWallet Standard adapter for IKA dWallets.
+
+---
+
 ## Stack
 
-- `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2
+- `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2, `@ika.xyz/sdk` ^0.3.1
 - Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
+- Crypto: `@noble/hashes` (SHA-256, RIPEMD-160), `@scure/base` (bech32)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
-- Deploy: Cloudflare Workers + Wrangler 4.71
+- Deploy: Cloudflare Workers + Wrangler 4.77
 
 ## Local development
 

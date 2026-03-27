@@ -58,7 +58,7 @@ async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest:
   const res = await fetch('/api/sponsor-gas', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ txBytes: b64 }),
+    body: JSON.stringify({ txBytes: b64, senderAddress: getState().address }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Sponsor signing failed' })) as { error?: string };
@@ -148,6 +148,9 @@ export interface AppState {
   nsBalance: number;
   suinsName: string;
   ikaWalletId: string;
+  btcAddress: string;
+  ethAddress: string;
+  solAddress: string;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -160,6 +163,9 @@ const app: AppState = {
   nsBalance: 0,
   suinsName: '',
   ikaWalletId: '',
+  btcAddress: '',
+  ethAddress: '',
+  solAddress: '',
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -309,16 +315,13 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
 
   let copied = false;
   const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 180); };
-  const timer = setTimeout(remove, durationMs);
-
+  // Error toasts stay until dismissed — no auto-timeout
   toast.addEventListener('click', () => {
     if (copied) { remove(); return; }
     copied = true;
-    clearTimeout(timer);
     navigator.clipboard.writeText(fullText).catch(() => {});
-    hint.textContent = '\u2713 Copied';
+    hint.textContent = '\u2713 Copied — click again to dismiss';
     hint.style.color = '#4ade80';
-    setTimeout(remove, 1400);
   });
 }
 
@@ -674,6 +677,15 @@ function fmtTimeLeft(expiresAt: string): string {
   return hrs > 0 ? `${hrs}h` : '< 1h';
 }
 
+// One-time QR cache clear — old white-bg SVGs cached under ski:qr:*
+try {
+  if (!localStorage.getItem('ski:qr:v8')) {
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('ski:qr:'));
+    keys.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('ski:qr:v8', '1');
+  }
+} catch {}
+
 /** Generate (or return cached) QR SVG for a URL. Stored in localStorage. */
 async function getQrSvg(url: string, color?: string): Promise<string> {
   const dark = color ?? '#60a5fa';
@@ -682,21 +694,22 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   const svg = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'M' });
+    .toString(url, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'M' });
   try { localStorage.setItem(key, svg); } catch {}
   return svg;
 }
 
 /** Generate a QR SVG for a Sui address with a center logo. Uses 'H' error correction to tolerate the overlay.
  *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
-async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' = 'sui'): Promise<string> {
-  const dark = mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = 'sui'): Promise<string> {
+  const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+  // Solana QR uses purple modules (#9945FF) with the gradient logo in center
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
   const mod = await import('qrcode');
   const QRCode = (mod as unknown as { default: typeof mod }).default ?? mod;
   let svg: string = await (QRCode as { toString: (url: string, opts: object) => Promise<string> })
-    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#0d1117' }, errorCorrectionLevel: 'H' });
+    .toString(addr, { type: 'svg', margin: 1, color: { dark, light: '#ffffff' }, errorCorrectionLevel: 'H' });
   const vbMatch = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
   if (vbMatch) {
     const vw = Number(vbMatch[1]), vh = Number(vbMatch[2]);
@@ -704,14 +717,25 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' = 'sui'): 
     const cx = vw / 2, cy = vh / 2;
     const r = logoSize / 2;
     let logoSvg: string;
+    const br = r * 1.15; // slightly bigger logo for presence
     if (mode === 'usd') {
       const fill = '#22c55e';
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${r * 1.3}" font-weight="700" fill="white">$</text>`;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.3}" font-weight="700" fill="white">$</text>`;
+    } else if (mode === 'btc') {
+      const fill = '#f7931a';
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.3}" font-weight="700" fill="white">\u20BF</text>`;
+    } else if (mode === 'sol') {
+      // Solana official gradient #00FFA3 → #DC1FFF with real parallelogram paths
+      const s = br * 2;
+      const ox = cx - br;
+      const oy = cy - br;
+      logoSvg = `<defs><linearGradient id="qr-sol-g" x1="0.59" y1="0.18" x2="0.29" y2="0.74" gradientUnits="objectBoundingBox"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="#0B1022"/><g transform="translate(${ox},${oy}) scale(${s / 48})"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#qr-sol-g)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/></g>`;
     } else if (mode === 'bw') {
-      const d = r * 0.85;
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#050505" stroke="white" stroke-width="${d * 0.25}"/>`;
+      const d = br * 0.75;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#1a1a2e" stroke="white" stroke-width="${d * 0.2}"/>`;
     } else {
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${r + 1}" fill="#0d1117"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="#4da2ff"/><g transform="translate(${cx - r * 0.72},${cy - r * 0.82}) scale(${(logoSize * 0.75) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
+      // SUI mode — Sui drop
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${cx - br * 0.62},${cy - br * 0.72}) scale(${(br * 2 * 0.65) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
     }
     svg = svg.replace('</svg>', `${logoSvg}</svg>`);
   }
@@ -733,7 +757,7 @@ function keyPfpHtml(addr: string, suinsName: string | null): string {
     return `<button type="button" class="ski-key-pfp ski-key-pfp--blue${splashClass}" data-splash-addr="${escaped}" title="${splashTitle} for ${esc(bare)}.sui"><img src="${SUI_DROP_URI}" class="ski-key-pfp-drop" alt=""></button>`;
   }
   const dropOverlay = splashOn ? `<img src="${SUI_DROP_URI}" class="ski-key-pfp-splash-drop" alt="" aria-hidden="true">` : '';
-  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
+  return `<button type="button" class="ski-key-pfp ski-key-pfp--diamond${splashClass}" data-splash-addr="${escaped}" title="${splashTitle}"><svg width="47" height="47" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg>${dropOverlay}</button>`;
 }
 
 /** Subname creator column rendered inside each secondary key card. */
@@ -1378,11 +1402,11 @@ function walletListShape(w: Wallet): string {
   if (hasSuins) {
     return `<span class="ski-list-shape ski-list-shape--blue${sponsorClass}${deviceClass}">${hoverDrop}${dropOverlay}</span>`;
   } else if (hasAddrs) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   // WaaP: always black diamond even before first connect
   if (/waap/i.test(w.name)) {
-    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#1a1a2e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
+    return `<span class="ski-list-shape ski-list-shape--diamond${sponsorClass}${deviceClass}"><svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg>${hoverDrop}${dropOverlay}</span>`;
   }
   // Green circle — no known addresses. Google/Discord: wrap with social X badge.
   const greenSvg = `<svg width="23" height="23" viewBox="0 0 47 47" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><circle cx="23.5" cy="23.5" r="21" fill="#22c55e" stroke="#ffffff" stroke-width="5"/></svg>`;
@@ -2282,10 +2306,24 @@ function coinShortName(coinType: string): string {
   return parts.length >= 3 ? parts[parts.length - 1] : coinType.slice(0, 8);
 }
 // Decimals per coinType — fetched on-chain and cached
+// One-time purge of stale coin caches (NS decimals/balance were incorrectly cached)
+try {
+  if (!localStorage.getItem('ski:dec:v4')) {
+    localStorage.removeItem('ski:decimals');
+    localStorage.removeItem('ski:coin-meta');
+    localStorage.removeItem('ski:token-prices');
+    // Also purge any per-address balance caches
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('ski:balances:')) localStorage.removeItem(k);
+    }
+    localStorage.setItem('ski:dec:v4', '1');
+  }
+} catch {}
 const _decimalsCache: Record<string, number> = {
+  ...(() => { try { const c = JSON.parse(localStorage.getItem('ski:decimals') ?? '{}'); return typeof c === 'object' ? c : {}; } catch { return {}; } })(),
+  // Hardcoded values always win
   [USDC_TYPE]: 6,
   [NS_TYPE]: 6,
-  ...(() => { try { const c = JSON.parse(localStorage.getItem('ski:decimals') ?? '{}'); return typeof c === 'object' ? c : {}; } catch { return {}; } })(),
 };
 function coinDecimals(coinType: string): number {
   return _decimalsCache[coinType] ?? 9;
@@ -2538,16 +2576,19 @@ let suiPriceCache: { price: number; fetchedAt: number } | null = (() => {
 let balView: 'sui' | 'usd' = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'usd'; } catch { return 'usd'; }
 })();
-let networkView: 'sui' | 'btc' = (() => {
-  try { return (localStorage.getItem('ski:network-pref') as 'sui' | 'btc') || 'sui'; } catch { return 'sui'; }
+let _dwalletCheckInFlight = false;
+let networkView: 'sui' | 'btc' | 'sol' = (() => {
+  try { return (localStorage.getItem('ski:network-pref') as 'sui' | 'btc' | 'sol') || 'sui'; } catch { return 'sui'; }
 })();
 
 let _networkSelectOpen = false;
 const _NETWORK_ICON_SUI = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(20,20) scale(0.065)" fill="white"><path d="M-85-85C-50-130 0-100 0-70C0-40-50-50-50-20C-50 10 0 0 40-30" stroke="white" stroke-width="30" fill="none" stroke-linecap="round"/></g></svg>`;
 const _NETWORK_ICON_BTC = BTC_ICON_SVG;
-const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc'; label: string; icon: string }> = [
+const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sol1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol3)"/></g><defs><linearGradient id="sol1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
+const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc' | 'sol'; label: string; icon: string }> = [
   { key: 'sui', label: 'Sui', icon: `<img src="${SUI_DROP_URI}" class="wk-dd-address-network-icon" alt="Sui">` },
   { key: 'btc', label: 'Bitcoin', icon: `<img src="${BTC_ICON_URI}" class="wk-dd-address-network-icon" alt="BTC">` },
+  { key: 'sol', label: 'Solana', icon: `<span class="wk-dd-address-network-icon">${SOL_ICON_SVG}</span>` },
 ];
 
 function _renderNetworkSelect() {
@@ -2568,10 +2609,10 @@ function _renderNetworkSelect() {
 
 // Token price cache — maps symbol → { price, fetchedAt }
 // CoinGecko IDs for known Sui tokens
-const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold' };
+const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.02, WAL: 0.08, DEEP: 0.03, XAUM: 4900 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.02, WAL: 0.08, DEEP: 0.03, XAUM: 4900, IKA: 0.01 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -2819,7 +2860,10 @@ function stopPolling() {
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 function copyAddress() {
-  const addr = getState().address;
+  // Copy the address for the currently selected network
+  const addr = networkView === 'btc'
+    ? (app.btcAddress || app.ethAddress || getState().address)
+    : getState().address;
   if (!addr) return;
   navigator.clipboard?.writeText(addr).then(() => {
     if (copiedTimer) clearTimeout(copiedTimer);
@@ -2866,19 +2910,24 @@ function _renderProfileEl(el: HTMLElement) {
     iconHtml = `<span class="wk-widget-method-icon${social ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${xBadge}`;
   }
 
-  // Ika cross-chain badge
-  const ikaHtml = app.ikaWalletId
-    ? '<span class="wk-widget-ika-badge" title="Ika dWallet active">ika</span>'
-    : '';
+  // Eagerly restore IKA cache so squid shows from the first render frame
+  if (!app.ikaWalletId && ws.address) {
+    try {
+      const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
+      if (ikaCached) {
+        const c = JSON.parse(ikaCached) as { btc: string; eth: string; sol?: string; id: string };
+        if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; app.solAddress = c.sol ?? ''; }
+      }
+    } catch {}
+  }
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
   const innerHtml = `${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
-            <span class="wk-widget-primary-name">${esc(label)}</span>
+            <span class="wk-widget-primary-name">${esc(label)}${app.ikaWalletId ? ' \ud83e\udd91' : ''}</span>
           </span>
-        </span>
-        ${ikaHtml}`;
+        </span>`;
 
   el.innerHTML = hasSuins
     ? `<div class="wk-widget">
@@ -2939,6 +2988,7 @@ function _renderSkiBtnEl(el: HTMLElement) {
 
   const hasPrimary = !!app.suinsName;
   el.classList.toggle('ski-menu-open', app.skiMenuOpen);
+  el.classList.toggle('ski-bal-usd', balView === 'usd');
   const showDrop = app.splashSponsor || hasValidSkiSession(ws.address);
 
   if (hasPrimary) {
@@ -2946,9 +2996,14 @@ function _renderSkiBtnEl(el: HTMLElement) {
       ? `<svg class="ski-btn-price-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg>`
       : `<svg class="ski-btn-price-icon" viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="6" fill="#4da2ff" stroke="white" stroke-width="2"/><g transform="translate(10,7) scale(0.067)" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g></svg>`;
     const rawUsd = fmtUsd(app.usd);
+    const fmtBalSplit = (raw: string) => {
+      const dot = raw.indexOf('.');
+      if (dot < 0) return `<span class="ski-btn-bal-whole">${esc(raw)}</span>`;
+      return `<span class="ski-btn-bal-whole">${esc(raw.slice(0, dot))}</span><span class="ski-btn-bal-dec">.${esc(raw.slice(dot + 1))}</span>`;
+    };
     const balLabel = balView === 'usd'
-      ? `<span class="ski-btn-price-label ski-btn-price-label--usd">${esc(rawUsd ? rawUsd.replace(/^\$/, '') : '--')}</span>`
-      : `<span class="ski-btn-price-label">${esc(fmtSui(getTotalSui()))}</span>`;
+      ? `<span class="ski-btn-price-label ski-btn-price-label--usd">${fmtBalSplit(rawUsd ? rawUsd.replace(/^\$/, '') : '--')}</span>`
+      : `<span class="ski-btn-price-label">${fmtBalSplit(fmtSui(getTotalSui()))}</span>`;
     el.innerHTML = `<span class="ski-btn-dot" title="SKI Menu" aria-label="Switch USD/SUI">${dotSvg}</span>${balLabel}`;
     return;
   }
@@ -3087,6 +3142,7 @@ let nsLabel = '';
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
+let _nsValidityInterval: ReturnType<typeof setInterval> | null = null;
 let nsAvail: null | 'available' | 'taken' | 'owned' | 'grace' = null;
 let nsGraceEndMs = 0;
 let nsTargetAddress: string | null = null; // resolved address for the current label (if registered)
@@ -3286,6 +3342,18 @@ async function fetchAndShowNsPrice(label: string) {
       : null;
     nsTradeportListing = tp;
     if (sr) _maybeDiscoverRealOwner(sr);
+    // Clear stale amount if name isn't actionable (no mint, no listing to buy)
+    const actionable = nsAvail === 'available' || nsAvail === 'grace' || nsKioskListing || nsTradeportListing;
+    if (!actionable && pendingSendAmount) {
+      pendingSendAmount = '';
+      const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+      document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+      const _ac = document.getElementById('wk-send-clear');
+      if (_ac) _ac.style.display = 'none';
+      const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      if (_sb) _sb.disabled = true;
+    }
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
@@ -3349,6 +3417,9 @@ async function fetchAndShowNsPrice(label: string) {
 function _patchNsPrice() {
   const chip = document.getElementById('wk-ns-price-chip');
   if (chip) chip.innerHTML = _nsPriceHtml();
+  // Show clear button when price/listing populates the row
+  const nsClearBtn = document.getElementById('wk-ns-clear-btn');
+  if (nsClearBtn && nsLabel) nsClearBtn.style.display = '';
   _patchNsRoute();
 }
 
@@ -3704,6 +3775,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   _nftPopoverPinned = false;
   const popover = _ensureNftPopover();
   popover.classList.remove('ski-nft-popover--pinned');
+  popover.dataset.domain = domainBare;
   const domain = `${domainBare}.sui`;
   const suiSkiUrl = `https://${domainBare}.sui.ski`;
 
@@ -3768,32 +3840,38 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 function _attachNftPopoverListeners() {
   const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
   if (!grid) return;
+
+  // Hover: show popover on enter, hide instantly on leave (unless pinned by click)
   grid.addEventListener('mouseenter', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
-    // Don't show NFT popover for shade/wishlist chips or dimmed (filtered-out) chips
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    if (chip.classList.contains('wk-ns-owned-chip--dim')) return;
+    if (_nftPopoverPinned) return; // don't override pinned popover
     _showNftPopover(chip, chip.dataset.domain);
   }, true);
   grid.addEventListener('mouseleave', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip) return;
-    _hideNftPopover();
+    if (_nftPopoverPinned) return; // pinned — don't hide
+    _hideNftPopover(true); // instant hide
   }, true);
-  // Dimmed chips: show popover on click instead of hover
+
+  // Click: pin/unpin popover + fill input (bubbles to parent handler)
   grid.addEventListener('click', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
-    if (!chip.classList.contains('wk-ns-owned-chip--dim')) return;
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    e.stopPropagation();
-    // Toggle: if popover is already showing for this chip, hide it
-    if (_nftPopover && !_nftPopover.hasAttribute('hidden')) {
-      _nftPopover.setAttribute('hidden', '');
+    // Toggle pin: if already pinned on this domain, unpin
+    if (_nftPopoverPinned && _nftPopover?.dataset.domain === chip.dataset.domain) {
+      _nftPopoverPinned = false;
+      _nftPopover?.classList.remove('ski-nft-popover--pinned');
+      _hideNftPopover(true);
       return;
     }
+    // Pin the popover
     _showNftPopover(chip, chip.dataset.domain);
+    _nftPopoverPinned = true;
+    _nftPopover?.classList.add('ski-nft-popover--pinned');
   });
 }
 
@@ -3973,12 +4051,12 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white outline with dark fill matching the input textbox
+  // black-diamond: white outline with dark fill visible on both dark and light backgrounds
   const outerPad = pad;
   const innerPad = pad + sw * 1.1;
   const outerPath = `M${half},${outerPad} L${s - outerPad},${half} L${half},${s - outerPad} L${outerPad},${half}Z`;
   const innerPath = `M${half},${innerPad} L${s - innerPad},${half} L${half},${s - innerPad} L${innerPad},${half}Z`;
-  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#1a1a2e"/></svg>`;
+  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#141424"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -4000,8 +4078,11 @@ function _nsVariant(): SkiDotVariant {
   if (nsAvail === 'available') return 'green-circle';
   if (nsAvail === 'grace') return 'red-hexagon';
   if (nsAvail === 'taken' || nsAvail === 'owned') return 'blue-square';
-  // Pending check — show green optimistically for valid names
-  if (isValidNsLabel(label)) return 'green-circle';
+  // Pending (nsAvail === null) — check owned roster first
+  const bareLabel = label.toLowerCase();
+  const inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+  if (inRoster) return 'blue-square';
+  // Unknown — show black diamond until resolution completes (don't assume available)
   return 'black-diamond';
 }
 
@@ -4014,8 +4095,8 @@ function _patchNsStatus() {
   const isOwned = nsAvail === 'owned';
   const hasActiveShade = !!nsShadeOrder && nsShadeOrder.domain === nsLabel.trim();
   const isGrace = nsAvail === 'grace' || hasActiveShade;
-  // --available: confirmed available OR pending but likely available (valid > 3 chars)
-  const looksAvailable = (nsAvail === 'available' && !hasActiveShade) || (nsAvail === null && variant === 'green-circle');
+  // --available: only when confirmed available (not pending)
+  const looksAvailable = nsAvail === 'available' && !hasActiveShade;
   const walletAddrLower = getState().address?.toLowerCase() ?? '';
   const isSelfTarget = walletAddrLower !== '' && (
     (!!nsTargetAddress && nsTargetAddress.toLowerCase() === walletAddrLower) ||
@@ -4620,9 +4701,75 @@ function renderSkiMenu() {
     return;
   }
 
-  const scanUrl = `https://suiscan.xyz/mainnet/account/${ws.address}`;
+  // Restore cached dWallet addresses instantly (no RPC wait)
+  if ((!app.btcAddress || !app.solAddress) && ws.address) {
+    try {
+      const cached = localStorage.getItem(`ski:ika:${ws.address}`);
+      if (cached) {
+        const c = JSON.parse(cached) as { btc: string; eth: string; sol?: string; id: string };
+        if (c.btc) { app.btcAddress = c.btc; app.ethAddress = c.eth; app.ikaWalletId = c.id; }
+        if (c.sol) { app.solAddress = c.sol; }
+      }
+    } catch {}
+  }
 
-  const addrShort = truncAddr(ws.address);
+  // Auto-detect dWallet on menu render (non-blocking, updates cache)
+  if ((!app.btcAddress || !app.solAddress) && ws.address && !_dwalletCheckInFlight) {
+    _dwalletCheckInFlight = true;
+    import('./client/ika.js').then(({ getCrossChainStatus }) =>
+      getCrossChainStatus(ws.address)
+    ).then((status) => {
+      _dwalletCheckInFlight = false;
+      let changed = false;
+      if (status.btcAddress && status.btcAddress !== app.btcAddress) {
+        app.btcAddress = status.btcAddress;
+        app.ethAddress = status.ethAddress;
+        app.ikaWalletId = status.dwalletId;
+        changed = true;
+      }
+      if (status.solAddress && status.solAddress !== app.solAddress) {
+        app.solAddress = status.solAddress;
+        changed = true;
+      }
+      if (changed) {
+        try { localStorage.setItem(`ski:ika:${ws.address}`, JSON.stringify({ btc: status.btcAddress, eth: status.ethAddress, sol: status.solAddress, id: status.dwalletId })); } catch {}
+        render();
+      }
+    }).catch(() => { _dwalletCheckInFlight = false; });
+  }
+
+  // Network-aware address: switches immediately on network selector change
+  const _netAddr = (): { addr: string; scan: string; explorer: string; cls: string } => {
+    if (networkView === 'btc' && app.btcAddress) return {
+      addr: app.btcAddress,
+      scan: `https://mempool.space/address/${app.btcAddress}`,
+      explorer: 'View on Mempool',
+      cls: 'wk-dd-address-banner--btc',
+    };
+    if (networkView === 'btc' && app.ethAddress) return {
+      addr: app.ethAddress,
+      scan: `https://etherscan.io/address/${app.ethAddress}`,
+      explorer: 'View on Etherscan',
+      cls: 'wk-dd-address-banner--eth',
+    };
+    if (networkView === 'sol' && app.solAddress) return {
+      addr: app.solAddress,
+      scan: `https://solscan.io/account/${app.solAddress}`,
+      explorer: 'View on Solscan',
+      cls: 'wk-dd-address-banner--sol',
+    };
+    return {
+      addr: ws.address,
+      scan: `https://suiscan.xyz/mainnet/account/${ws.address}`,
+      explorer: 'View on Suiscan',
+      cls: '',
+    };
+  };
+  const { addr: displayAddr, scan: scanUrl, explorer: explorerTitle, cls: addrBannerCls } = _netAddr();
+  const needsDWallet = (networkView === 'btc' && !app.btcAddress && !app.ethAddress)
+    || (networkView === 'sol' && !app.solAddress);
+
+  const addrShort = truncAddr(displayAddr);
 
   const dotSvg = balView === 'usd'
     ? `<button type="button" class="wk-popout-bal-icon-btn" id="wk-consolidate-btn" title="Consolidate tokens to USDC"><svg class="wk-popout-bal-icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="#22c55e" stroke="white" stroke-width="3"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg></button>`
@@ -4696,20 +4843,22 @@ function renderSkiMenu() {
     // Use on-chain icon if available, else known icons, else default letter
     const meta = _coinMetaCache[c.coinType];
     const metaIcon = meta?.iconUrl ? `<img src="${esc(meta.iconUrl)}" class="wk-popout-coin-icon" alt="${esc(c.symbol)}">` : null;
+    const ikaIcon = `<svg class="wk-popout-coin-icon" viewBox="0 0 40 40"><circle cx="20" cy="20" r="20" fill="#EE2B5B"/><g transform="translate(6,3) scale(0.29)" stroke="white" stroke-width="5.7" fill="none"><path d="M72.662 71.076V46.717C72.662 33.265 61.756 22.359 48.304 22.359C34.851 22.359 23.945 33.265 23.945 46.717V71.076"/><path d="M72.663 62.956V72.428C72.663 77.66 76.904 81.901 82.136 81.901C87.367 81.901 91.608 77.66 91.608 72.428V62.956"/><path d="M58.297 95.641V81.207C58.297 75.688 53.823 71.214 48.304 71.214C42.785 71.214 38.311 75.688 38.311 81.207V95.641"/><path d="M5 62.956V72.428C5 77.66 9.241 81.901 14.473 81.901C19.704 81.901 23.945 77.66 23.945 72.428V62.956"/><path d="M48.307 57.542C52.791 57.542 56.426 53.906 56.426 49.422C56.426 44.938 52.791 41.303 48.307 41.303C43.823 41.303 40.188 44.938 40.188 49.422C40.188 50.254 40.313 51.057 40.545 51.813C41.182 50.403 42.6 49.422 44.247 49.422C46.489 49.422 48.307 51.239 48.307 53.482C48.307 55.129 47.326 56.547 45.916 57.184C46.672 57.416 47.475 57.542 48.307 57.542Z" fill="white"/></g></svg>`;
     const icon = isSui ? suiDropIcon
       : c.symbol === 'NS' ? `<img src="${NS_ICON_URI}" class="wk-popout-coin-icon" alt="NS">`
       : c.symbol === 'WAL' ? `<img src="${WAL_ICON_URI}" class="wk-popout-coin-icon" alt="WAL">`
       : c.symbol === 'XAUM' ? `<img src="${AU_ICON_URI}" class="wk-popout-coin-icon" alt="Au">`
+      : c.symbol === 'IKA' ? ikaIcon
       : c.isStable ? stableIcon
       : metaIcon ?? defaultIcon(c.symbol.charAt(0));
-    const colorCls = isSui ? 'wk-coin-item--sui' : c.isStable ? 'wk-coin-item--usd' : c.symbol === 'XAUM' ? 'wk-coin-item--gold' : 'wk-coin-item--other';
+    const colorCls = isSui ? 'wk-coin-item--sui' : c.isStable ? 'wk-coin-item--usd' : c.symbol === 'XAUM' ? 'wk-coin-item--gold' : c.symbol === 'IKA' ? 'wk-coin-item--ika' : 'wk-coin-item--other';
     // Tooltip: amount, token name, (price per token)
     const tp = isSui ? _suiP : getTokenPrice(c.symbol);
     const tokenName = c.symbol;
     const balFmt = c.balance < 0.001 ? c.balance.toExponential(2) : c.balance < 1 ? c.balance.toFixed(6) : c.balance < 1000 ? c.balance.toFixed(4) : c.balance.toFixed(2);
     const priceFmt = !c.isStable && tp != null && tp > 0 ? ` ($${tp < 0.01 ? tp.toFixed(6) : tp < 1 ? tp.toFixed(4) : tp < 100 ? tp.toFixed(2) : _fmtUsd(tp)})` : '';
     const tooltip = `${balFmt} ${tokenName}${priceFmt}`;
-    const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : c.symbol === 'XAUM' ? 'wk-coin-frac--gold' : 'wk-coin-frac--other';
+    const fracCls = isSui ? 'wk-coin-frac--sui' : c.isStable ? 'wk-coin-frac--usd' : c.symbol === 'XAUM' ? 'wk-coin-frac--gold' : c.symbol === 'IKA' ? 'wk-coin-frac--ika' : 'wk-coin-frac--other';
     if (_usdMode) {
       _coinChipsCache.push({ icon, val: usd, html: _fmtUsdChipHtml(usd, !c.isStable, fracCls), key: c.symbol.toLowerCase(), colorCls, tooltip });
     } else {
@@ -4787,19 +4936,20 @@ function renderSkiMenu() {
   };
   const _prevTip = _chipUsdTip(_prevChip);
   const _nextTip = _chipUsdTip(_nextChip);
-  // Build coin picker grid (all coins except selected)
+  // Build coin picker grid (ALL coins, selected one gets highlight)
   const _coinGridItems = _coinChipsCache.map((c, i) => {
-    if (i === _selIdx) return '';
     const color = c.colorCls?.replace('wk-coin-item--', '') ?? '';
+    const isSelected = i === _selIdx;
+    const selCls = isSelected ? ' wk-coin-grid-item--active' : '';
     const usdTip = _chipUsdTip(c);
-    return `<button class="wk-coin-grid-item wk-coin-grid-item--${color}" data-coin-pick="${esc(c.key)}" type="button" title="${esc(usdTip)}">${c.icon}<span class="wk-coin-grid-val">${c.html}</span></button>`;
-  }).filter(Boolean).join('');
+    return `<button class="wk-coin-grid-item wk-coin-grid-item--${color}${selCls}" data-coin-pick="${esc(c.key)}" type="button" title="${esc(usdTip)}">${c.icon}<span class="wk-coin-grid-val">${c.html}</span></button>`;
+  }).join('');
   const _coinGridHtml = _coinGridItems ? `<div id="wk-coin-grid" class="wk-coin-grid wk-coin-grid--hidden">${_coinGridItems}</div>` : '';
 
   const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown-wrap"><div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left wk-coin-arrow--to-${_prevColor}" id="wk-coin-prev" type="button"${_arrowDisabled} title="${esc(_prevTip)}">\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" id="wk-coin-selected" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right wk-coin-arrow--to-${_nextColor}" id="wk-coin-next" type="button"${_arrowDisabled} title="${esc(_nextTip)}">\u203A</button></div>${_coinGridHtml}</div>` : '';
 
   const _nsInitVariant = _nsVariant();
-  const _nsInitLooksAvailable = nsAvail === 'available' || (nsAvail === null && _nsInitVariant === 'green-circle');
+  const _nsInitLooksAvailable = nsAvail === 'available';
   const _nsInitWalletAddr = getState().address?.toLowerCase() ?? '';
   const _nsInitSelfTarget = _nsInitWalletAddr !== '' && (
     (!!nsTargetAddress && nsTargetAddress.toLowerCase() === _nsInitWalletAddr) ||
@@ -4870,17 +5020,21 @@ function renderSkiMenu() {
               <div class="wk-badge-collapse-inner">
                 <div class="wk-dd-address-row">
                   <div id="wk-network-select" class="wk-dd-network-select"></div>
-                  <button class="wk-dd-address-banner${app.copied ? ' copied' : ''}" id="wk-dd-copy" type="button" title="${esc(ws.address)}">
-                    <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
-                  </button>
-                  <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="View on Suiscan">\u2197</a>
+                  ${needsDWallet
+                    ? `<button class="wk-dd-address-banner wk-dd-address-banner--${networkView === 'sol' ? 'sol' : 'btc'} wk-dd-dwallet-setup" id="wk-dd-dwallet-setup" type="button" title="${networkView === 'sol' ? 'Create a dWallet to get a Solana address' : 'Create a dWallet to get BTC + ETH addresses'}">
+                        <span class="wk-dd-address-text">Create \u2192</span>
+                      </button>`
+                    : `<button class="wk-dd-address-banner${app.copied ? ' copied' : ''}${addrBannerCls ? ' ' + addrBannerCls : ''}" id="wk-dd-copy" type="button" title="${esc(displayAddr)}">
+                        <span class="wk-dd-address-text">${esc(app.copied ? 'Copied! \u2713' : addrShort)}</span>
+                      </button>
+                      <a href="${esc(scanUrl)}" target="_blank" rel="noopener" class="wk-dd-explorer-btn" title="${esc(explorerTitle)}">\u2197</a>`}
                 </div>
               </div>
             </div>
             ${balToggleHtml}
             <div id="wk-coins-collapse" class="wk-qr-collapse-wrap${coinChipsOpen ? '' : ' wk-qr-collapse--hidden'}">
               <div class="wk-qr-content-left">
-                <div class="wk-qr-content-qr" id="wk-addr-qr" title="${esc(ws.address)}"></div>
+                <div class="wk-qr-content-qr" id="wk-addr-qr" title="${esc(displayAddr)}" data-qr-addr="${esc(displayAddr)}"></div>
               </div>
               <div class="wk-qr-content-main">
                 ${coinBreakdownHtml}
@@ -4894,7 +5048,6 @@ function renderSkiMenu() {
                 <div class="wk-send-row-below">
                   <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
                   <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
-                  <div style="flex:1"></div>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
@@ -4908,6 +5061,48 @@ function renderSkiMenu() {
       </div>`;
 
   document.getElementById('wk-dd-copy')?.addEventListener('click', menuCopyAddress);
+  document.getElementById('wk-dd-dwallet-setup')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.querySelector('.wk-dd-address-text')!.textContent = 'Creating\u2026';
+    try {
+      const { provisionDWallet, Curve } = await import('./client/ika.js');
+      const wallet = await import('./wallet.js');
+      const isWaap = /waap/i.test(getState().walletName);
+      const isSolana = networkView === 'sol';
+      const status = await provisionDWallet(getState().address, {
+        signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
+        signAndExecuteTransaction: (txBytes: Uint8Array) => wallet.signAndExecuteTransaction(txBytes),
+        isWaap,
+        requestedCurve: isSolana ? Curve.ED25519 : Curve.SECP256K1,
+        onStatus: (msg: string) => {
+          const txt = btn.querySelector('.wk-dd-address-text');
+          if (txt) txt.textContent = msg;
+        },
+      });
+      if (status.ika) {
+        updateAppState({
+          ikaWalletId: status.dwalletId,
+          btcAddress: status.btcAddress,
+          ethAddress: status.ethAddress,
+          solAddress: status.solAddress,
+        });
+        if (isSolana && status.solAddress) {
+          showToast('dWallet active \u2014 Solana address ready');
+        } else if (status.btcAddress) {
+          showToast('dWallet active \u2014 BTC + ETH addresses ready');
+        }
+      }
+    } catch (err) {
+      console.error('[ika:dkg] FAILED:', err);
+      const msg = err instanceof Error ? err.message : 'Failed';
+      showToast(msg);
+      btn.disabled = false;
+      const txt = btn.querySelector('.wk-dd-address-text');
+      if (txt) txt.textContent = 'Create \u2192';
+    }
+  });
   document.getElementById('wk-dd-switch')?.addEventListener('click', menuLockin);
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
@@ -4917,10 +5112,11 @@ function renderSkiMenu() {
     const t = e.target as HTMLElement;
     const opt = t.closest<HTMLElement>('.wk-dd-network-opt');
     if (opt?.dataset.network) {
-      networkView = opt.dataset.network as 'sui' | 'btc';
+      networkView = opt.dataset.network as 'sui' | 'btc' | 'sol';
       try { localStorage.setItem('ski:network-pref', networkView); } catch {}
       _networkSelectOpen = false;
       _renderNetworkSelect();
+      render(); // re-render to update address row for network switch
       return;
     }
     if (t.closest('#wk-network-trigger') || t.closest('.wk-dd-network-trigger')) {
@@ -4955,13 +5151,23 @@ function renderSkiMenu() {
   }
   document.getElementById('wk-coin-prev')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    const gridWasOpen = !document.getElementById('wk-coin-grid')?.classList.contains('wk-coin-grid--hidden');
     const cur = _coinChipsCache.findIndex(c => c.key === (selectedCoinSymbol?.toLowerCase() ?? ''));
     _selectCoinByIndex(cur - 1);
+    if (gridWasOpen) {
+      const grid = document.getElementById('wk-coin-grid');
+      if (grid) grid.classList.remove('wk-coin-grid--hidden');
+    }
   });
   document.getElementById('wk-coin-next')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    const gridWasOpen = !document.getElementById('wk-coin-grid')?.classList.contains('wk-coin-grid--hidden');
     const cur = _coinChipsCache.findIndex(c => c.key === (selectedCoinSymbol?.toLowerCase() ?? ''));
     _selectCoinByIndex(cur + 1);
+    if (gridWasOpen) {
+      const grid = document.getElementById('wk-coin-grid');
+      if (grid) grid.classList.remove('wk-coin-grid--hidden');
+    }
   });
 
   // Toggle coin picker grid when clicking selected chip
@@ -4995,13 +5201,22 @@ function renderSkiMenu() {
   // Consolidate alt tokens → USDC
   document.getElementById('wk-consolidate-btn')?.addEventListener('click', async (e) => {
     e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
     const ws2 = getState();
     if (!ws2.address) return;
+    // Switch output selector to USDC and update all UI before the wallet popup
+    if (balView === 'usd') {
+      swapOutputKey = 'usd';
+      _persistSwapOutput();
+      _renderSwapSelect();
+      _updateSendBtnMode();
+    }
+    // Let the UI repaint before the wallet popup blocks
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     // Check for eligible non-stable, non-SUI tokens
     const eligible = walletCoins.filter(c => !c.isStable && c.symbol !== 'SUI' && c.balance > 0);
     if (!eligible.length) { showToast('No tokens to consolidate'); return; }
 
-    const btn = e.currentTarget as HTMLButtonElement;
     btn.disabled = true;
     try {
       const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
@@ -5010,7 +5225,7 @@ function renderSkiMenu() {
 
       // 1. Try main consolidation (NS, WAL, XAUM, SUI)
       try {
-        const result = await buildConsolidateToUsdcTx(ws2.address);
+        const result = await buildConsolidateToUsdcTx(ws2.address, undefined, true);
         if (result.swaps.length > 0) {
           if (result.sponsorAddress) {
             await signAndExecuteSponsoredTx(result.txBytes);
@@ -5028,7 +5243,7 @@ function renderSkiMenu() {
       // 2. Swap remaining tokens individually via buildSwapTx
       const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
       for (const c of eligible) {
-        if (['NS', 'WAL', 'XAUM'].includes(c.symbol)) continue; // already handled above
+        if (['NS', 'WAL', 'XAUM', 'IKA'].includes(c.symbol)) continue; // already handled above
         if (c.coinType === USDC_CT) continue;
         const decimals = coinDecimals(c.coinType);
         const amountMist = BigInt(Math.floor(c.balance * Math.pow(10, decimals)));
@@ -5159,13 +5374,17 @@ function renderSkiMenu() {
       // Check affordability
       const totalUsd = app.usd ?? 0;
       const canAfford = totalUsd >= discountedPrice * 0.80;
-      if (canAfford) {
-        const mintCost = _fmtUsd(discountedPrice);
-        const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-        if (amountInput && amountInput.value !== mintCost) {
-          pendingSendAmount = mintCost;
-          amountInput.value = mintCost;
-        }
+      // Always auto-fill amount with mint price (even if can't afford — user sees the cost)
+      const mintCost = _fmtUsd(discountedPrice);
+      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      // Only auto-fill if amount is empty (don't overwrite user edits or re-fill after clear)
+      if (amountInput && !amountInput.value && !pendingSendAmount) {
+        pendingSendAmount = mintCost;
+        amountInput.value = mintCost;
+        amountInput.classList.toggle('wk-send-amount--over', !canAfford);
+        document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', !canAfford);
+        const clr = document.getElementById('wk-send-clear');
+        if (clr) clr.style.display = '';
       }
     }
     // Check if MINT should be red (can't afford)
@@ -5272,6 +5491,8 @@ function renderSkiMenu() {
           amountInput.value = pendingSendAmount;
           amountInput.classList.toggle('wk-send-amount--over', !canAfford);
           document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', !canAfford);
+          const clr = document.getElementById('wk-send-clear');
+          if (clr) clr.style.display = '';
         }
       } else {
         btn.disabled = false;
@@ -5671,6 +5892,20 @@ function renderSkiMenu() {
     _debounceSwapQuote();
   });
 
+  // 1 button — set $1
+  document.getElementById('wk-send-one')?.addEventListener('click', () => {
+    const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (!amountInput) return;
+    pendingSendAmount = '1.00';
+    amountInput.value = '1.00';
+    const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (sendBtn) sendBtn.disabled = false;
+    const clearBtn = document.getElementById('wk-send-clear');
+    if (clearBtn) clearBtn.style.display = '';
+    _updateSendBtnMode();
+    _debounceSwapQuote();
+  });
+
   // 0.01 button — set minimum amount
   document.getElementById('wk-send-min')?.addEventListener('click', () => {
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
@@ -5706,6 +5941,15 @@ function renderSkiMenu() {
   document.getElementById('wk-ns-clear-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
     _clearNsInput();
+    // Force clear amount — _clearNsInput resets pendingSendAmount but re-render may restore it
+    pendingSendAmount = '';
+    const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (_sb) _sb.disabled = true;
     const nsClearBtn = document.getElementById('wk-ns-clear-btn');
     if (nsClearBtn) nsClearBtn.style.display = 'none';
     _updateSendBtnMode();
@@ -5764,10 +6008,14 @@ function renderSkiMenu() {
     _toggleAddresses();
   });
 
-  // ─── Address QR code with Sui drop center logo ─────────────────────
+  // ─── Address QR code — network-aware ────────────────────────────────
   const addrQrSlot = document.getElementById('wk-addr-qr');
   if (addrQrSlot && ws.address) {
-    _getAddrQrSvg(ws.address, balView).then(svg => {
+    const hasBtc = networkView === 'btc' && !!app.btcAddress;
+    const hasSol = networkView === 'sol' && !!app.solAddress;
+    const qrAddr = hasBtc ? app.btcAddress : hasSol ? app.solAddress : ws.address;
+    const qrMode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = hasBtc ? 'btc' : hasSol ? 'sol' : balView;
+    _getAddrQrSvg(qrAddr, qrMode).then(svg => {
       if (document.getElementById('wk-addr-qr')) addrQrSlot.innerHTML = svg;
     }).catch(() => {});
   }
@@ -5781,6 +6029,7 @@ function renderSkiMenu() {
   function _togglePasteBtn() {}
   nsInput?.addEventListener('focus', (e) => {
     e.stopPropagation();
+    if (skipNextFocusClear) { skipNextFocusClear = false; return; }
     nsInput.value = '';
     nsInput.placeholder = 'name';
     nsLabel = '';
@@ -5789,8 +6038,16 @@ function renderSkiMenu() {
     nsNftOwner = null;
     nsPriceUsd = null;
     nsPriceFetchFor = '';
-    // Clear SuiAMI verification result
     _suiamiVerifyHtml = '';
+    // Clear amount
+    pendingSendAmount = '';
+    const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    const _sb = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    if (_sb) _sb.disabled = true;
     _patchNsStatus();
     _patchNsPrice();
     _patchNsRoute();
@@ -5892,20 +6149,25 @@ function renderSkiMenu() {
     }
     const validLabel = isValidNsLabel(val);
     try { if (validLabel) localStorage.setItem('ski:ns-label', val); } catch {}
-    // For 5+ char names use cached price instantly — no spinner needed
-    nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null) ? ns5CharPriceUsd : null;
-    nsAvail = null;
+    // Clear all price/availability state on name change
+    // Don't show optimistic price if the name is in our owned roster
+    const _inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === val);
+    nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null && !_inRoster) ? ns5CharPriceUsd : null;
+    nsAvail = _inRoster ? 'owned' : null;
     nsGraceEndMs = 0;
     nsTargetAddress = null;
-    // Zero out send amount on name change
     pendingSendAmount = '';
     const _amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-    if (_amtInput) _amtInput.value = '';
+    if (_amtInput) { _amtInput.value = ''; _amtInput.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _amtClear = document.getElementById('wk-send-clear');
+    if (_amtClear) _amtClear.style.display = 'none';
     const _sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
     if (_sendBtn) _sendBtn.disabled = true;
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;
+    nsShadeOrder = null;
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
@@ -5915,6 +6177,15 @@ function renderSkiMenu() {
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
   });
+
+  // Periodic validity recheck — refresh price/availability every 7 seconds for the active label
+  if (_nsValidityInterval) clearInterval(_nsValidityInterval);
+  _nsValidityInterval = setInterval(() => {
+    const label = nsLabel.trim().toLowerCase();
+    if (label && isValidNsLabel(label) && !nsSubnameParent) {
+      fetchAndShowNsPrice(label);
+    }
+  }, 7000);
 
   // Toggle roster visibility when clicking domain-row outside the input/buttons
   document.querySelector('.wk-dd-ns-domain-row')?.addEventListener('click', (e) => {
@@ -6882,18 +7153,28 @@ function renderSkiMenu() {
 
     const domain = btn.dataset.domain;
     if (!domain) return;
-    // Set NS state directly
+    // Set NS state directly — chip is from our roster so it's owned
     nsLabel = domain;
     try { localStorage.setItem('ski:ns-label', domain); } catch {}
     nsPriceUsd = null;
     nsPriceFetchFor = '';
     nsGraceEndMs = 0;
-    nsAvail = null;
+    const _chipInRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === domain.toLowerCase());
+    nsAvail = _chipInRoster ? 'owned' : null;
     nsTargetAddress = null;
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;
     nsSubnameParent = null;
+    // Clear stale amount from previous name
+    if (_chipInRoster) {
+      pendingSendAmount = '';
+      const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+      document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+      const _ac = document.getElementById('wk-send-clear');
+      if (_ac) _ac.style.display = 'none';
+    }
     // Set input value and keep it set across re-renders
     skipNextFocusClear = true;
     const _setInput = () => {
@@ -6968,6 +7249,25 @@ function render() {
     else { externalCyclers.delete(el); }
   });
   renderModalLogo();
+
+  // Scale the header to fit viewport width on mobile.
+  // Measures the actual bounding box of first-to-last child to detect overflow.
+  requestAnimationFrame(() => {
+    const header = (els.widget as HTMLElement | null)?.closest('.ski-header') as HTMLElement | null;
+    if (!header) return;
+    // Reset previous zoom
+    header.style.zoom = '';
+    const children = header.children;
+    if (!children.length) return;
+    const first = children[0].getBoundingClientRect();
+    const last = children[children.length - 1].getBoundingClientRect();
+    const contentWidth = last.right - first.left;
+    const vw = window.innerWidth;
+    if (contentWidth > vw - 8) { // 4px margin each side
+      header.style.zoom = `${((vw - 8) / contentWidth).toFixed(4)}`;
+    }
+  });
+
   // NOTE: Do NOT call renderModal() here — it does a full innerHTML rebuild which
   // causes visible flash/jitter. The modal manages its own updates via targeted
   // DOM patches (balance cyclers, renderModalLogo, showKeyDetail, buildSplashLegend).
@@ -7126,6 +7426,14 @@ export function initUI() {
         const cached = localStorage.getItem(`ski:suins:${ws.address}`);
         if (cached) app.suinsName = cached;
       } catch {}
+      // Restore cached IKA dWallet status instantly (squid emoji, BTC address)
+      try {
+        const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
+        if (ikaCached) {
+          const c = JSON.parse(ikaCached) as { btc: string; eth: string; sol?: string; id: string };
+          if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; app.solAddress = c.sol ?? ''; }
+        }
+      } catch {}
 
       startPolling();
       refreshPortfolio(true);
@@ -7144,6 +7452,9 @@ export function initUI() {
       app.nsBalance = 0;
       app.suinsName = '';
       app.ikaWalletId = '';
+      app.btcAddress = '';
+      app.ethAddress = '';
+      app.solAddress = '';
       app.skiMenuOpen = false;
       try { localStorage.setItem('ski:lift', '0'); } catch {}
       app.copied = false;
@@ -7499,3 +7810,18 @@ export function initUI() {
   // Safety: clear hydrating after 1.5 s in case subscribe never fires
   setTimeout(() => { if (_hydrating) { _hydrating = false; render(); } }, 1500);
 }
+
+// ── One-off cleanup utility (console) ─────────────────────────────────
+// Usage: skiCleanupCaps(['0x3710...8491', '0x7b39...beee'])
+(window as any).skiCleanupCaps = async (capIds: string[]) => {
+  const { burnDWalletCaps } = await import('./client/ika.js');
+  const wallet = await import('./wallet.js');
+  const ws = getState();
+  if (!ws.address) { console.error('Not connected'); return; }
+  console.log('[cleanup] Burning caps:', capIds);
+  const digest = await burnDWalletCaps(ws.address, capIds, {
+    signAndExecuteTransaction: (txBytes: Uint8Array) => wallet.signAndExecuteTransaction(txBytes),
+  });
+  console.log('[cleanup] Done! Digest:', digest);
+  return digest;
+};

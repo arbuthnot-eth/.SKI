@@ -476,7 +476,6 @@ body {
 .wk-widget {
   position: relative;
   display: inline-block;
-  min-width: 0;
 }
 
 .wk-widget-btn {
@@ -522,8 +521,7 @@ body {
   background: linear-gradient(135deg, rgba(8, 8, 14, 0.72), rgba(16, 16, 24, 0.68));
   border-color: rgba(100, 110, 135, 0.32);
   color: #c8cde0;
-  max-width: 100%;
-  overflow: hidden;
+  max-width: 560px;
   padding: 3px 10px 3px 6px;
   min-height: 38px;
 }

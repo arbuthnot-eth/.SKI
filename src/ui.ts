@@ -7077,6 +7077,22 @@ function render() {
   });
   renderModalLogo();
 
+  // Scale the top bar down proportionally if it overflows the viewport
+  requestAnimationFrame(() => {
+    const el = slots.widget;
+    if (!el) return;
+    // Reset any previous scale
+    (el as HTMLElement).style.transform = '';
+    (el as HTMLElement).style.transformOrigin = '';
+    const parentWidth = (el.parentElement?.clientWidth ?? window.innerWidth);
+    const naturalWidth = el.scrollWidth;
+    if (naturalWidth > parentWidth + 2) {
+      const scale = parentWidth / naturalWidth;
+      (el as HTMLElement).style.transform = `scale(${scale.toFixed(4)})`;
+      (el as HTMLElement).style.transformOrigin = 'left center';
+    }
+  });
+
   // NOTE: Do NOT call renderModal() here — it does a full innerHTML rebuild which
   // causes visible flash/jitter. The modal manages its own updates via targeted
   // DOM patches (balance cyclers, renderModalLogo, showKeyDetail, buildSplashLegend).

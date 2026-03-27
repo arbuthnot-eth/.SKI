@@ -23,8 +23,10 @@
 ### Solana
 | Color | Hex | Usage |
 |-------|-----|-------|
-| ![#9945FF](https://via.placeholder.com/16/9945FF/9945FF.png) Solana Purple | `#9945FF` | SOL QR code, address row, gradient start |
-| ![#14F195](https://via.placeholder.com/16/14F195/14F195.png) Solana Green | `#14F195` | SOL gradient end, accent highlights |
+| ![#00FFA3](https://via.placeholder.com/16/00FFA3/00FFA3.png) Solana Teal | `#00FFA3` | Official gradient start |
+| ![#DC1FFF](https://via.placeholder.com/16/DC1FFF/DC1FFF.png) Solana Magenta | `#DC1FFF` | Official gradient end, address text |
+| ![#9945FF](https://via.placeholder.com/16/9945FF/9945FF.png) Solana Purple | `#9945FF` | SOL QR code modules |
+| ![#0B1022](https://via.placeholder.com/16/0B1022/0B1022.png) Solana Dark | `#0B1022` | SOL icon background |
 
 ### Sui
 | Color | Hex | Usage |

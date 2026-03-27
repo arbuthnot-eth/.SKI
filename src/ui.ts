@@ -703,6 +703,7 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
  *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
 async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = 'sui'): Promise<string> {
   const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+  // Solana QR uses purple modules (#9945FF) with the gradient logo in center
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
   const mod = await import('qrcode');
@@ -724,8 +725,11 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 
       const fill = '#f7931a';
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.3}" font-weight="700" fill="white">\u20BF</text>`;
     } else if (mode === 'sol') {
-      // Solana gradient circle with three parallelogram lines
-      logoSvg = `<defs><linearGradient id="qr-sol-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9945FF"/><stop offset="100%" stop-color="#14F195"/></linearGradient></defs><circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="url(#qr-sol-g)"/><g transform="translate(${cx - br * 0.55},${cy - br * 0.45}) scale(${br * 0.028})" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"><path d="M0,28 L34,28 L40,34 L6,34 Z"/><path d="M0,6 L34,6 L40,0 L6,0 Z"/><path d="M40,17 L6,17 L0,11 L34,11 Z"/></g>`;
+      // Solana official gradient #00FFA3 → #DC1FFF with real parallelogram paths
+      const s = br * 2;
+      const ox = cx - br;
+      const oy = cy - br;
+      logoSvg = `<defs><linearGradient id="qr-sol-g" x1="0.59" y1="0.18" x2="0.29" y2="0.74" gradientUnits="objectBoundingBox"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="#0B1022"/><g transform="translate(${ox},${oy}) scale(${s / 48})"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#qr-sol-g)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/></g>`;
     } else if (mode === 'bw') {
       const d = br * 0.75;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#1a1a2e" stroke="white" stroke-width="${d * 0.2}"/>`;
@@ -2580,7 +2584,7 @@ let networkView: 'sui' | 'btc' | 'sol' = (() => {
 let _networkSelectOpen = false;
 const _NETWORK_ICON_SUI = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(20,20) scale(0.065)" fill="white"><path d="M-85-85C-50-130 0-100 0-70C0-40-50-50-50-20C-50 10 0 0 40-30" stroke="white" stroke-width="30" fill="none" stroke-linecap="round"/></g></svg>`;
 const _NETWORK_ICON_BTC = BTC_ICON_SVG;
-const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sol-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9945FF"/><stop offset="100%" stop-color="#14F195"/></linearGradient></defs><circle cx="20" cy="20" r="18" fill="url(#sol-g)"/><g transform="translate(10,12) scale(0.5)" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"><path d="M0,28 L34,28 L40,34 L6,34 Z"/><path d="M0,6 L34,6 L40,0 L6,0 Z"/><path d="M40,17 L6,17 L0,11 L34,11 Z"/></g></svg>`;
+const SOL_ICON_SVG = `<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="24" fill="#0B1022"/><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sol1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol3)"/><defs><linearGradient id="sol1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
 const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc' | 'sol'; label: string; icon: string }> = [
   { key: 'sui', label: 'Sui', icon: `<img src="${SUI_DROP_URI}" class="wk-dd-address-network-icon" alt="Sui">` },
   { key: 'btc', label: 'Bitcoin', icon: `<img src="${BTC_ICON_URI}" class="wk-dd-address-network-icon" alt="BTC">` },

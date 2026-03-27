@@ -717,14 +717,14 @@ body {
   color: #f7931a;
 }
 .wk-dd-address-banner--sol {
-  border-color: rgba(153, 69, 255, 0.4);
-  background: linear-gradient(135deg, rgba(50, 20, 80, 0.5), rgba(30, 12, 50, 0.6));
+  border-color: rgba(220, 31, 255, 0.4);
+  background: linear-gradient(135deg, rgba(40, 10, 60, 0.5), rgba(0, 40, 30, 0.4));
 }
 .wk-dd-address-banner--sol:hover {
-  background: linear-gradient(135deg, rgba(60, 25, 95, 0.6), rgba(40, 16, 65, 0.7));
+  background: linear-gradient(135deg, rgba(50, 15, 75, 0.6), rgba(0, 50, 38, 0.5));
 }
 .wk-dd-address-banner--sol .wk-dd-address-text {
-  color: #9945FF;
+  color: #DC1FFF;
 }
 .wk-dd-dwallet-setup .wk-dd-address-text {
   text-align: center;

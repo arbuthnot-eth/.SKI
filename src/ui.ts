@@ -5284,15 +5284,16 @@ function renderSkiMenu() {
       // Check affordability
       const totalUsd = app.usd ?? 0;
       const canAfford = totalUsd >= discountedPrice * 0.80;
-      if (canAfford) {
-        const mintCost = _fmtUsd(discountedPrice);
-        const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-        if (amountInput && amountInput.value !== mintCost) {
-          pendingSendAmount = mintCost;
-          amountInput.value = mintCost;
-          const clr = document.getElementById('wk-send-clear');
-          if (clr) clr.style.display = '';
-        }
+      // Always auto-fill amount with mint price (even if can't afford — user sees the cost)
+      const mintCost = _fmtUsd(discountedPrice);
+      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (amountInput && amountInput.value !== mintCost) {
+        pendingSendAmount = mintCost;
+        amountInput.value = mintCost;
+        amountInput.classList.toggle('wk-send-amount--over', !canAfford);
+        document.querySelector('.wk-send-dollar')?.classList.toggle('wk-send-dollar--over', !canAfford);
+        const clr = document.getElementById('wk-send-clear');
+        if (clr) clr.style.display = '';
       }
     }
     // Check if MINT should be red (can't afford)

@@ -5330,6 +5330,12 @@ body {
   .ski-demo.open .ski-demo-qr { width: 80px; height: 80px; }
   .ski-demo.open .ski-demo-chips { max-width: 100%; }
 }
+.ski-demo-player video:fullscreen,
+.ski-demo-player video:-webkit-full-screen {
+  object-fit: contain;
+  width: 100%;
+  height: 100%;
+}
 .ski-demo-player video {
   width: 100%;
   height: 100%;

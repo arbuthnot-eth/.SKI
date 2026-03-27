@@ -72,7 +72,26 @@ app.get('/superteam/embed', (c) => {
 });
 
 // ── Superteam docs proxy with green dollar QR popup ──
-app.get('/ar.superteam', async (c) => {
+// Matches ar.superteam.sui.ski (hostname) or /ar.superteam (path fallback)
+app.get('*', async (c, next) => {
+  const host = c.req.header('host') || '';
+  if (!host.startsWith('ar.superteam.sui.ski')) return next();
+  const path = new URL(c.req.url).pathname;
+  if (path !== '/' && path !== '') {
+    // Sub-paths: proxy directly
+    const res = await fetch('https://superteam.fun' + path, { headers: { 'Accept': c.req.header('Accept') || '*/*' } });
+    return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'text/html' } });
+  }
+  // Root: proxy with QR popup
+  return proxySupertam(c);
+});
+app.get('/ar.superteam', (c) => proxySupertam(c));
+app.get('/ar.superteam/*', async (c) => {
+  const path = c.req.path.replace('/ar.superteam', '') || '/';
+  const res = await fetch('https://superteam.fun' + path, { headers: { 'Accept': c.req.header('Accept') || '*/*' } });
+  return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'text/html' } });
+});
+async function proxySupertam(c: any) {
   const res = await fetch('https://superteam.fun', { headers: { 'Accept': 'text/html' } });
   let html = await res.text();
   // Inject QR popup overlay before </body>
@@ -111,12 +130,7 @@ draw('btc');
   // Rewrite relative URLs to point back to superteam.fun
   html = html.replace(/(href|src|action)="\/(?!\/)/g, '$1="https://superteam.fun/');
   return c.html(html);
-});
-app.get('/ar.superteam/*', async (c) => {
-  const path = c.req.path.replace('/ar.superteam', '') || '/';
-  const res = await fetch('https://superteam.fun' + path, { headers: { 'Accept': c.req.header('Accept') || '*/*' } });
-  return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'text/html' } });
-});
+}
 
 // ── JSON-RPC proxy (same-origin, avoids CORS for browser-side IKA SDK) ──
 // Forwards to multiple Sui fullnodes with fallback.

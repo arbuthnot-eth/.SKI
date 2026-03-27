@@ -58,7 +58,7 @@
     <div class="ski-demo" id="ski-demo">
       <div class="ski-demo-body" id="ski-demo-card">
         <div class="ski-demo-sidebar">
-          <a class="ski-demo-card-label" href="/ar.superteam" target="_blank" onclick="event.stopPropagation()">Superteam</a>
+          <a class="ski-demo-card-label" href="https://ar.superteam.sui.ski" target="_blank" onclick="event.stopPropagation()">Superteam</a>
           <button class="ski-chip ski-chip--suiami ski-demo-suiami" id="ski-demo-suiami" type="button" onclick="event.stopPropagation()">SUIAMI</button>
           <div class="ski-demo-nets">
             <button class="ski-demo-net ski-demo-net--btc active" data-net="btc" title="Bitcoin">
@@ -231,9 +231,21 @@
         updateAddr(next);
       });
 
+      // Lock portrait orientation in fullscreen
+      var video = document.querySelector('.ski-demo-player video');
+      video.addEventListener('fullscreenchange', function() {
+        if (document.fullscreenElement === video) {
+          try { screen.orientation.lock('portrait').catch(function(){}); } catch(e) {}
+        }
+      });
+      video.addEventListener('webkitfullscreenchange', function() {
+        if (document.webkitFullscreenElement === video) {
+          try { screen.orientation.lock('portrait').catch(function(){}); } catch(e) {}
+        }
+      });
+
       // Auto-switch networks at video timestamps
       var lastSwitch = '';
-      var video = document.querySelector('.ski-demo-player video');
       video.addEventListener('timeupdate', function() {
         var t = video.currentTime;
         var target = t >= 76 ? 'sol' : t >= 72 ? 'sui' : t >= 69 ? 'btc' : t >= 60 ? 'sol' : null;

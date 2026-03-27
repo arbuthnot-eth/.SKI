@@ -6,7 +6,8 @@
 
   // Custom domain
   "routes": [
-    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
+    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" },
+    { "pattern": "ar.superteam.sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
   ],
 
   // Serve public/ as static assets

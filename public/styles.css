@@ -958,6 +958,8 @@ body {
 .wk-dd-network-trigger--sol {
   border-color: rgba(220, 31, 255, 0.3);
   background: linear-gradient(135deg, rgba(40, 10, 60, 0.5), rgba(0, 40, 30, 0.4));
+  position: relative;
+  top: 3px;
 }
 .wk-dd-network-trigger--sol:hover {
   border-color: rgba(220, 31, 255, 0.6);

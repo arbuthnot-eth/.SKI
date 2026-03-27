@@ -2584,7 +2584,7 @@ let networkView: 'sui' | 'btc' | 'sol' = (() => {
 let _networkSelectOpen = false;
 const _NETWORK_ICON_SUI = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(20,20) scale(0.065)" fill="white"><path d="M-85-85C-50-130 0-100 0-70C0-40-50-50-50-20C-50 10 0 0 40-30" stroke="white" stroke-width="30" fill="none" stroke-linecap="round"/></g></svg>`;
 const _NETWORK_ICON_BTC = BTC_ICON_SVG;
-const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(5,5.5) scale(0.625)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sol1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol3)"/></g><defs><linearGradient id="sol1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
+const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sol1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol3)"/></g><defs><linearGradient id="sol1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
 const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc' | 'sol'; label: string; icon: string }> = [
   { key: 'sui', label: 'Sui', icon: `<img src="${SUI_DROP_URI}" class="wk-dd-address-network-icon" alt="Sui">` },
   { key: 'btc', label: 'Bitcoin', icon: `<img src="${BTC_ICON_URI}" class="wk-dd-address-network-icon" alt="BTC">` },
@@ -2915,8 +2915,8 @@ function _renderProfileEl(el: HTMLElement) {
     try {
       const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
       if (ikaCached) {
-        const c = JSON.parse(ikaCached) as { btc: string; eth: string; id: string };
-        if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; }
+        const c = JSON.parse(ikaCached) as { btc: string; eth: string; sol?: string; id: string };
+        if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; app.solAddress = c.sol ?? ''; }
       }
     } catch {}
   }
@@ -4702,28 +4702,37 @@ function renderSkiMenu() {
   }
 
   // Restore cached dWallet addresses instantly (no RPC wait)
-  if (!app.btcAddress && ws.address) {
+  if ((!app.btcAddress || !app.solAddress) && ws.address) {
     try {
       const cached = localStorage.getItem(`ski:ika:${ws.address}`);
       if (cached) {
-        const c = JSON.parse(cached) as { btc: string; eth: string; id: string };
+        const c = JSON.parse(cached) as { btc: string; eth: string; sol?: string; id: string };
         if (c.btc) { app.btcAddress = c.btc; app.ethAddress = c.eth; app.ikaWalletId = c.id; }
+        if (c.sol) { app.solAddress = c.sol; }
       }
     } catch {}
   }
 
   // Auto-detect dWallet on menu render (non-blocking, updates cache)
-  if (!app.btcAddress && ws.address && !_dwalletCheckInFlight) {
+  if ((!app.btcAddress || !app.solAddress) && ws.address && !_dwalletCheckInFlight) {
     _dwalletCheckInFlight = true;
     import('./client/ika.js').then(({ getCrossChainStatus }) =>
       getCrossChainStatus(ws.address)
     ).then((status) => {
       _dwalletCheckInFlight = false;
+      let changed = false;
       if (status.btcAddress && status.btcAddress !== app.btcAddress) {
         app.btcAddress = status.btcAddress;
         app.ethAddress = status.ethAddress;
         app.ikaWalletId = status.dwalletId;
-        try { localStorage.setItem(`ski:ika:${ws.address}`, JSON.stringify({ btc: status.btcAddress, eth: status.ethAddress, id: status.dwalletId })); } catch {}
+        changed = true;
+      }
+      if (status.solAddress && status.solAddress !== app.solAddress) {
+        app.solAddress = status.solAddress;
+        changed = true;
+      }
+      if (changed) {
+        try { localStorage.setItem(`ski:ika:${ws.address}`, JSON.stringify({ btc: status.btcAddress, eth: status.ethAddress, sol: status.solAddress, id: status.dwalletId })); } catch {}
         render();
       }
     }).catch(() => { _dwalletCheckInFlight = false; });
@@ -5058,13 +5067,15 @@ function renderSkiMenu() {
     btn.disabled = true;
     btn.querySelector('.wk-dd-address-text')!.textContent = 'Creating\u2026';
     try {
-      const { provisionDWallet } = await import('./client/ika.js');
+      const { provisionDWallet, Curve } = await import('./client/ika.js');
       const wallet = await import('./wallet.js');
       const isWaap = /waap/i.test(getState().walletName);
+      const isSolana = networkView === 'sol';
       const status = await provisionDWallet(getState().address, {
         signTransaction: (txBytes: Uint8Array) => wallet.signTransaction(txBytes),
         signAndExecuteTransaction: (txBytes: Uint8Array) => wallet.signAndExecuteTransaction(txBytes),
         isWaap,
+        requestedCurve: isSolana ? Curve.ED25519 : Curve.SECP256K1,
         onStatus: (msg: string) => {
           const txt = btn.querySelector('.wk-dd-address-text');
           if (txt) txt.textContent = msg;
@@ -5075,8 +5086,13 @@ function renderSkiMenu() {
           ikaWalletId: status.dwalletId,
           btcAddress: status.btcAddress,
           ethAddress: status.ethAddress,
+          solAddress: status.solAddress,
         });
-        showToast('dWallet active \u2014 BTC + ETH addresses ready');
+        if (isSolana && status.solAddress) {
+          showToast('dWallet active \u2014 Solana address ready');
+        } else if (status.btcAddress) {
+          showToast('dWallet active \u2014 BTC + ETH addresses ready');
+        }
       }
     } catch (err) {
       console.error('[ika:dkg] FAILED:', err);
@@ -7414,8 +7430,8 @@ export function initUI() {
       try {
         const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
         if (ikaCached) {
-          const c = JSON.parse(ikaCached) as { btc: string; eth: string; id: string };
-          if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; }
+          const c = JSON.parse(ikaCached) as { btc: string; eth: string; sol?: string; id: string };
+          if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; app.solAddress = c.sol ?? ''; }
         }
       } catch {}
 
@@ -7794,3 +7810,18 @@ export function initUI() {
   // Safety: clear hydrating after 1.5 s in case subscribe never fires
   setTimeout(() => { if (_hydrating) { _hydrating = false; render(); } }, 1500);
 }
+
+// ── One-off cleanup utility (console) ─────────────────────────────────
+// Usage: skiCleanupCaps(['0x3710...8491', '0x7b39...beee'])
+(window as any).skiCleanupCaps = async (capIds: string[]) => {
+  const { burnDWalletCaps } = await import('./client/ika.js');
+  const wallet = await import('./wallet.js');
+  const ws = getState();
+  if (!ws.address) { console.error('Not connected'); return; }
+  console.log('[cleanup] Burning caps:', capIds);
+  const digest = await burnDWalletCaps(ws.address, capIds, {
+    signAndExecuteTransaction: (txBytes: Uint8Array) => wallet.signAndExecuteTransaction(txBytes),
+  });
+  console.log('[cleanup] Done! Digest:', digest);
+  return digest;
+};

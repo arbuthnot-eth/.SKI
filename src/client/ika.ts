@@ -12,6 +12,7 @@ import {
   publicKeyFromDWalletOutput, Curve,
   UserShareEncryptionKeys, createRandomSessionIdentifier, prepareDKG, prepareDKGAsync,
 } from '@ika.xyz/sdk';
+export { Curve } from '@ika.xyz/sdk';
 import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
@@ -84,7 +85,7 @@ const IKA_ENC_KEY = {
  */
 async function getProtocolPublicParametersDirect(
   _client: IkaClient,
-  curve: typeof Curve.SECP256K1,
+  curve: typeof Curve.SECP256K1 | typeof Curve.ED25519,
 ): Promise<Uint8Array> {
   console.log('[ika:dkg] Bypassing SDK — reading TableVec data directly...');
 
@@ -150,7 +151,7 @@ export async function checkExistingDWallets(address: string): Promise<{
 // ── Multi-chain address derivation ──────────────────────────────────
 
 /**
- * Extract the raw compressed public key from a dWallet's public output.
+ * Extract the raw compressed public key from a secp256k1 dWallet's public output.
  * Tries IKA WASM first, falls back to manual BCS extraction.
  */
 async function extractPubkey(publicOutput: Uint8Array): Promise<Uint8Array> {
@@ -166,6 +167,26 @@ async function extractPubkey(publicOutput: Uint8Array): Promise<Uint8Array> {
       return publicOutput.slice(2, 35);
     }
     throw new Error('Could not extract public key from dWallet output');
+  }
+}
+
+/**
+ * Extract the raw 32-byte public key from an ed25519 dWallet's public output.
+ * Tries IKA WASM first, falls back to manual BCS extraction.
+ */
+async function extractEd25519Pubkey(publicOutput: Uint8Array): Promise<Uint8Array> {
+  try {
+    const bcsEncodedKey = await publicKeyFromDWalletOutput(Curve.ED25519, publicOutput);
+    return bcsEncodedKey.length === 32
+      ? bcsEncodedKey
+      : bcsEncodedKey.slice(bcsEncodedKey.length - 32);
+  } catch {
+    // WASM may fail — extract manually from public_output
+    // Format: [version, 32, ...32 bytes] — ed25519 pubkey
+    if (publicOutput.length >= 34 && publicOutput[1] === 32) {
+      return publicOutput.slice(2, 34);
+    }
+    throw new Error('Could not extract ed25519 public key from dWallet output');
   }
 }
 
@@ -222,7 +243,8 @@ export interface CrossChainStatus {
   dwalletId: string;
   btcAddress: string;
   ethAddress: string;
-  /** All derivable addresses from this dWallet */
+  solAddress: string;
+  /** All derivable addresses from all dWallets */
   addresses: Array<{ chain: string; name: string; address: string }>;
 }
 
@@ -237,18 +259,21 @@ export interface ProvisionCallbacks {
   isWaap?: boolean;
   /** Called with status updates during provisioning. */
   onStatus?: (msg: string) => void;
+  /** Which curve to provision. Defaults to SECP256K1 (BTC/ETH). Use ED25519 for Solana. */
+  requestedCurve?: typeof Curve.SECP256K1 | typeof Curve.ED25519;
 }
 
 /**
- * Provision a new secp256k1 dWallet for the user.
+ * Provision a dWallet for the user.
  *
  * Flow:
- *   1. Check /api/ika/provision for SuiNS gate + keeper info
- *   2. Run DKG WASM in browser (prepareDKGAsync)
- *   3. Build PTB: DKG request with keeper as gas sponsor
- *   4. User signs as sender, keeper signs as gas owner via /api/sponsor-gas
- *   5. Submit with both signatures
- *   6. Poll for dWallet to reach Active state
+ *   1. Check for existing dWallet of the requested curve — skip if found
+ *   2. Check /api/ika/provision for SuiNS gate + keeper info
+ *   3. Run DKG WASM in browser (prepareDKG)
+ *   4. Build PTB: DKG request with keeper as gas sponsor
+ *   5. User signs as sender, keeper signs as gas owner via /api/sponsor-gas
+ *   6. Submit with both signatures
+ *   7. Poll for dWallet to reach Active state
  *
  * Returns the CrossChainStatus once the dWallet is active.
  */
@@ -257,7 +282,23 @@ export async function provisionDWallet(
   callbacks: ProvisionCallbacks,
 ): Promise<CrossChainStatus> {
   const log = callbacks.onStatus ?? (() => {});
-  console.log('[ika:dkg] provisionDWallet called for', userAddress, 'isWaap:', callbacks.isWaap);
+  const curve = callbacks.requestedCurve ?? Curve.SECP256K1;
+  const curveLabel = curve === Curve.ED25519 ? 'ed25519' : 'secp256k1';
+  console.log('[ika:dkg] provisionDWallet called for', userAddress, 'curve:', curveLabel, 'isWaap:', callbacks.isWaap);
+
+  // Step 0: Check if user already has a dWallet of this curve
+  log('Checking existing...');
+  const existing = await getCrossChainStatus(userAddress);
+  if (curve === Curve.SECP256K1 && existing.btcAddress) {
+    console.log('[ika:dkg] Already have secp256k1 dWallet, skipping DKG');
+    log('Already active!');
+    return existing;
+  }
+  if (curve === Curve.ED25519 && existing.solAddress) {
+    console.log('[ika:dkg] Already have ed25519 dWallet, skipping DKG');
+    log('Already active!');
+    return existing;
+  }
 
   // Step 1: Check eligibility + get keeper info
   log('Checking...');
@@ -290,7 +331,6 @@ export async function provisionDWallet(
   const client = await withTimeout(getClient(), 60_000, 'IKA client init');
   console.log('[ika:dkg] Step 2a: client ready');
 
-  const curve = Curve.SECP256K1;
   const seedBytes = new Uint8Array(32);
   crypto.getRandomValues(seedBytes);
   const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seedBytes, curve);
@@ -402,10 +442,11 @@ export async function provisionDWallet(
     }
 
     log('Activating...');
+    const checkField = curve === Curve.ED25519 ? 'solAddress' : 'btcAddress';
     for (let i = 0; i < 24; i++) {
       await new Promise(r => setTimeout(r, 5000));
       const status = await getCrossChainStatus(userAddress);
-      if (status.ika && status.btcAddress) {
+      if (status.ika && status[checkField]) {
         log('Active!');
         return status;
       }
@@ -530,10 +571,11 @@ export async function provisionDWallet(
   log('Activating...');
 
   // Step 6: Poll for dWallet to become active
+  const checkField2 = curve === Curve.ED25519 ? 'solAddress' : 'btcAddress';
   for (let i = 0; i < 24; i++) { // 2 minutes max
     await new Promise(r => setTimeout(r, 5000));
     const status = await getCrossChainStatus(userAddress);
-    if (status.ika && status.btcAddress) {
+    if (status.ika && status[checkField2]) {
       log('Active!');
       return status;
     }
@@ -547,9 +589,11 @@ export async function provisionDWallet(
 export async function getCrossChainStatus(address: string): Promise<CrossChainStatus> {
   let btcAddress = '';
   let ethAddress = '';
+  let solAddress = '';
   let addresses: Array<{ chain: string; name: string; address: string }> = [];
   let dwalletId = '';
   let hasDWallet = false;
+  let dwalletCount = 0;
 
   try {
     const rpc = getLocalJsonRpc();
@@ -559,27 +603,47 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
       owner: address,
       filter: { StructType: DWALLET_CAP_TYPE },
       options: { showContent: true },
-      limit: 1,
+      limit: 10,
     });
     console.log('[ika:status] owned response:', JSON.stringify(owned).slice(0, 200));
-    const cap = (owned as any)?.data?.[0]?.data;
-    console.log('[ika:status] cap:', cap ? 'found' : 'null');
-    if (cap) {
-      hasDWallet = true;
-      dwalletId = cap.content?.fields?.dwallet_id ?? '';
+    const caps = (owned as any)?.data ?? [];
+    dwalletCount = caps.length;
+    hasDWallet = dwalletCount > 0;
 
-      // Fetch the dWallet object to get public_output
-      if (dwalletId) {
-        const dw = await rpc.getObject({ id: dwalletId, options: { showContent: true } });
-        console.log('[ika:status] dw response:', JSON.stringify(dw).slice(0, 300));
-        const state = (dw as any)?.data?.content?.fields?.state?.fields;
-        // Check Active or AwaitingKeyHolderSignature (both have public_output)
-        const publicOutput = state?.public_output;
-        if (publicOutput && Array.isArray(publicOutput)) {
-          const output = new Uint8Array(publicOutput);
-          addresses = await deriveAllAddresses(output);
-          btcAddress = addresses.find(a => a.name === 'Bitcoin')?.address ?? '';
-          ethAddress = addresses.find(a => a.name === 'Ethereum')?.address ?? '';
+    for (const entry of caps) {
+      const cap = entry?.data;
+      if (!cap) continue;
+      const capDwalletId = cap.content?.fields?.dwallet_id ?? '';
+      if (!capDwalletId) continue;
+
+      // Use first cap's dwalletId as the primary
+      if (!dwalletId) dwalletId = capDwalletId;
+
+      const dw = await rpc.getObject({ id: capDwalletId, options: { showContent: true } });
+      console.log('[ika:status] dw response:', JSON.stringify(dw).slice(0, 300));
+      const state = (dw as any)?.data?.content?.fields?.state?.fields;
+      const publicOutput = state?.public_output;
+      if (!publicOutput || !Array.isArray(publicOutput)) continue;
+
+      const output = new Uint8Array(publicOutput);
+
+      // Detect curve from public output: try secp256k1 first (33-byte key), then ed25519 (32-byte)
+      try {
+        const secp256k1Addrs = await deriveAllAddresses(output);
+        if (secp256k1Addrs.length > 0) {
+          addresses.push(...secp256k1Addrs);
+          if (!btcAddress) btcAddress = secp256k1Addrs.find(a => a.name === 'Bitcoin')?.address ?? '';
+          if (!ethAddress) ethAddress = secp256k1Addrs.find(a => a.name === 'Ethereum')?.address ?? '';
+        }
+      } catch {
+        // secp256k1 derivation failed — try ed25519
+        try {
+          const rawKey = await extractEd25519Pubkey(output);
+          const addr = deriveAddress('solana', rawKey);
+          if (!solAddress) solAddress = addr;
+          addresses.push({ chain: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', name: 'Solana', address: addr });
+        } catch (e) {
+          console.warn('[ika:status] Could not derive addresses for dWallet', capDwalletId, e);
         }
       }
     }
@@ -587,10 +651,40 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
 
   return {
     ika: hasDWallet,
-    dwalletCount: hasDWallet ? 1 : 0,
+    dwalletCount,
     dwalletId,
     btcAddress,
     ethAddress,
+    solAddress,
     addresses,
   };
+}
+
+/**
+ * Build a transaction to transfer unwanted DWalletCap objects to 0x0 (burn).
+ * Returns built tx bytes for signing.
+ */
+export async function burnDWalletCaps(
+  userAddress: string,
+  capIdsToRemove: string[],
+  callbacks: { signAndExecuteTransaction: (txBytes: Uint8Array) => Promise<{ digest: string }> },
+): Promise<string> {
+  const DWALLET_CAP_TYPE = '0xdd24c62739923fbf582f49ef190b4a007f981ca6eb209ca94f3a8eaf7c611317::coordinator_inner::DWalletCap';
+  const tx = new Transaction();
+  tx.setSender(userAddress);
+  for (const capId of capIdsToRemove) {
+    tx.transferObjects(
+      [tx.object(capId)],
+      tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+    );
+  }
+  let txBytes: Uint8Array;
+  try {
+    txBytes = await tx.build({ client: grpcClient as never });
+  } catch {
+    txBytes = await tx.build({ client: gqlClient as never });
+  }
+  const result = await callbacks.signAndExecuteTransaction(txBytes);
+  console.log('[ika:burn] Burned caps:', capIdsToRemove, 'digest:', result.digest);
+  return result.digest ?? '';
 }

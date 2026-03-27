@@ -19,6 +19,20 @@ app.use('/agents/*', agentsMiddleware());
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', version: '2.0.0' }));
 
+// ── Superteam demo video player ──
+const WALRUS_VIDEO_URL = 'https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI';
+app.get('/superteam', (c) => c.html(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>.SKI — Superteam Demo</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0a1a;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui,sans-serif}
+.wrap{max-width:960px;width:100%;padding:16px}video{width:100%;border-radius:12px;box-shadow:0 0 40px rgba(0,200,255,.15)}
+p{color:#888;text-align:center;margin-top:12px;font-size:13px}a{color:#4da2ff}</style>
+</head><body><div class="wrap">
+<video src="${WALRUS_VIDEO_URL}" controls autoplay muted playsinline></video>
+<p>Hosted on <a href="https://walrus.xyz">Walrus</a> — Sui's decentralized storage. <a href="https://sui.ski">sui.ski</a></p>
+</div></body></html>`));
+
 // ── JSON-RPC proxy (same-origin, avoids CORS for browser-side IKA SDK) ──
 // Forwards to multiple Sui fullnodes with fallback.
 const SUI_RPC_URLS = [

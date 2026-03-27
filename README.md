@@ -13,9 +13,9 @@ Your Sui wallet, everywhere. Connect once, authenticate everywhere.
 
 Real Bitcoin, Ethereum, and Solana addresses controlled by your Sui account — no bridges, no wrapping, no custodians. Powered by [IKA](https://docs.ika.xyz)'s 2PC-MPC threshold signatures.
 
-[![Superteam Demo](public/assets/superteam-poster.jpg)](https://github.com/arbuthnot-eth/.SKI/releases/download/v1.0.11/superteam.mp4)
+[![Superteam Demo](public/assets/superteam-poster.jpg)](https://sui.ski/superteam)
 
-> *Click to watch the demo. Also available on [Walrus](https://aggregator.walrus-testnet.walrus.space/v1/blobs/w-YsMSmoAgV-RQt_SinhQuEoM107nqC52WPUEi11ofI) — Sui's decentralized storage protocol.*
+> *Click to watch the demo — streamed from [Walrus](https://walrus.xyz), Sui's decentralized storage protocol.*
 
 ### What One Sui Account Controls
 

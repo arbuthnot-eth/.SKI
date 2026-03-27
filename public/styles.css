@@ -5207,6 +5207,9 @@ body {
   align-items: center;
   gap: 6px 10px;
 }
+.ski-demo:not(.open) .ski-demo-card-label {
+  width: calc(100% - 100px);
+}
 .ski-demo:not(.open) .ski-demo-suiami {
   order: 2;
 }
@@ -5305,16 +5308,16 @@ body {
 .ski-demo-badge { display: none; }
 .ski-demo-suiami { opacity: 1; }
 .ski-demo.open .ski-demo-card-label { order: 1; }
-.ski-demo.open .ski-demo-suiami { order: 2; }
 .ski-demo.open .ski-demo-top-row { order: 3; }
-.ski-demo.open .ski-demo-addr { order: 4; }
-.ski-demo.open .ski-demo-gear-abs { order: 5; }
+.ski-demo.open .ski-demo-addr-row { order: 4; display: flex; align-items: center; gap: 6px; }
+.ski-demo.open .ski-demo-suiami { order: 5; }
 .ski-demo.open .ski-demo-hints { order: 6; }
 .ski-demo.open .ski-demo-chips { order: 7; }
 .ski-demo-gear-abs {
-  position: absolute;
-  bottom: 4px;
-  left: 8px;
+  position: static;
+  display: inline;
+  margin-left: 6px;
+  vertical-align: middle;
 }
 .ski-demo-play-hint {
   font-size: 10px;

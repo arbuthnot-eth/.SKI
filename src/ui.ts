@@ -4903,13 +4903,14 @@ function renderSkiMenu() {
   };
   const _prevTip = _chipUsdTip(_prevChip);
   const _nextTip = _chipUsdTip(_nextChip);
-  // Build coin picker grid (all coins except selected)
+  // Build coin picker grid (ALL coins, selected one gets highlight)
   const _coinGridItems = _coinChipsCache.map((c, i) => {
-    if (i === _selIdx) return '';
     const color = c.colorCls?.replace('wk-coin-item--', '') ?? '';
+    const isSelected = i === _selIdx;
+    const selCls = isSelected ? ' wk-coin-grid-item--active' : '';
     const usdTip = _chipUsdTip(c);
-    return `<button class="wk-coin-grid-item wk-coin-grid-item--${color}" data-coin-pick="${esc(c.key)}" type="button" title="${esc(usdTip)}">${c.icon}<span class="wk-coin-grid-val">${c.html}</span></button>`;
-  }).filter(Boolean).join('');
+    return `<button class="wk-coin-grid-item wk-coin-grid-item--${color}${selCls}" data-coin-pick="${esc(c.key)}" type="button" title="${esc(usdTip)}">${c.icon}<span class="wk-coin-grid-val">${c.html}</span></button>`;
+  }).join('');
   const _coinGridHtml = _coinGridItems ? `<div id="wk-coin-grid" class="wk-coin-grid wk-coin-grid--hidden">${_coinGridItems}</div>` : '';
 
   const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown-wrap"><div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left wk-coin-arrow--to-${_prevColor}" id="wk-coin-prev" type="button"${_arrowDisabled} title="${esc(_prevTip)}">\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" id="wk-coin-selected" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right wk-coin-arrow--to-${_nextColor}" id="wk-coin-next" type="button"${_arrowDisabled} title="${esc(_nextTip)}">\u203A</button></div>${_coinGridHtml}</div>` : '';

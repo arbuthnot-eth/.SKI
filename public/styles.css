@@ -2698,6 +2698,12 @@ body {
 .wk-coin-grid-item--ika:hover { border-color: rgba(238, 43, 91, 0.5); background: rgba(238, 43, 91, 0.1); box-shadow: 0 0 0 1px rgba(238, 43, 91, 0.15) inset; }
 .wk-coin-grid-item--other { border-color: rgba(129, 140, 248, 0.3); }
 .wk-coin-grid-item--other:hover { border-color: rgba(129, 140, 248, 0.5); background: rgba(99, 102, 241, 0.1); box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.15) inset; }
+/* Active/selected state in grid */
+.wk-coin-grid-item--active.wk-coin-grid-item--sui { border-color: rgba(96, 165, 250, 0.7); background: rgba(59, 130, 246, 0.15); box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25) inset; }
+.wk-coin-grid-item--active.wk-coin-grid-item--usd { border-color: rgba(74, 222, 128, 0.7); background: rgba(34, 197, 94, 0.15); box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.25) inset; }
+.wk-coin-grid-item--active.wk-coin-grid-item--gold { border-color: rgba(212, 160, 23, 0.7); background: rgba(212, 160, 23, 0.15); box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.25) inset; }
+.wk-coin-grid-item--active.wk-coin-grid-item--ika { border-color: rgba(238, 43, 91, 0.7); background: rgba(238, 43, 91, 0.15); box-shadow: 0 0 0 1px rgba(238, 43, 91, 0.25) inset; }
+.wk-coin-grid-item--active.wk-coin-grid-item--other { border-color: rgba(129, 140, 248, 0.7); background: rgba(99, 102, 241, 0.15); box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.25) inset; }
 .wk-coin-grid-item .wk-popout-coin-icon { width: 20px; height: 20px; flex-shrink: 0; }
 .wk-coin-grid-val {
   font-size: 0.95rem;

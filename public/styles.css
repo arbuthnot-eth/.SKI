@@ -1248,6 +1248,11 @@ body {
 .wk-ns-clear-btn:hover {
   color: #f87171;
 }
+/* Shift clear button left when subname pin button is visible */
+.wk-dd-ns-section--owned .wk-ns-clear-btn,
+.wk-dd-ns-section--self-target .wk-ns-clear-btn {
+  right: 24px;
+}
 /* Swap output select — icon-only */
 .wk-swap-select {
   position: relative;

@@ -3117,6 +3117,7 @@ let nsLabel = '';
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
+let _nsValidityInterval: ReturnType<typeof setInterval> | null = null;
 let nsAvail: null | 'available' | 'taken' | 'owned' | 'grace' = null;
 let nsGraceEndMs = 0;
 let nsTargetAddress: string | null = null; // resolved address for the current label (if registered)
@@ -3379,6 +3380,9 @@ async function fetchAndShowNsPrice(label: string) {
 function _patchNsPrice() {
   const chip = document.getElementById('wk-ns-price-chip');
   if (chip) chip.innerHTML = _nsPriceHtml();
+  // Show clear button when price/listing populates the row
+  const nsClearBtn = document.getElementById('wk-ns-clear-btn');
+  if (nsClearBtn && nsLabel) nsClearBtn.style.display = '';
   _patchNsRoute();
 }
 
@@ -6016,12 +6020,11 @@ function renderSkiMenu() {
     }
     const validLabel = isValidNsLabel(val);
     try { if (validLabel) localStorage.setItem('ski:ns-label', val); } catch {}
-    // For 5+ char names use cached price instantly — no spinner needed
+    // Clear all price/availability state on name change
     nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null) ? ns5CharPriceUsd : null;
     nsAvail = null;
     nsGraceEndMs = 0;
     nsTargetAddress = null;
-    // Zero out send amount on name change
     pendingSendAmount = '';
     const _amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
     if (_amtInput) _amtInput.value = '';
@@ -6030,6 +6033,7 @@ function renderSkiMenu() {
     nsNftOwner = null;
     nsLastDigest = '';
     nsKioskListing = null; nsTradeportListing = null;
+    nsShadeOrder = null;
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
@@ -6039,6 +6043,15 @@ function renderSkiMenu() {
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
     if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
   });
+
+  // Periodic validity recheck — refresh price/availability every 7 seconds for the active label
+  if (_nsValidityInterval) clearInterval(_nsValidityInterval);
+  _nsValidityInterval = setInterval(() => {
+    const label = nsLabel.trim().toLowerCase();
+    if (label && isValidNsLabel(label) && !nsSubnameParent) {
+      fetchAndShowNsPrice(label);
+    }
+  }, 7000);
 
   // Toggle roster visibility when clicking domain-row outside the input/buttons
   document.querySelector('.wk-dd-ns-domain-row')?.addEventListener('click', (e) => {

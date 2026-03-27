@@ -5213,8 +5213,8 @@ body {
   order: -1;
 }
 .ski-demo:not(.open) .ski-demo-qr {
-  width: 110px;
-  height: 110px;
+  width: 140px;
+  height: 140px;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -5223,14 +5223,8 @@ body {
 }
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
 .ski-demo:not(.open) .ski-chip--gear { display: none; }
-.ski-demo:not(.open) .ski-demo-label-row {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-}
 .ski-demo:not(.open) .ski-demo-card-label {
-  font-size: 28px;
+  font-size: 32px;
 }
 
 /* Open: QR + nets row, label below */
@@ -5248,7 +5242,7 @@ body {
   gap: 6px;
 }
 .ski-demo-card-label {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.02em;
@@ -5269,14 +5263,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 48px;
+  height: 48px;
   border-radius: 9px;
   border: 1.5px solid transparent;
   opacity: 0.35;
   transition: opacity 0.15s, border-color 0.15s, transform 0.1s;
 }
-.ski-demo-net svg { width: 28px; height: 28px; }
+.ski-demo-net svg { width: 40px; height: 40px; }
 .ski-demo-net:hover { opacity: 0.7; transform: scale(1.06); }
 .ski-demo-net.active { opacity: 1; }
 .ski-demo-net--sui.active { border-color: rgba(77, 162, 255, 0.5); border-radius: 10px; }
@@ -5303,6 +5297,11 @@ body {
 }
 .ski-demo-badge { display: none; }
 .ski-demo-suiami { opacity: 1; }
+.ski-demo-gear-abs {
+  position: absolute;
+  bottom: 4px;
+  left: 8px;
+}
 .ski-demo-play-hint {
   font-size: 10px;
   color: var(--muted);

@@ -4991,10 +4991,9 @@ function renderSkiMenu() {
               <div class="wk-qr-content-main">
                 ${coinBreakdownHtml}
                 <div class="wk-send-row">
-                  <span class="wk-send-dollar">$</span>
+                  <button type="button" id="wk-send-clear" class="wk-send-dollar" title="Clear amount">$</button>
                   <div class="wk-send-amount-wrap">
                     <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
-                    <button id="wk-send-clear" class="wk-send-input-clear" type="button" title="Clear" style="${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : 'display:none'}">\u2715</button>
                   </div>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>

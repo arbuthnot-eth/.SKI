@@ -150,6 +150,7 @@ export interface AppState {
   ikaWalletId: string;
   btcAddress: string;
   ethAddress: string;
+  solAddress: string;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -164,6 +165,7 @@ const app: AppState = {
   ikaWalletId: '',
   btcAddress: '',
   ethAddress: '',
+  solAddress: '',
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -699,8 +701,8 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
 
 /** Generate a QR SVG for a Sui address with a center logo. Uses 'H' error correction to tolerate the overlay.
  *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
-async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 'sui'): Promise<string> {
-  const dark = mode === 'btc' ? '#f7931a' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = 'sui'): Promise<string> {
+  const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
   const mod = await import('qrcode');
@@ -721,6 +723,9 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' = 
     } else if (mode === 'btc') {
       const fill = '#f7931a';
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.3}" font-weight="700" fill="white">\u20BF</text>`;
+    } else if (mode === 'sol') {
+      // Solana gradient circle with three parallelogram lines
+      logoSvg = `<defs><linearGradient id="qr-sol-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9945FF"/><stop offset="100%" stop-color="#14F195"/></linearGradient></defs><circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="url(#qr-sol-g)"/><g transform="translate(${cx - br * 0.55},${cy - br * 0.45}) scale(${br * 0.028})" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"><path d="M0,28 L34,28 L40,34 L6,34 Z"/><path d="M0,6 L34,6 L40,0 L6,0 Z"/><path d="M40,17 L6,17 L0,11 L34,11 Z"/></g>`;
     } else if (mode === 'bw') {
       const d = br * 0.75;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#1a1a2e" stroke="white" stroke-width="${d * 0.2}"/>`;
@@ -2568,16 +2573,18 @@ let balView: 'sui' | 'usd' = (() => {
   try { return (localStorage.getItem('ski:bal-pref') as 'sui' | 'usd') || 'usd'; } catch { return 'usd'; }
 })();
 let _dwalletCheckInFlight = false;
-let networkView: 'sui' | 'btc' = (() => {
-  try { return (localStorage.getItem('ski:network-pref') as 'sui' | 'btc') || 'sui'; } catch { return 'sui'; }
+let networkView: 'sui' | 'btc' | 'sol' = (() => {
+  try { return (localStorage.getItem('ski:network-pref') as 'sui' | 'btc' | 'sol') || 'sui'; } catch { return 'sui'; }
 })();
 
 let _networkSelectOpen = false;
 const _NETWORK_ICON_SUI = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(20,20) scale(0.065)" fill="white"><path d="M-85-85C-50-130 0-100 0-70C0-40-50-50-50-20C-50 10 0 0 40-30" stroke="white" stroke-width="30" fill="none" stroke-linecap="round"/></g></svg>`;
 const _NETWORK_ICON_BTC = BTC_ICON_SVG;
-const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc'; label: string; icon: string }> = [
+const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sol-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9945FF"/><stop offset="100%" stop-color="#14F195"/></linearGradient></defs><circle cx="20" cy="20" r="18" fill="url(#sol-g)"/><g transform="translate(10,12) scale(0.5)" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"><path d="M0,28 L34,28 L40,34 L6,34 Z"/><path d="M0,6 L34,6 L40,0 L6,0 Z"/><path d="M40,17 L6,17 L0,11 L34,11 Z"/></g></svg>`;
+const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc' | 'sol'; label: string; icon: string }> = [
   { key: 'sui', label: 'Sui', icon: `<img src="${SUI_DROP_URI}" class="wk-dd-address-network-icon" alt="Sui">` },
   { key: 'btc', label: 'Bitcoin', icon: `<img src="${BTC_ICON_URI}" class="wk-dd-address-network-icon" alt="BTC">` },
+  { key: 'sol', label: 'Solana', icon: `<span class="wk-dd-address-network-icon">${SOL_ICON_SVG}</span>` },
 ];
 
 function _renderNetworkSelect() {
@@ -4726,12 +4733,17 @@ function renderSkiMenu() {
       explorer: 'View on Mempool',
       cls: 'wk-dd-address-banner--btc',
     };
-    // BTC selected but no BTC address yet — show ETH if available (same dWallet key)
     if (networkView === 'btc' && app.ethAddress) return {
       addr: app.ethAddress,
       scan: `https://etherscan.io/address/${app.ethAddress}`,
       explorer: 'View on Etherscan',
       cls: 'wk-dd-address-banner--eth',
+    };
+    if (networkView === 'sol' && app.solAddress) return {
+      addr: app.solAddress,
+      scan: `https://solscan.io/account/${app.solAddress}`,
+      explorer: 'View on Solscan',
+      cls: 'wk-dd-address-banner--sol',
     };
     return {
       addr: ws.address,
@@ -4741,7 +4753,8 @@ function renderSkiMenu() {
     };
   };
   const { addr: displayAddr, scan: scanUrl, explorer: explorerTitle, cls: addrBannerCls } = _netAddr();
-  const needsDWallet = networkView === 'btc' && !app.btcAddress && !app.ethAddress;
+  const needsDWallet = (networkView === 'btc' && !app.btcAddress && !app.ethAddress)
+    || (networkView === 'sol' && !app.solAddress);
 
   const addrShort = truncAddr(displayAddr);
 
@@ -5079,7 +5092,7 @@ function renderSkiMenu() {
     const t = e.target as HTMLElement;
     const opt = t.closest<HTMLElement>('.wk-dd-network-opt');
     if (opt?.dataset.network) {
-      networkView = opt.dataset.network as 'sui' | 'btc';
+      networkView = opt.dataset.network as 'sui' | 'btc' | 'sol';
       try { localStorage.setItem('ski:network-pref', networkView); } catch {}
       _networkSelectOpen = false;
       _renderNetworkSelect();
@@ -5979,8 +5992,9 @@ function renderSkiMenu() {
   const addrQrSlot = document.getElementById('wk-addr-qr');
   if (addrQrSlot && ws.address) {
     const hasBtc = networkView === 'btc' && !!app.btcAddress;
-    const qrAddr = hasBtc ? app.btcAddress : ws.address;
-    const qrMode = hasBtc ? 'btc' : balView;
+    const hasSol = networkView === 'sol' && !!app.solAddress;
+    const qrAddr = hasBtc ? app.btcAddress : hasSol ? app.solAddress : ws.address;
+    const qrMode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = hasBtc ? 'btc' : hasSol ? 'sol' : balView;
     _getAddrQrSvg(qrAddr, qrMode).then(svg => {
       if (document.getElementById('wk-addr-qr')) addrQrSlot.innerHTML = svg;
     }).catch(() => {});
@@ -7420,6 +7434,7 @@ export function initUI() {
       app.ikaWalletId = '';
       app.btcAddress = '';
       app.ethAddress = '';
+      app.solAddress = '';
       app.skiMenuOpen = false;
       try { localStorage.setItem('ski:lift', '0'); } catch {}
       app.copied = false;

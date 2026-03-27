@@ -3834,7 +3834,7 @@ function _attachNftPopoverListeners() {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    e.stopPropagation();
+    // Don't stopPropagation — let click bubble to parent handler that fills the input
     // Toggle: if popover is already showing for this domain, hide it
     if (_nftPopover && !_nftPopover.hasAttribute('hidden') && _nftPopover.dataset.domain === chip.dataset.domain) {
       _hideNftPopover();

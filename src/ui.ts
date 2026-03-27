@@ -7251,6 +7251,14 @@ export function initUI() {
         const cached = localStorage.getItem(`ski:suins:${ws.address}`);
         if (cached) app.suinsName = cached;
       } catch {}
+      // Restore cached IKA dWallet status instantly (squid emoji, BTC address)
+      try {
+        const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
+        if (ikaCached) {
+          const c = JSON.parse(ikaCached) as { btc: string; eth: string; id: string };
+          if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; }
+        }
+      } catch {}
 
       startPolling();
       refreshPortfolio(true);

@@ -5249,6 +5249,19 @@ body {
   align-items: center;
   gap: 8px;
 }
+.ski-demo:not(.open) .ski-demo-hints {
+  grid-row: 2;
+  grid-column: 2;
+  display: contents;
+}
+.ski-demo:not(.open) .ski-demo-play-hint {
+  position: static;
+  font-size: 12px;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+}
 .ski-demo:not(.open) .ski-demo-addr { display: none; }
 .ski-demo:not(.open) .ski-chip--gear { display: none; }
 .ski-demo:not(.open) .ski-demo-nets--stacked { display: none; }

@@ -3153,7 +3153,7 @@ let nsShowTargetInput = false; // target-address inline editor open
 let nsNewTargetAddr = ''; // value in the target-address input
 let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
-let _thunderCounts: Record<string, number> = {}; // name → pending thunder count
+let _thunderCounts: Record<string, number> = (() => { try { const v = localStorage.getItem('ski:thunder-counts'); return v ? JSON.parse(v) : {}; } catch { return {}; } })();
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
@@ -3769,6 +3769,7 @@ function _attachOwnedGridWheel() {
 let _nftPopover: HTMLElement | null = null;
 let _nftPopoverHideTimer: ReturnType<typeof setTimeout> | null = null;
 let _nftPopoverPinned = false;
+let _lastNftCardDomain: string = (() => { try { return sessionStorage.getItem('ski:nft-card-domain') ?? ''; } catch { return ''; } })();
 
 function _ensureNftPopover(): HTMLElement {
   // Use the inline slot inside the roster
@@ -3798,6 +3799,8 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   _nftPopoverPinned = false;
   const popover = _ensureNftPopover();
   popover.dataset.domain = domainBare;
+  _lastNftCardDomain = domainBare;
+  try { sessionStorage.setItem('ski:nft-card-domain', domainBare); } catch {}
   const suiSkiUrl = `https://${domainBare}.sui.ski`;
 
   // Owner's primary SuiNS name (reverse resolution)
@@ -3845,7 +3848,16 @@ function _attachNftPopoverListeners() {
   const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
   if (!grid) return;
 
-  // Hover: show popover on enter, hide instantly on leave (unless pinned by click)
+  // Restore last viewed NFT card
+  if (_lastNftCardDomain) {
+    const chip = grid.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${_lastNftCardDomain}"]`);
+    if (chip) {
+      _showNftPopover(chip, _lastNftCardDomain);
+      _nftPopoverPinned = true;
+    }
+  }
+
+  // Hover: show popover on enter (unless pinned by click)
   grid.addEventListener('mouseenter', (e) => {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
@@ -3922,6 +3934,7 @@ function _attachNftPopoverListeners() {
 
         // All struck — clear count for this name
         _thunderCounts[badgeDomain] = 0;
+        try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
         _patchNsOwnedList();
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Decrypt failed';
@@ -7281,7 +7294,10 @@ function renderSkiMenu() {
           }
         } catch { /* skip failed lookups — don't reset count */ }
       }));
-      if (changed) _patchNsOwnedList();
+      if (changed) {
+        try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
+        _patchNsOwnedList();
+      }
     } catch { /* silent */ }
   };
   _pollThunder();

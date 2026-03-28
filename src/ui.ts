@@ -3885,11 +3885,30 @@ function _attachNftPopoverListeners() {
 
         if (payloads.length === 0) { showToast('No thunders decrypted'); _thunderCount = 0; _patchNsOwnedList(); return; }
 
-        // Show first message, populate sender for reply
+        // Show first message in thunder input + toast, populate sender for reply
         const first = payloads[0];
         const senderShort = first.sender || first.senderAddress.slice(0, 8) + '\u2026';
         const extra = payloads.length > 1 ? ` (+${payloads.length - 1} more)` : '';
         showToast(`\u26a1 ${senderShort}: ${first.message}${extra}`);
+        // Display decrypted message in the thunder input (ephemeral — not stored)
+        const thunderMsgEl = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+        const thunderRowEl = document.getElementById('wk-thunder-row');
+        if (thunderMsgEl && thunderRowEl) {
+          thunderRowEl.style.display = '';
+          thunderMsgEl.value = `\u26a1 ${senderShort}: ${first.message}`;
+          thunderMsgEl.readOnly = true;
+          thunderMsgEl.classList.add('wk-thunder-msg--received');
+          // Clear on next click/focus
+          const clearReceived = () => {
+            thunderMsgEl.value = '';
+            thunderMsgEl.readOnly = false;
+            thunderMsgEl.classList.remove('wk-thunder-msg--received');
+            thunderMsgEl.removeEventListener('focus', clearReceived);
+            thunderMsgEl.removeEventListener('click', clearReceived);
+          };
+          thunderMsgEl.addEventListener('focus', clearReceived);
+          thunderMsgEl.addEventListener('click', clearReceived);
+        }
 
         if (first.sender) {
           const senderBare = first.sender.replace(/\.sui$/, '');

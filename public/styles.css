@@ -1971,6 +1971,7 @@ body {
 }
 .wk-thunder-msg::placeholder { color: rgba(255, 184, 0, 0.55); font-weight: 500; }
 .wk-thunder-msg:focus { border-color: #FFB800; background: rgba(255, 184, 0, 0.1); }
+.wk-thunder-msg--received { color: #fff; border-color: rgba(255, 184, 0, 0.5); background: rgba(255, 184, 0, 0.12); cursor: pointer; }
 /* Thunderbolt badge on roster chip */
 .wk-ns-thunder-badge {
   font-size: 0.65rem;

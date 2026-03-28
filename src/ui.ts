@@ -40,7 +40,7 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
 import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -6338,6 +6338,8 @@ function renderSkiMenu() {
     if (target.id === 'wk-ns-target-cancel') {
       nsShowTargetInput = false;
       nsNewTargetAddr = '';
+      nsTransferInputOpen = false;
+      nsTransferRecipient = '';
       _patchNsRoute();
     }
     // Unpin subname mode
@@ -6373,6 +6375,8 @@ function renderSkiMenu() {
     if (target.id === 'wk-ns-target-input' && (e as KeyboardEvent).key === 'Escape') {
       nsShowTargetInput = false;
       nsNewTargetAddr = '';
+      nsTransferInputOpen = false;
+      nsTransferRecipient = '';
       _patchNsRoute();
     }
     if (target.id === 'wk-ns-transfer-input' && (e as KeyboardEvent).key === 'Enter') {
@@ -6430,6 +6434,8 @@ function renderSkiMenu() {
       nsTargetAddress = addr;
       nsShowTargetInput = false;
       nsNewTargetAddr = '';
+      nsTransferInputOpen = false;
+      nsTransferRecipient = '';
       _patchNsRoute();
       _patchNsStatus();
 
@@ -6452,6 +6458,73 @@ function renderSkiMenu() {
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
     } finally {
       _targetSubmitBusy = false;
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '\u2192'; }
+    }
+  });
+
+  // Transfer-submit uses click delegation (button is created dynamically by _patchNsRoute)
+  let _transferSubmitBusy = false;
+  document.getElementById('wk-ns-route')?.addEventListener('click', async (ev) => {
+    const t = ev.target as HTMLElement;
+    if (t.id !== 'wk-ns-transfer-submit') return;
+    ev.stopPropagation();
+    if (_transferSubmitBusy) return;
+    const ws2 = getState();
+    if (!ws2.address) return;
+    let addr = nsTransferRecipient.trim();
+    if (!addr) { showToast('Enter a recipient address or name'); return; }
+    const submitBtn = document.getElementById('wk-ns-transfer-submit') as HTMLButtonElement | null;
+    _transferSubmitBusy = true;
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '\u2026'; }
+    try {
+      // Resolve SuiNS name to address if input isn't a hex address
+      if (!/^0x[0-9a-fA-F]{64}$/.test(addr)) {
+        const namePart = addr.replace(/\.sui$/i, '').toLowerCase();
+        if (namePart.length < 3 || !/^[a-z0-9-]+$/.test(namePart)) {
+          showToast('Enter a valid Sui address (0x\u2026) or SuiNS name');
+          return;
+        }
+        const resolved = await resolveSuiNSName(namePart);
+        if (!resolved) {
+          showToast(`${namePart}.sui doesn't resolve to an address`);
+          return;
+        }
+        addr = resolved;
+      }
+
+      const label = nsLabel.trim();
+      const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+      const txBytes = await buildTransferNftTx(ws2.address, domain, addr);
+      await signAndExecuteTransaction(txBytes);
+
+      const short = addr.slice(0, 6) + '\u2026' + addr.slice(-4);
+      showToast(`Transferred ${domain} to ${short} \u2713`);
+
+      // Clean up state
+      nsTransferInputOpen = false;
+      nsTransferRecipient = '';
+      nsOwnedFetchedFor = ''; // force re-fetch owned domains
+      nsOwnedDomains = nsOwnedDomains.filter(d => d.name !== domain);
+      _cacheOwnedDomains(ws2.address, nsOwnedDomains);
+      nsAvail = null;
+      nsTargetAddress = null;
+      nsNftOwner = null;
+      _patchNsRoute();
+      _patchNsStatus();
+      _patchNsOwnedList();
+
+      // Background refresh
+      fetchOwnedDomains(ws2.address).then(domains => {
+        nsOwnedDomains = domains;
+        nsOwnedFetchedFor = ws2.address;
+        _cacheOwnedDomains(ws2.address, domains);
+        _patchNsOwnedList();
+      }).catch(() => {});
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Transfer failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      _transferSubmitBusy = false;
       if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '\u2192'; }
     }
   });
@@ -7300,6 +7373,8 @@ async function handleDisconnect(reopenModal = false) {
   nsRealOwnerAddr = '';
   nsSubnameParent = null;
   nsShowTargetInput = false;
+  nsTransferInputOpen = false;
+  nsTransferRecipient = '';
   nsRosterOpen = false; _persistRosterOpen();
   try { sessionStorage.removeItem('ski:roster-scroll'); } catch {}
   closeModal();

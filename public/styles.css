@@ -5209,6 +5209,7 @@ body {
   grid-template-rows: auto auto;
   gap: 4px 10px;
   align-items: start;
+  min-height: 80px;
 }
 .ski-demo:not(.open) .ski-demo-top-row {
   display: contents;

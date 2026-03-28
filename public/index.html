@@ -56,7 +56,7 @@
 
     <div id="ski-sign" style="display:none"></div>
 
-    <div class="ski-demo" id="ski-demo">
+    <div class="ski-demo ski-demo--sol" id="ski-demo">
       <div class="ski-demo-body" id="ski-demo-card">
         <div class="ski-demo-sidebar">
           <a class="ski-demo-card-label" href="https://ar.superteam.sui.ski" target="_blank" onclick="event.stopPropagation()">Superteam</a>
@@ -287,8 +287,7 @@
         }));
       });
 
-      // Initial state
-      document.getElementById('ski-demo').classList.add('ski-demo--sol');
+      // Initial QR
       drawQR(qrCanvas, addrs.sol.full, addrs.sol.color, 'sol');
     })();
   </script>

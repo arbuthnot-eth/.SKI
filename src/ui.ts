@@ -5041,7 +5041,7 @@ function renderSkiMenu() {
                 <div class="wk-send-row">
                   <span class="wk-send-dollar">$</span>
                   <div class="wk-send-amount-wrap">
-                    <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
+                    <input id="wk-send-amount" class="wk-send-amount" type="text" inputmode="decimal" pattern="[0-9]*\\.?[0-9]*" placeholder="0.00" spellcheck="false" autocomplete="off" value="${esc(pendingSendAmount)}">
                     <button id="wk-send-clear" class="wk-send-input-clear" type="button" title="Clear" style="${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : 'display:none'}">\u2715</button>
                   </div>
                 </div>
@@ -5854,7 +5854,10 @@ function renderSkiMenu() {
     const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
     if (!sendBtn || !amountInput) return;
-    const val = amountInput.value.trim();
+    // Strip non-numeric characters (allow digits and one decimal point)
+    const filtered = amountInput.value.replace(/[^0-9.]/g, '').replace(/(\..*?)\./g, '$1');
+    if (filtered !== amountInput.value) amountInput.value = filtered;
+    const val = filtered.trim();
     pendingSendAmount = val;
     sendBtn.disabled = !val || Number(val) <= 0;
     const clearBtn = document.getElementById('wk-send-clear');

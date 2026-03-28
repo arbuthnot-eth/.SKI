@@ -8,6 +8,7 @@
 import { SealClient, SessionKey, EncryptedObject } from '@mysten/seal';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, gqlClient } from '../rpc.js';
 import {
   THUNDER_VERSION,
@@ -61,18 +62,8 @@ async function walrusRead(blobId: string): Promise<Uint8Array> {
 
 // ─── Name hash (keccak256 to match Move contract) ────────────────────
 
-let _keccak: ((data: Uint8Array) => Uint8Array) | null = null;
-
-async function getKeccak(): Promise<(data: Uint8Array) => Uint8Array> {
-  if (_keccak) return _keccak;
-  const { keccak_256 } = await import('@noble/hashes/sha3');
-  _keccak = keccak_256;
-  return _keccak;
-}
-
-async function nameHash(bareName: string): Promise<Uint8Array> {
-  const keccak = await getKeccak();
-  return keccak(new TextEncoder().encode(bareName.toLowerCase()));
+function nameHash(bareName: string): Uint8Array {
+  return keccak_256(new TextEncoder().encode(bareName.toLowerCase()));
 }
 
 // ─── Send a Thunder ──────────────────────────────────────────────────
@@ -90,7 +81,7 @@ export async function encryptThunder(
 ): Promise<{ blobId: string; nameHashBytes: Uint8Array }> {
   const seal = getSealClient();
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
-  const ns = await nameHash(bareName);
+  const ns = nameHash(bareName);
 
   // Build payload
   const payload: ThunderPayload = {
@@ -149,7 +140,7 @@ export async function buildThunderDepositTx(
  */
 export async function getThunderCount(recipientName: string): Promise<number> {
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
-  const ns = await nameHash(bareName);
+  const ns = nameHash(bareName);
 
   const tx = new Transaction();
   tx.moveCall({
@@ -185,7 +176,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
  */
 export async function peekThunder(recipientName: string): Promise<ThunderPointerData | null> {
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
-  const ns = await nameHash(bareName);
+  const ns = nameHash(bareName);
 
   const tx = new Transaction();
   tx.moveCall({
@@ -263,7 +254,7 @@ export async function buildThunderPopTx(
   nftObjectId: string,
 ): Promise<Uint8Array> {
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
-  const ns = await nameHash(bareName);
+  const ns = nameHash(bareName);
 
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(recipientAddress));

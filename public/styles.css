@@ -2185,36 +2185,41 @@ body {
 }
 .wk-ns-owned-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: 5px;
 }
 .wk-ns-owned-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   display: flex;
   align-items: center;
   gap: 5px;
 }
 .wk-ns-owned-logo {
-  height: 18px;
+  height: 16px;
   width: auto;
   fill: white;
+  margin-left: 2px;
 }
 .wk-ns-owned-label {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.5);
+  color: #ffffff;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .wk-ns-owned-tally {
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255, 255, 255, 0.7);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 2px 8px;
+  margin-left: 4px;
 }
 .wk-ns-owned-stats {
   display: flex;

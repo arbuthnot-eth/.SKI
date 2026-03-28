@@ -5756,6 +5756,36 @@ function renderSkiMenu() {
       return;
     }
 
+    // Thunder mode — send a Seal-encrypt message (no amount required)
+    const thunderMsgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+    const thunderRow = document.getElementById('wk-thunder-row');
+    const isThunderSend = thunderRow && thunderRow.style.display !== 'none';
+    if (isThunderSend && thunderMsgInput) {
+      const msg = thunderMsgInput.value.trim();
+      if (!msg) { showToast('Type a message'); return; }
+      const recipientName = nsLabel.trim();
+      if (!recipientName) return;
+      const ws3 = getState();
+      if (!ws3.address) return;
+      const tBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
+      try {
+        const { encryptThunder, buildThunderDepositTx } = await import('./client/thunder.js');
+        const senderName = app.suinsName || '';
+        const result = await encryptThunder(ws3.address, senderName, recipientName, msg);
+        const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId);
+        await signAndExecuteTransaction(txBytes);
+        showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
+        thunderMsgInput.value = '';
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : 'Thunder send failed';
+        if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
+      } finally {
+        if (tBtn) { tBtn.textContent = '\u26a1'; tBtn.disabled = false; }
+      }
+      return;
+    }
+
     const ws2 = getState();
     if (!ws2.address) return;
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;

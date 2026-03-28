@@ -122,25 +122,74 @@ export async function buildThunderSendTx(
 
 const RPC_URL = 'https://sui-rpc.publicnode.com';
 
-/** Count pending strikes for a SuiNS name by querying the Cloud dynamic field directly. */
+/** Count pending strikes for a single SuiNS name. */
 export async function getThunderCount(recipientName: string): Promise<number> {
-  const ns = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
+  const counts = await getThunderCountsBatch([recipientName]);
+  const bare = recipientName.replace(/\.sui$/i, '').toLowerCase();
+  return counts[bare] ?? 0;
+}
+
+/**
+ * Get thunder counts for ALL names in one batch.
+ * 1 gRPC call (listDynamicFields) + 1 JSON-RPC batch (getObject per cloud).
+ * Returns a map of bareName → count.
+ */
+export async function getThunderCountsBatch(names: string[]): Promise<Record<string, number>> {
+  const result: Record<string, number> = {};
+  if (names.length === 0) return result;
+
+  // Build name hash → bare name lookup
+  const hashToBare: Record<string, string> = {};
+  for (const name of names) {
+    const bare = name.replace(/\.sui$/i, '').toLowerCase();
+    const ns = nameHash(bare);
+    const hex = Array.from(ns).map(b => b.toString(16).padStart(2, '0')).join('');
+    hashToBare[hex] = bare;
+    result[bare] = 0;
+  }
+
   try {
-    // Find the dynamic field keyed by this name hash
+    // 1. List all clouds on Storm via gRPC (one call)
+    const { grpcClient } = await import('../rpc.js');
+    const dfResult = await grpcClient.listDynamicFields({ parentId: STORM_ID });
+    const fields = dfResult.dynamicFields ?? [];
+    if (fields.length === 0) return result;
+
+    // Match clouds to our names
+    const cloudIds: Array<{ fieldId: string; bare: string }> = [];
+    for (const df of fields) {
+      // Extract name hash from BCS (skip length prefix byte)
+      const bcsValues = Object.values(df.name.bcs as Record<string, number>);
+      const nameBytes = bcsValues.slice(1); // skip length prefix
+      const hex = nameBytes.map((b: number) => b.toString(16).padStart(2, '0')).join('');
+      if (hashToBare[hex]) {
+        cloudIds.push({ fieldId: df.fieldId, bare: hashToBare[hex] });
+      }
+    }
+
+    if (cloudIds.length === 0) return result;
+
+    // 2. Batch fetch all matching cloud objects via JSON-RPC (one call)
+    const batchReq = cloudIds.map((c, i) => ({
+      jsonrpc: '2.0', id: i,
+      method: 'sui_getObject',
+      params: [c.fieldId, { showContent: true }],
+    }));
     const res = await fetch(RPC_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1,
-        method: 'suix_getDynamicFieldObject',
-        params: [STORM_ID, { type: 'vector<u8>', value: Array.from(ns) }],
-      }),
+      body: JSON.stringify(batchReq),
     });
-    const json = await res.json() as any;
-    const cloud = json?.result?.data?.content?.fields?.value?.fields;
-    if (!cloud?.strikes) return 0;
-    return Array.isArray(cloud.strikes) ? cloud.strikes.length : 0;
-  } catch { return 0; }
+    const batchRes = await res.json() as any[];
+    for (let i = 0; i < batchRes.length; i++) {
+      const strikes = batchRes[i]?.result?.data?.content?.fields?.value?.fields?.strikes;
+      if (Array.isArray(strikes)) {
+        result[cloudIds[i].bare] = strikes.length;
+      }
+    }
+  } catch { /* return cached zeros */ }
+
+  return result;
 }
 
 // ─── Strike (batch) ──────────────────────────────────────────────────

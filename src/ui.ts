@@ -7280,20 +7280,14 @@ function renderSkiMenu() {
   const _pollThunder = async () => {
     if (nsOwnedDomains.length === 0) return;
     try {
-      const { getThunderCount } = await import('./client/thunder.js');
+      const { getThunderCountsBatch } = await import('./client/thunder.js');
       const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
+      const counts = await getThunderCountsBatch(nftNames);
       let changed = false;
-      await Promise.all(nftNames.map(async (name) => {
-        try {
-          const count = await getThunderCount(name);
-          const bare = name.replace(/\.sui$/, '').toLowerCase();
-          const prev = _thunderCounts[bare] ?? 0;
-          if (prev !== count && count >= 0) {
-            _thunderCounts[bare] = count;
-            changed = true;
-          }
-        } catch { /* skip failed lookups — don't reset count */ }
-      }));
+      for (const [bare, count] of Object.entries(counts)) {
+        const prev = _thunderCounts[bare] ?? 0;
+        if (prev !== count) { _thunderCounts[bare] = count; changed = true; }
+      }
       if (changed) {
         try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
         _patchNsOwnedList();

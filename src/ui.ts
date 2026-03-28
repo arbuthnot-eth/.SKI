@@ -3857,8 +3857,72 @@ function _attachNftPopoverListeners() {
     _hideNftPopover(true); // instant hide
   }, true);
 
-  // Click: pin/unpin inline card + fill input (bubbles to parent handler)
-  grid.addEventListener('click', (e) => {
+  // Click: thunderbolt decrypt OR pin/unpin inline card
+  grid.addEventListener('click', async (e) => {
+    // Thunderbolt click — decrypt next pending Thunder
+    const thunderBadge = (e.target as HTMLElement).closest('.wk-ns-thunder-badge');
+    if (thunderBadge && _thunderCount > 0) {
+      e.stopPropagation();
+      if (_thunderDecryptBusy) return;
+      _thunderDecryptBusy = true;
+      try {
+        const { peekThunder, decryptThunder, buildThunderPopTx, createThunderSessionKey } = await import('./client/thunder.js');
+        const ws = getState();
+        if (!ws.address || !app.suinsName) return;
+
+        // Create session key if needed (one-time wallet signature)
+        if (!_thunderSessionKey) {
+          _thunderSessionKey = await createThunderSessionKey(
+            ws.address,
+            (msg: Uint8Array) => signPersonalMessage(msg),
+          );
+        }
+
+        // Peek at first pointer
+        const pointer = await peekThunder(app.suinsName);
+        if (!pointer) { showToast('No pending Thunders'); _thunderCount = 0; _patchNsOwnedList(); return; }
+
+        // Decode blobId from bytes
+        const blobId = new TextDecoder().decode(pointer.blobId);
+
+        // Find our SuiNS NFT object ID
+        const bareName = app.suinsName.replace(/\.sui$/, '').toLowerCase();
+        const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareName && d.kind === 'nft');
+        if (!nft) { showToast('SuiNS NFT not found'); return; }
+
+        // Decrypt
+        const payload = await decryptThunder(blobId, nft.objectId, _thunderSessionKey);
+
+        // Show message
+        const senderShort = payload.sender || payload.senderAddress.slice(0, 8) + '\u2026';
+        showToast(`\u26a1 ${senderShort}: ${payload.message}`);
+
+        // Populate sender name into NS input for reply
+        if (payload.sender) {
+          const senderBare = payload.sender.replace(/\.sui$/, '');
+          nsLabel = senderBare;
+          const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+          if (inp) inp.value = senderBare;
+          skipNextFocusClear = true;
+          fetchAndShowNsPrice(senderBare);
+        }
+
+        // Pop from Thunderbun
+        const popTx = await buildThunderPopTx(ws.address, app.suinsName, nft.objectId);
+        await signAndExecuteTransaction(popTx);
+
+        // Update count
+        _thunderCount = Math.max(0, _thunderCount - 1);
+        _patchNsOwnedList();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Decrypt failed';
+        if (!msg.toLowerCase().includes('reject')) showToast(msg);
+      } finally {
+        _thunderDecryptBusy = false;
+      }
+      return;
+    }
+
     const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
     if (!chip?.dataset.domain) return;
     if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;

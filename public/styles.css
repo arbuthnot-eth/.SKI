@@ -2190,20 +2190,22 @@ body {
   margin-bottom: 5px;
 }
 .wk-ns-owned-title {
-  font-size: 0.65rem;
-  font-weight: 700;
-  color: rgba(77, 162, 255, 0.85);
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: #4da2ff;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   display: flex;
   align-items: center;
   gap: 5px;
 }
 .wk-ns-owned-tally {
-  font-size: 0.5rem;
+  font-size: 0.75rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.6);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  margin-left: 6px;
 }
 .wk-ns-owned-stats {
   display: flex;

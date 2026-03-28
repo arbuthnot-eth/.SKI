@@ -69,17 +69,28 @@ async function aesDecrypt(ciphertext: Uint8Array, key: Uint8Array, nonce: Uint8A
 
 // ─── Send a Thunder ──────────────────────────────────────────────────
 
+/** XOR two Uint8Arrays. If mask is shorter, wraps around. */
+function xorBytes(data: Uint8Array, mask: Uint8Array): Uint8Array {
+  const result = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    result[i] = data[i] ^ mask[i % mask.length];
+  }
+  return result;
+}
+
 /**
  * Encrypt a Thunder message and store on Walrus.
- * Returns blobId, nameHashBytes, aesKey, aesNonce for the on-chain deposit.
+ * The AES key is XOR'd with keccak256(recipientNftObjectId) before returning.
+ * Sender must know the recipient's NFT object ID (from checkDomainStatus / fetchOwnedDomains).
  */
 export async function encryptThunder(
   senderAddress: string,
   senderName: string,
   recipientName: string,
+  recipientNftObjectId: string,
   message: string,
   suiamiToken?: string,
-): Promise<{ blobId: string; nameHashBytes: Uint8Array; aesKey: Uint8Array; aesNonce: Uint8Array }> {
+): Promise<{ blobId: string; nameHashBytes: Uint8Array; maskedAesKey: Uint8Array; aesNonce: Uint8Array }> {
   const bareName = recipientName.replace(/\.sui$/i, '').toLowerCase();
   const ns = nameHash(bareName);
 
@@ -97,10 +108,15 @@ export async function encryptThunder(
   // AES encrypt
   const { ciphertext, key, nonce } = await aesEncrypt(payloadBytes);
 
+  // XOR the AES key with keccak256(nft_object_id) — masks it on-chain
+  const nftIdBytes = new TextEncoder().encode(recipientNftObjectId.toLowerCase());
+  const mask = keccak_256(nftIdBytes);
+  const maskedKey = xorBytes(key, mask);
+
   // Write ciphertext to Walrus
   const blobId = await walrusWrite(ciphertext);
 
-  return { blobId, nameHashBytes: ns, aesKey: key, aesNonce: nonce };
+  return { blobId, nameHashBytes: ns, maskedAesKey: maskedKey, aesNonce: nonce };
 }
 
 /**
@@ -111,7 +127,7 @@ export async function buildThunderDepositTx(
   senderAddress: string,
   nameHashBytes: Uint8Array,
   blobId: string,
-  aesKey: Uint8Array,
+  maskedAesKey: Uint8Array,
   aesNonce: Uint8Array,
 ): Promise<Uint8Array> {
   const tx = new Transaction();
@@ -124,7 +140,7 @@ export async function buildThunderDepositTx(
       tx.object(THUNDER_IN_ID),
       tx.pure.vector('u8', Array.from(nameHashBytes)),
       tx.pure.vector('u8', Array.from(new TextEncoder().encode(blobId))),
-      tx.pure.vector('u8', Array.from(aesKey)),
+      tx.pure.vector('u8', Array.from(maskedAesKey)),
       tx.pure.vector('u8', Array.from(aesNonce)),
       tx.object('0x6'), // Clock
     ],

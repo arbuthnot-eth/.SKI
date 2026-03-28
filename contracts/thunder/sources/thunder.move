@@ -69,18 +69,19 @@ fun init(ctx: &mut TxContext) {
 // ─── Public functions ───────────────────────────────────────────────
 
 /// Deposit a thunder. Permissionless — anyone can send.
-/// The AES key + nonce are stored on-chain, locked behind NFT ownership.
+/// The AES key is XOR'd with keccak256(nft_object_id) before storage.
+/// Only the NFT owner knows their object ID to un-XOR it via strike.
 entry fun deposit(
     thunder_in: &mut Thunder,
     name_hash: vector<u8>,
     blob_id: vector<u8>,
-    aes_key: vector<u8>,
+    masked_aes_key: vector<u8>,
     aes_nonce: vector<u8>,
     clock: &Clock,
     _ctx: &mut TxContext,
 ) {
     let timestamp_ms = clock.timestamp_ms();
-    let bolt = ThunderBolt { blob_id, aes_key, aes_nonce, timestamp_ms };
+    let bolt = ThunderBolt { blob_id, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
 
     if (dynamic_field::exists_(&thunder_in.id, name_hash)) {
         let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
@@ -132,6 +133,7 @@ public fun peek(thunder_in: &Thunder, name_hash: vector<u8>): (vector<u8>, u64) 
 }
 
 /// Strike and return — same as strike but returns the key material directly.
+/// Un-XORs the AES key with keccak256(nft_object_id) before returning.
 /// Used via devInspect so the client can read the return values without executing.
 public fun strike_view(
     thunder_in: &mut Thunder,
@@ -148,5 +150,23 @@ public fun strike_view(
 
     let bolt = inbox.bolts.remove(0);
     event::emit(ThunderStruck { name_hash, blob_id: bolt.blob_id });
-    (bolt.blob_id, bolt.aes_key, bolt.aes_nonce)
+
+    // Un-XOR the key with keccak256(nft_object_id)
+    let nft_id_bytes = object::id(nft).to_bytes();
+    let mask = keccak256(&nft_id_bytes);
+    let real_key = xor_bytes(bolt.aes_key, mask);
+
+    (bolt.blob_id, real_key, bolt.aes_nonce)
+}
+
+/// XOR two byte vectors (key ^ mask). If mask is shorter, wraps around.
+fun xor_bytes(data: vector<u8>, mask: vector<u8>): vector<u8> {
+    let mut result = vector[];
+    let mask_len = mask.length();
+    let mut i = 0;
+    while (i < data.length()) {
+        result.push_back(data[i] ^ mask[i % mask_len]);
+        i = i + 1;
+    };
+    result
 }

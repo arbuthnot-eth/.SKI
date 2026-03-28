@@ -5828,9 +5828,13 @@ function renderSkiMenu() {
       if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
       try {
         const { encryptThunder, buildThunderDepositTx } = await import('./client/thunder.js');
+        const { lookupNftOwner } = await import('./suins.js');
         const senderName = app.suinsName || '';
-        const result = await encryptThunder(ws3.address, senderName, recipientName, msg);
-        const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId, result.aesKey, result.aesNonce);
+        // Look up the recipient's SuinsRegistration NFT object ID (needed to mask the AES key)
+        const recipientNftId = await lookupNftOwner(recipientName.replace(/\.sui$/i, '') + '.sui');
+        if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
+        const result = await encryptThunder(ws3.address, senderName, recipientName, recipientNftId, msg);
+        const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId, result.maskedAesKey, result.aesNonce);
         await signAndExecuteTransaction(txBytes);
         showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
         thunderMsgInput.value = '';

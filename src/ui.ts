@@ -6139,8 +6139,43 @@ function renderSkiMenu() {
     const val = (e.target as HTMLInputElement).value.trim().toLowerCase();
 
     // Detect Sui hex address typed/pasted into the name input
-    if (/^0x[0-9a-f]{20,64}$/i.test(val)) {
-      // Handled by paste event — skip here to avoid double-processing
+    if (/^0x[0-9a-f]+$/i.test(val)) {
+      // Full 66-char Sui address — set as target, switch to SEND mode
+      if (val.length === 66 && /^0x[0-9a-f]{64}$/i.test(val)) {
+        nsTargetAddress = val;
+        nsLabel = val;
+        nsAvail = null;
+        nsPriceUsd = null;
+        nsPriceFetchFor = '';
+        try { localStorage.setItem('ski:ns-label', ''); } catch {}
+        _patchNsRoute();
+        _patchNsStatus();
+        _patchNsPrice();
+        // Hide .sui and price chip for hex display
+        const dotSui = document.querySelector('.wk-ns-dot-sui') as HTMLElement | null;
+        const priceChip = document.getElementById('wk-ns-price-chip');
+        const regBtn = document.getElementById('wk-dd-ns-register') as HTMLElement | null;
+        const sendBtnNs = document.getElementById('wk-send-btn') as HTMLElement | null;
+        if (dotSui) dotSui.style.display = 'none';
+        if (priceChip) priceChip.style.display = 'none';
+        if (regBtn) regBtn.style.display = 'none';
+        if (sendBtnNs) sendBtnNs.style.display = '';
+        // Reverse-resolve — if found, replace hex with the SuiNS name
+        const _hexVal = val;
+        lookupSuiNS(_hexVal).then((name: string | null) => {
+          if (name && nsLabel === _hexVal) {
+            const bare = name.replace(/\.sui$/, '');
+            nsLabel = bare;
+            try { localStorage.setItem('ski:ns-label', bare); } catch {}
+            const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+            if (inp) inp.value = bare;
+            if (dotSui) dotSui.style.display = '';
+            if (priceChip) priceChip.style.display = '';
+            fetchAndShowNsPrice(bare);
+          }
+        });
+      }
+      // Partial hex (< 66 chars) — skip, let paste handler or further typing complete it
       return;
     }
 

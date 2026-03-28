@@ -109,6 +109,12 @@ entry fun strike(
     assert!(!inbox.bolts.is_empty(), EEmptyInbox);
 
     let bolt = inbox.bolts.remove(0);
+    let empty = inbox.bolts.is_empty();
+
+    // If that was the last bolt, remove the dynamic field entirely → full storage rebate
+    if (empty) {
+        let ThunderInbox { bolts: _ } = dynamic_field::remove<vector<u8>, ThunderInbox>(&mut thunder_in.id, name_hash);
+    };
 
     // Un-XOR the key
     let nft_id_bytes = object::id(nft).to_bytes();

@@ -3668,7 +3668,7 @@ function _nsOwnedListHtml(): string {
       : `<div id="wk-roster-qr" data-qr-addr="${esc(qrAddr)}"${actionAttr}${colorAttr}></div>`;
   }
 
-  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${qrDiv}${chips.join('')}</div><div id="ski-nft-inline" class="ski-nft-inline" hidden></div></div>`;
+  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div><div id="ski-nft-inline" class="ski-nft-inline" hidden></div></div>`;
 }
 
 /** Clear the NS input and reset price/status when opening the roster. */
@@ -3853,12 +3853,7 @@ function _attachNftPopoverListeners() {
     if (_nftPopoverPinned) return; // don't override pinned popover
     _showNftPopover(chip, chip.dataset.domain);
   }, true);
-  grid.addEventListener('mouseleave', (e) => {
-    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
-    if (!chip) return;
-    if (_nftPopoverPinned) return; // pinned — don't hide
-    _hideNftPopover(true); // instant hide
-  }, true);
+  // No mouseleave hide — inline card persists on the last hovered chip
 
   // Click: thunderbolt decrypt OR pin/unpin inline card
   grid.addEventListener('click', async (e) => {
@@ -7276,12 +7271,15 @@ function renderSkiMenu() {
       const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
       let changed = false;
       await Promise.all(nftNames.map(async (name) => {
-        const count = await getThunderCount(name);
-        const bare = name.replace(/\.sui$/, '').toLowerCase();
-        if ((_thunderCounts[bare] ?? 0) !== count) {
-          _thunderCounts[bare] = count;
-          changed = true;
-        }
+        try {
+          const count = await getThunderCount(name);
+          const bare = name.replace(/\.sui$/, '').toLowerCase();
+          const prev = _thunderCounts[bare] ?? 0;
+          if (prev !== count && count >= 0) {
+            _thunderCounts[bare] = count;
+            changed = true;
+          }
+        } catch { /* skip failed lookups — don't reset count */ }
       }));
       if (changed) _patchNsOwnedList();
     } catch { /* silent */ }

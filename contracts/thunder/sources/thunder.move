@@ -64,8 +64,8 @@ fun init(ctx: &mut TxContext) {
 
 // ─── Deposit ────────────────────────────────────────────────────────
 
-/// Deposit a strike into someone's cloud. Permissionless — anyone can send.
-entry fun deposit(
+/// Bolt a strike into someone's cloud. Permissionless — anyone can send.
+entry fun bolt(
     storm: &mut Storm,
     name_hash: vector<u8>,
     payload: vector<u8>,
@@ -89,10 +89,10 @@ entry fun deposit(
 
 // ─── Claim (NFT-gated) ─────────────────────────────────────────────
 
-/// Claim the first strike from your cloud. Requires SuinsRegistration NFT.
+/// Quest — claim the first strike from your cloud. Requires SuinsRegistration NFT.
 /// Un-XORs the AES key and emits Struck with payload + key + nonce.
-/// Batch multiple claims in one PTB.
-entry fun claim(
+/// Batch multiple quests in one PTB.
+entry fun quest(
     storm: &mut Storm,
     name_hash: vector<u8>,
     nft: &SuinsRegistration,

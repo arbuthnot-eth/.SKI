@@ -100,7 +100,7 @@ export async function buildThunderSendTx(
   tx.moveCall({
     package: THUNDER_PACKAGE_ID,
     module: 'thunder',
-    function: 'deposit',
+    function: 'bolt',
     arguments: [
       tx.object(STORM_ID),
       tx.pure.vector('u8', Array.from(ns)),
@@ -142,7 +142,7 @@ export async function getThunderCount(recipientName: string): Promise<number> {
 // ─── Strike (batch) ──────────────────────────────────────────────────
 
 /** Build a batched strike PTB — one tx claims N thunder. */
-export async function buildBatchClaimTx(
+export async function buildBatchQuestTx(
   recipientAddress: string,
   recipientName: string,
   nftObjectId: string,
@@ -155,7 +155,7 @@ export async function buildBatchClaimTx(
     tx.moveCall({
       package: THUNDER_PACKAGE_ID,
       module: 'thunder',
-      function: 'claim',
+      function: 'quest',
       arguments: [
         tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
@@ -186,14 +186,14 @@ function parseStruckEvents(effects: any): Array<{ payload: Uint8Array; aesKey: U
  * Strike all pending thunder in one PTB, then decrypt all payloads.
  * One wallet signature. Returns all decrypted messages.
  */
-export async function claimAndDecryptAll(
+export async function questAndDecryptAll(
   recipientAddress: string,
   recipientName: string,
   nftObjectId: string,
   count: number,
   signAndExecuteTransaction: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: any }>,
 ): Promise<ThunderPayload[]> {
-  const txBytes = await buildBatchClaimTx(recipientAddress, recipientName, nftObjectId, count);
+  const txBytes = await buildBatchQuestTx(recipientAddress, recipientName, nftObjectId, count);
   const result = await signAndExecuteTransaction(txBytes);
 
   const struck = parseStruckEvents(result.effects ?? result);

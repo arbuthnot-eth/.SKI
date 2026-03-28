@@ -3875,12 +3875,16 @@ function _attachNftPopoverListeners() {
         if (!nft) { showToast('SuiNS NFT not found'); return; }
 
         // Batch strike all pending thunders — one PTB, one signature
+        const isWaap = /waap/i.test(ws.walletName || '');
+        const executeTx = isWaap
+          ? (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes)
+          : (txBytes: Uint8Array) => signAndExecuteSponsoredTx(txBytes);
         const payloads = await strikeAndDecryptAll(
           ws.address,
           app.suinsName,
           nft.objectId,
           _thunderCount,
-          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+          executeTx,
         );
 
         if (payloads.length === 0) { showToast('No thunders decrypted'); _thunderCount = 0; _patchNsOwnedList(); return; }
@@ -5838,7 +5842,12 @@ function renderSkiMenu() {
         if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
         const result = await encryptThunder(ws3.address, senderName, recipientName, recipientNftId, msg);
         const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId, result.maskedAesKey, result.aesNonce);
-        await signAndExecuteTransaction(txBytes);
+        const isWaap = /waap/i.test(ws3.walletName || '');
+        if (isWaap) {
+          await signAndExecuteTransaction(txBytes);
+        } else {
+          await signAndExecuteSponsoredTx(txBytes);
+        }
         showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
         thunderMsgInput.value = '';
       } catch (err) {

@@ -1891,6 +1891,59 @@ body {
 }
 .wk-ns-target-row--green .wk-ns-target-icon { color: rgba(34, 197, 94, 0.7); }
 .wk-ns-target-row--green .wk-ns-target-addr { color: rgba(34, 197, 94, 0.85); }
+/* Transfer button — green arrow on owned name target row */
+.wk-ns-transfer-btn {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: rgba(34, 197, 94, 0.9);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: all 0.15s;
+}
+.wk-ns-transfer-btn:hover {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+/* Transfer recipient input row */
+.wk-ns-target-row--transfer-input { gap: 4px; }
+.wk-ns-transfer-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: rgba(34, 197, 94, 0.9);
+  font-family: inherit;
+  font-size: 0.83rem;
+  font-weight: 500;
+  min-width: 0;
+}
+.wk-ns-transfer-input::placeholder { color: rgba(34, 197, 94, 0.4); }
+.wk-ns-transfer-submit {
+  background: rgba(34, 197, 94, 0.2);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: rgba(34, 197, 94, 0.9);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wk-ns-transfer-submit:hover { background: rgba(34, 197, 94, 0.35); }
+.wk-ns-transfer-cancel {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wk-ns-transfer-cancel:hover { color: rgba(255, 255, 255, 0.8); }
 /* Red — grace period */
 .wk-ns-target-row--red {
   border: 1px solid rgba(239, 68, 68, 0.18);
@@ -2283,21 +2336,12 @@ body {
 
 /* ─── NFT Card Popover (roster chip hover) ────────────────────────── */
 
-.ski-nft-popover {
-  position: fixed;
-  z-index: 99999;
-  pointer-events: auto;
-  animation: ski-nft-in 0.15s ease;
+/* Inline NFT card slot (inside roster) */
+.ski-nft-inline {
+  overflow: hidden;
+  transition: all 0.15s ease;
 }
-.ski-nft-popover[hidden] { display: none; }
-@keyframes ski-nft-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.ski-nft-popover--pinned .ski-nft-card {
-  border-color: #ffffff;
-}
+.ski-nft-inline[hidden] { display: none; }
 .ski-nft-card {
   background: #000000;
   border: 1px solid rgba(96, 165, 250, 0.25);
@@ -2311,6 +2355,15 @@ body {
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8), 0 0 24px rgba(96, 165, 250, 0.08);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
 }
+.ski-nft-card--inline {
+  width: 100%;
+  flex-direction: row;
+  padding: 10px;
+  gap: 12px;
+  box-shadow: none;
+  border-radius: 10px;
+  min-height: 88px;
+}
 
 .ski-nft-qr {
   width: 148px;
@@ -2321,6 +2374,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+}
+.ski-nft-card--inline .ski-nft-qr {
+  width: 64px;
+  height: 64px;
+  border-radius: 6px;
 }
 .ski-nft-qr svg {
   width: 100%;
@@ -2334,6 +2393,15 @@ body {
   align-items: center;
   gap: 2px;
   width: 100%;
+}
+.ski-nft-card--inline .ski-nft-info {
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 0;
+  flex: 1;
+}
+.ski-nft-card--inline .ski-nft-owner {
+  display: none;
 }
 
 .ski-nft-domain {

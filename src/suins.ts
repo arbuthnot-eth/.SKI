@@ -2425,3 +2425,33 @@ export async function buildSendTx(
 
   return tx.build({ client: transport as never });
 }
+
+/**
+ * Build a transaction that transfers a SuinsRegistration NFT to a recipient.
+ * Looks up the NFT object ID from owned domains, then does transferObjects.
+ */
+export async function buildTransferNftTx(
+  senderAddress: string,
+  domain: string,
+  recipientAddress: string,
+): Promise<Uint8Array> {
+  const sender = normalizeSuiAddress(senderAddress);
+  const recipient = normalizeSuiAddress(recipientAddress);
+  if (sender === recipient) throw new Error('Recipient matches sender — cannot transfer to self');
+
+  // Find the NFT object for this domain
+  const owned = await fetchOwnedDomains(sender);
+  const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
+  const nft = owned.find(d => d.name === fullDomain && d.kind === 'nft');
+  if (!nft) throw new Error(`No SuinsRegistration NFT found for ${fullDomain}`);
+  if (nft.inKiosk) throw new Error(`${fullDomain} is listed in a kiosk — delist first`);
+
+  const tx = new Transaction();
+  tx.setSender(sender);
+  tx.transferObjects(
+    [tx.object(nft.objectId)],
+    tx.pure.address(recipient),
+  );
+
+  return tx.build({ client: gqlClient as never });
+}

@@ -142,16 +142,21 @@ export async function getThunderCount(recipientName: string): Promise<number> {
 
 // ─── Strike (batch) ──────────────────────────────────────────────────
 
-/** Build a batched strike PTB — one tx claims N thunder. */
+/** Build a batched quest PTB — one tx claims N thunder.
+ *  If sponsorAddress is provided, sets it as gas owner (2-sig sponsored tx). */
 export async function buildBatchQuestTx(
   recipientAddress: string,
   recipientName: string,
   nftObjectId: string,
   count: number,
+  sponsorAddress?: string,
 ): Promise<Uint8Array> {
   const ns = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
   const tx = new Transaction();
   tx.setSender(normalizeSuiAddress(recipientAddress));
+  if (sponsorAddress) {
+    tx.setGasOwner(normalizeSuiAddress(sponsorAddress));
+  }
   for (let i = 0; i < count; i++) {
     tx.moveCall({
       package: THUNDER_PACKAGE_ID,
@@ -192,10 +197,11 @@ export async function questAndDecryptAll(
   recipientName: string,
   nftObjectId: string,
   count: number,
-  signAndExecuteTransaction: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: any }>,
+  executeTx: (txBytes: Uint8Array) => Promise<{ digest: string; effects?: any }>,
+  sponsorAddress?: string,
 ): Promise<ThunderPayload[]> {
-  const txBytes = await buildBatchQuestTx(recipientAddress, recipientName, nftObjectId, count);
-  const result = await signAndExecuteTransaction(txBytes);
+  const txBytes = await buildBatchQuestTx(recipientAddress, recipientName, nftObjectId, count, sponsorAddress);
+  const result = await executeTx(txBytes);
 
   const struck = parseStruckEvents(result.effects ?? result);
   if (struck.length === 0) throw new Error('No Struck events in tx effects');

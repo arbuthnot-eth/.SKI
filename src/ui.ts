@@ -4983,6 +4983,7 @@ function renderSkiMenu() {
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}" style="display:none">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
         <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
+        <div id="wk-thunder-row" class="wk-thunder-row" style="display:none"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="sealed message\u2026" spellcheck="false" autocomplete="off"></div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
       </div>`;
 
@@ -5345,12 +5346,17 @@ function renderSkiMenu() {
     // SEND: sending to someone else (any token combo), colored by output
     // Show SEND even when coins are collapsed if target is someone else
     const sendMode = !mintMode && !marketMode && !resolving && sendingToOther && !(swapMode || suiamiSendMode);
+    // THUNDER: viewing someone else's taken name, no amount needed
+    const thunderMode = !mintMode && !marketMode && !resolving && !suiamiMode
+      && hasLabel && isTaken && !isOwned && nsTargetAddress != null
+      && (!pendingSendAmount || Number(pendingSendAmount) <= 0);
 
-    btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold');
+    btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold', 'wk-send-btn--thunder');
     if (mintMode) btn.classList.add('wk-send-btn--mint');
     else if (swapMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`);
     else if (suiamiSendMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`); // SUIAMI colored by output
     else if (sendMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`); // SEND colored by output
+    else if (thunderMode) btn.classList.add('wk-send-btn--thunder');
     else if (suiamiGreen) btn.classList.add('wk-send-btn--suiami-green');
     else if (suiamiPurple) btn.classList.add('wk-send-btn--suiami');
     else if (marketMode) btn.classList.add('wk-send-btn--market');
@@ -5358,6 +5364,9 @@ function renderSkiMenu() {
     // Hide price chip when sending, swapping, or name is taken (not mintable)
     const priceChip = document.getElementById('wk-ns-price-chip');
     if (priceChip) priceChip.style.display = ((sendMode || swapMode) && !mintMode) || (isTaken && !isOwned && !hasListing) ? 'none' : '';
+    // Show/hide Thunder message row
+    const thunderRow = document.getElementById('wk-thunder-row');
+    if (thunderRow) thunderRow.style.display = thunderMode ? '' : 'none';
 
     // Auto-configure swap for minting: set amount to mint price (with NS discount)
     if (mintMode && coinChipsOpen) {
@@ -5442,6 +5451,10 @@ function renderSkiMenu() {
         btn.disabled = !val || Number(val) <= 0;
         btn.classList.remove('wk-send-btn--cant-afford');
       }
+    } else if (thunderMode) {
+      btn.disabled = false;
+      btn.textContent = '\u26a1';
+      btn.title = `Thunder \u2014 send a Seal-encrypt message to ${nsLabel.trim()}.sui`;
     } else if (suiamiMode) {
       btn.disabled = false;
       btn.textContent = 'SUIAMI';

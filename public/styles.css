@@ -1944,6 +1944,47 @@ body {
   flex-shrink: 0;
 }
 .wk-ns-transfer-cancel:hover { color: rgba(255, 255, 255, 0.8); }
+/* Thunder button — Thunderbun orange */
+.wk-send-btn--thunder {
+  background: rgba(255, 184, 0, 0.15) !important;
+  border-color: rgba(255, 184, 0, 0.4) !important;
+  color: #FFB800 !important;
+}
+.wk-send-btn--thunder:hover { background: rgba(255, 184, 0, 0.25) !important; }
+/* Thunder message row + input */
+.wk-thunder-row {
+  padding: 0 10px 4px;
+}
+.wk-thunder-msg {
+  width: 100%;
+  background: transparent;
+  border: 1px solid rgba(255, 184, 0, 0.2);
+  border-radius: 8px;
+  outline: none;
+  color: rgba(255, 184, 0, 0.9);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 6px 10px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.wk-thunder-msg::placeholder { color: rgba(255, 184, 0, 0.35); }
+.wk-thunder-msg:focus { border-color: rgba(255, 184, 0, 0.5); }
+/* Thunderbolt badge on roster chip */
+.wk-ns-thunder-badge {
+  font-size: 0.65rem;
+  color: #FFB800;
+  margin-left: 2px;
+  flex-shrink: 0;
+  text-shadow: 0 0 6px rgba(255, 184, 0, 0.4);
+  animation: thunder-pulse 2s ease-in-out infinite;
+  cursor: pointer;
+}
+@keyframes thunder-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
 /* Red — grace period */
 .wk-ns-target-row--red {
   border: 1px solid rgba(239, 68, 68, 0.18);

@@ -5733,11 +5733,16 @@ function renderSkiMenu() {
             routeEl.classList.remove('wk-ns-route-wrap--hidden');
             routeEl.innerHTML = _suiamiVerifyHtml;
           }
+          const _skiNet = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
+          const _netNames: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
+          const _netLabel = _netNames[_skiNet] || _skiNet;
           showToast(v.valid
-            ? `\u2713 SuiAMI verified \u2014 ${bare}.sui (copied)`
-            : `SuiAMI signed \u2014 ${bare}.sui (copied)`);
+            ? `\u2713 SUIAMI? I AM ${bare}.sui@${_netLabel} \u2014 copied`
+            : `\u2713 SUIAMI? I AM ${bare}.sui@${_netLabel} \u2014 copied`);
         } catch {
-          showToast(`SuiAMI signed \u2014 ${bare}.sui (copied)`);
+          const _skiNet2 = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
+          const _netNames2: Record<string, string> = { btc: 'bitcoin', sol: 'solana', sui: 'sui', eth: 'ethereum' };
+          showToast(`\u2713 SUIAMI? I AM ${bare}.sui@${_netNames2[_skiNet2] || _skiNet2} \u2014 copied`);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

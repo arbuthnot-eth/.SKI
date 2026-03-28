@@ -5827,11 +5827,10 @@ function renderSkiMenu() {
       const tBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
       if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
       try {
-        const { encryptThunder, buildThunderDepositTx } = await import('./client/thunder.js');
-        const { lookupNftOwner } = await import('./suins.js');
+        const { encryptThunder, buildThunderDepositTx, lookupRecipientNftId } = await import('./client/thunder.js');
         const senderName = app.suinsName || '';
         // Look up the recipient's SuinsRegistration NFT object ID (needed to mask the AES key)
-        const recipientNftId = await lookupNftOwner(recipientName.replace(/\.sui$/i, '') + '.sui');
+        const recipientNftId = await lookupRecipientNftId(recipientName);
         if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
         const result = await encryptThunder(ws3.address, senderName, recipientName, recipientNftId, msg);
         const txBytes = await buildThunderDepositTx(ws3.address, result.nameHashBytes, result.blobId, result.maskedAesKey, result.aesNonce);

@@ -52,6 +52,24 @@ function nameHash(bareName: string): Uint8Array {
   return keccak_256(new TextEncoder().encode(bareName.toLowerCase()));
 }
 
+// ─── Recipient NFT lookup ─────────────────────────────────────────────
+
+/**
+ * Look up the SuinsRegistration NFT object ID for a name.
+ * Uses GraphQL to query the SuiNS name record.
+ */
+export async function lookupRecipientNftId(name: string): Promise<string | null> {
+  const fullName = name.replace(/\.sui$/i, '').toLowerCase() + '.sui';
+  try {
+    const { SuinsClient } = await import('@mysten/suins');
+    const suinsClient = new SuinsClient({ client: gqlClient as never, network: 'mainnet' });
+    const record = await suinsClient.getNameRecord(fullName);
+    return record?.nftId ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── AES-256-GCM ─────────────────────────────────────────────────────
 
 async function aesEncrypt(plaintext: Uint8Array): Promise<{ ciphertext: Uint8Array; key: Uint8Array; nonce: Uint8Array }> {

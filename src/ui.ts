@@ -3154,11 +3154,51 @@ let nsNewTargetAddr = ''; // value in the target-address input
 let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
 let _thunderCounts: Record<string, number> = (() => { try { const v = localStorage.getItem('ski:thunder-counts'); return v ? JSON.parse(v) : {}; } catch { return {}; } })();
+let _thunderLocalCounts: Record<string, number> = {}; // total signals per counterparty from local log
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
+let _thunderConvoOpen = (() => {
+  // On hard refresh: if unqueued signals exist, auto-open; else recall last state
+  try {
+    const counts: Record<string, number> = JSON.parse(localStorage.getItem('ski:thunder-counts') || '{}');
+    const hasUnqueued = Object.values(counts).some(c => c > 0);
+    if (hasUnqueued) return true;
+    return localStorage.getItem('ski:thunder-card-open') === '1';
+  } catch { return false; }
+})();
 
 const _selectedThunderTs = new Set<number>();
+
+/** Recompute _thunderLocalCounts from the encrypted log. */
+async function _refreshThunderLocalCounts() {
+  const ws = getState();
+  if (!ws.address) { _thunderLocalCounts = {}; return; }
+  try {
+    const all = await _readThunderLog();
+    const counts: Record<string, number> = {};
+    for (const e of all) {
+      const peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
+      if (peer) counts[peer] = (counts[peer] ?? 0) + 1;
+    }
+    _thunderLocalCounts = counts;
+  } catch { _thunderLocalCounts = {}; }
+}
+
+/** Toggle conversation open/closed for the current card domain. */
+function _toggleThunderConvo() {
+  const convoEl = document.getElementById('wk-thunder-convo');
+  if (!convoEl) return;
+  _thunderConvoOpen = !_thunderConvoOpen;
+  if (_thunderConvoOpen) {
+    convoEl.removeAttribute('hidden');
+    const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain;
+    if (cardDomain) _renderConversation(cardDomain);
+  } else {
+    convoEl.setAttribute('hidden', '');
+  }
+  try { localStorage.setItem('ski:thunder-card-open', _thunderConvoOpen ? '1' : '0'); } catch {}
+}
 
 /** Render the conversation view for a counterparty in the thunder received area. */
 async function _renderConversation(counterparty: string, force = false) {
@@ -3169,10 +3209,8 @@ async function _renderConversation(counterparty: string, force = false) {
 
   // Re-query DOM after async — elements may have been rebuilt by renderSkiMenu
   const receivedEl = document.getElementById('wk-thunder-received');
-  const thunderRowEl = document.getElementById('wk-thunder-row');
+  const thunderRowEl = document.getElementById('wk-thunder-convo');
   if (!receivedEl || !thunderRowEl) return;
-
-  if (entries.length === 0) { receivedEl.setAttribute('hidden', ''); return; }
 
   const rows = entries.map(e => {
     const isOut = e.dir === 'out' || (!e.dir && !e.from && !e.msg.startsWith('\u26a1 from'));
@@ -3192,10 +3230,21 @@ async function _renderConversation(counterparty: string, force = false) {
     : '';
 
   receivedEl.innerHTML = rows + deleteBtn;
-  receivedEl.removeAttribute('hidden');
-  thunderRowEl.style.display = '';
+
+  // Show unqueued signals indicator with Quest button
+  const unqueuedEl = document.getElementById('wk-thunder-unqueued');
+  const unqueuedCount = _thunderCounts[bare] ?? 0;
+  if (unqueuedEl) {
+    if (unqueuedCount > 0) {
+      unqueuedEl.innerHTML = `\u26a1${unqueuedCount} new \u2014 <button class="wk-thunder-quest-btn" id="wk-thunder-quest" type="button">Quest</button>`;
+      unqueuedEl.removeAttribute('hidden');
+    } else {
+      unqueuedEl.setAttribute('hidden', '');
+    }
+  }
+
   _thunderConvoTarget = bare;
-  try { localStorage.setItem('ski:thunder-open', '1'); } catch {}
+  try { localStorage.setItem('ski:thunder-card-open', '1'); } catch {}
   try { sessionStorage.setItem('ski:thunder-convo', bare); } catch {}
   receivedEl.scrollTop = receivedEl.scrollHeight;
 
@@ -3251,17 +3300,50 @@ async function _renderConversation(counterparty: string, force = false) {
     _renderConversation(bare, true);
     showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
   });
+
+  // Bind Quest button — decrypt unqueued on-chain signals
+  document.getElementById('wk-thunder-quest')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (_thunderDecryptBusy) return;
+    _thunderDecryptBusy = true;
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    try {
+      const { decryptAndQuest } = await import('./client/thunder.js');
+      const ws = getState();
+      if (!ws.address) return;
+      const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bare && d.kind === 'nft');
+      if (!nft) { showToast('SuiNS NFT not found'); return; }
+      const count = _thunderCounts[bare] ?? 0;
+      if (count === 0) return;
+      const payloads = await decryptAndQuest(
+        ws.address, bare + '.sui', nft.objectId, count,
+        (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+      );
+      const _myLog = app.suinsName || ws.address;
+      for (const p of payloads) {
+        const _pSender = p.sender || p.senderAddress.slice(0, 8);
+        await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender);
+      }
+      _thunderCounts[bare] = 0;
+      try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
+      _patchNsOwnedList();
+      _thunderConvoTarget = '';
+      _renderConversation(bare, true);
+      if (payloads.length > 0) showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} quested`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Quest failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      _thunderDecryptBusy = false;
+    }
+  });
 }
 
-/** Restore conversation on menu render if the input matches the cached counterparty. */
+/** Restore conversation on menu render — handled by _syncNftCardToInput now. */
 function _restoreConversation() {
-  try {
-    const cached = sessionStorage.getItem('ski:thunder-convo');
-    const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
-    if (cached && inputBare === cached) {
-      _renderConversation(cached);
-    }
-  } catch {}
+  // _syncNftCardToInput handles conversation restore based on card domain + unqueued state
 }
 
 // ─── Encrypted local thunder log ─────────────────────────────────────
@@ -3391,7 +3473,7 @@ const _shadeCancelledIds = new Set<string>((() => { // cancelled order IDs — p
 function _persistShadeCancelled() {
   try { localStorage.setItem('ski:shade-cancelled', JSON.stringify([..._shadeCancelledIds])); } catch {}
 }
-let nsRosterOpen = (() => { try { return sessionStorage.getItem('ski:roster-open') === '1'; } catch { return false; } })();
+let nsRosterOpen = false; // always start collapsed
 let nsRouteOpen = (() => {
   try {
     const stored = sessionStorage.getItem('ski:route-open');
@@ -3481,6 +3563,15 @@ function _removeFromWishlist(label: string) {
   const bare = label.replace(/\.sui$/, '').toLowerCase();
   nsWishlist = nsWishlist.filter(n => n !== bare);
   try { localStorage.setItem('ski:ns-wishlist', JSON.stringify(nsWishlist)); } catch {}
+}
+
+/** Auto-add a thunder recipient as a wishlist contact if not already in roster. */
+function _addThunderContact(name: string) {
+  const bare = name.replace(/\.sui$/, '').toLowerCase();
+  const inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bare);
+  if (inRoster) return;
+  _addToWishlist(bare);
+  _patchNsOwnedList();
 }
 
 // ─── Owned domains localStorage cache ────────────────────────────────
@@ -3918,6 +4009,7 @@ function _clearNsInput() {
   _patchNsStatus();
   _patchNsRoute();
   _patchNsOwnedList();
+  _syncNftCardToInput();
 }
 
 const _rosterQrCache = new Map<string, string>();
@@ -4042,12 +4134,15 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
     expiryHtml = `<span class="ski-nft-expiry">\u2014</span>`;
   }
 
-  // Thunder badge for domains with pending strikes in their cloud
-  const thunderCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
-  const thunderBadgeHtml = thunderCount > 0
-    ? `<span class="ski-nft-thunder">\u26a1${thunderCount}</span>`
+  // Thunder badge: total signal count (local log) + unqueued indicator
+  const unqueuedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
+  const totalCount = _thunderLocalCounts[domainBare.toLowerCase()] ?? 0;
+  const displayCount = totalCount + unqueuedCount;
+  const unqueuedDot = unqueuedCount > 0 ? ' ski-nft-thunder--unqueued' : '';
+  const thunderBadgeHtml = displayCount > 0
+    ? `<span class="ski-nft-thunder${unqueuedDot}">\u26a1${displayCount}</span>`
     : '';
-  const thunderCardCls = thunderCount > 0 ? ' ski-nft-card--thunder' : '';
+  const thunderCardCls = unqueuedCount > 0 ? ' ski-nft-card--thunder' : '';
 
   popover.innerHTML = `
     <div class="ski-nft-card ski-nft-card--inline${thunderCardCls}">
@@ -4072,32 +4167,58 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   }
 }
 
+/** Sync NFT card to the input box value; fall back to most-thundered chip.
+ *  Also manages conversation open/closed state on hard refresh. */
+function _syncNftCardToInput() {
+  const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+  if (!grid) return;
+  const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+  let domain = '';
+  if (inputBare) {
+    const owned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === inputBare && d.kind === 'nft');
+    if (owned) domain = inputBare;
+  }
+  if (!domain) {
+    // Fall back to most-thundered name
+    const top = Object.entries(_thunderCounts)
+      .filter(([, c]) => c > 0)
+      .sort(([, a], [, b]) => b - a)[0];
+    if (top) domain = top[0];
+  }
+  if (!domain) domain = _lastNftCardDomain;
+  if (domain) {
+    const chip = grid.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+    if (chip) {
+      _showNftPopover(chip, domain);
+      _nftPopoverPinned = true;
+    }
+  } else {
+    _hideNftPopover(true);
+  }
+
+  // Manage conversation visibility
+  const convoEl = document.getElementById('wk-thunder-convo');
+  if (!convoEl || !domain) return;
+  const hasUnqueued = Object.values(_thunderCounts).some(c => c > 0);
+  if (hasUnqueued && !_thunderConvoOpen) {
+    // Auto-open on hard refresh when unqueued signals exist
+    _thunderConvoOpen = true;
+    convoEl.removeAttribute('hidden');
+    _renderConversation(domain);
+  } else if (_thunderConvoOpen) {
+    convoEl.removeAttribute('hidden');
+    _renderConversation(domain);
+  } else {
+    convoEl.setAttribute('hidden', '');
+  }
+}
+
 function _attachNftPopoverListeners() {
   const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
   if (!grid) return;
 
-  // Default to name with most thunder, fallback to last viewed
-  const _topThunder = Object.entries(_thunderCounts)
-    .filter(([, c]) => c > 0)
-    .sort(([, a], [, b]) => b - a)[0];
-  let cardDomain = _topThunder ? _topThunder[0] : _lastNftCardDomain;
-  if (cardDomain) {
-    const chip = grid.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${cardDomain}"]`);
-    if (chip) {
-      _showNftPopover(chip, cardDomain);
-      _nftPopoverPinned = true;
-    }
-  }
-
-  // Hover: show popover on enter (unless pinned by click)
-  grid.addEventListener('mouseenter', (e) => {
-    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
-    if (!chip?.dataset.domain) return;
-    if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    if (_nftPopoverPinned) return; // don't override pinned popover
-    _showNftPopover(chip, chip.dataset.domain);
-  }, true);
-  // No mouseleave hide — inline card persists on the last hovered chip
+  // Initial card — sync to input or most-thundered
+  _syncNftCardToInput();
 
   // Click: thunderbolt decrypt OR pin/unpin inline card
   grid.addEventListener('click', async (e) => {
@@ -4169,18 +4290,7 @@ function _attachNftPopoverListeners() {
       return;
     }
 
-    const chip = (e.target as HTMLElement).closest<HTMLElement>('.wk-ns-owned-chip');
-    if (!chip?.dataset.domain) return;
-    if (chip.dataset.shade === '1' || chip.dataset.wish === '1') return;
-    // Toggle pin: if already pinned on this domain, unpin
-    if (_nftPopoverPinned && _nftPopover?.dataset.domain === chip.dataset.domain) {
-      _nftPopoverPinned = false;
-      _hideNftPopover(true);
-      return;
-    }
-    // Pin the card
-    _showNftPopover(chip, chip.dataset.domain);
-    _nftPopoverPinned = true;
+    // Chip clicks set the input (handled by outer listener) — card syncs via _syncNftCardToInput
   });
 }
 
@@ -5301,13 +5411,13 @@ function renderSkiMenu() {
           ${_inputHtml}
           <span class="wk-ns-dot-sui">${esc(_dotSuiText)}</span>
           <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_subnameMode ? '' : _nsPriceHtml()}</span>
-          <button id="wk-send-btn" class="wk-send-btn${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? ' wk-send-btn--thunder' : ''; } catch { return ''; } })()}" type="button" title="Send"${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? '' : (pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'); } catch { return pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'; } })()}>${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? 'Thunder' : '\u2192'; } catch { return '\u2192'; } })()}</button>
+          <button id="wk-send-btn" class="wk-send-btn" type="button" title="Send"${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'}>\u2192</button>
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}" style="display:none">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
         <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
-        <div id="wk-thunder-row" class="wk-thunder-row" style="display:${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? '' : 'none'; } catch { return 'none'; } })()}"><div id="wk-thunder-received" class="wk-thunder-received" hidden></div><div class="wk-thunder-input-row"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="private thunder\u2026" spellcheck="false" autocomplete="off"><button id="wk-thunder-send" class="wk-thunder-send" type="button" title="Send signal">\u26a1</button></div></div>
-        <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
         <div id="ski-nft-inline" class="ski-nft-inline" hidden></div>
+        <div id="wk-thunder-convo" class="wk-thunder-convo" hidden><div id="wk-thunder-received" class="wk-thunder-received"></div><div id="wk-thunder-unqueued" class="wk-thunder-unqueued" hidden></div><div class="wk-thunder-reply-row"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="private thunder\u2026" spellcheck="false" autocomplete="off"><button id="wk-thunder-send" class="wk-thunder-send" type="button" title="Send signal">\u26a1</button></div></div>
+        <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
       </div>`;
 
   // Unified menu — same layout for both states; name badge only when SuiNS name exists
@@ -5687,22 +5797,7 @@ function renderSkiMenu() {
     // Hide price chip when sending, swapping, or name is taken (not mintable)
     const priceChip = document.getElementById('wk-ns-price-chip');
     if (priceChip) priceChip.style.display = ((sendMode || swapMode) && !mintMode) || (isTaken && !isOwned && !hasListing) ? 'none' : '';
-    // Show/hide Thunder bolt row + render conversation
-    const thunderRow = document.getElementById('wk-thunder-row');
-    if (thunderRow) {
-      thunderRow.style.display = thunderMode ? '' : 'none';
-      try { localStorage.setItem('ski:thunder-open', thunderMode ? '1' : '0'); } catch {}
-      // Only render conversation when counterparty changes (avoid async re-render flicker)
-      if (thunderMode) {
-        const _convoTarget = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
-        if (_convoTarget !== _thunderConvoTarget) {
-          _thunderConvoTarget = _convoTarget;
-          _renderConversation(_convoTarget);
-        }
-      } else {
-        _thunderConvoTarget = '';
-      }
-    }
+    // Conversation is now controlled by card click (_toggleThunderConvo), not input mode
 
     // Auto-configure swap for minting: set amount to mint price (with NS discount)
     if (mintMode && coinChipsOpen) {
@@ -6092,94 +6187,22 @@ function renderSkiMenu() {
       return;
     }
 
-    // Thunder mode — bolt a strike into recipient's cloud (no amount required)
-    const thunderMsgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
-    const thunderRow = document.getElementById('wk-thunder-row');
-    const isThunderSend = thunderRow && thunderRow.style.display !== 'none';
-    if (isThunderSend && thunderMsgInput) {
-      const msg = thunderMsgInput.value.trim();
+    // Thunder mode — signal to recipient (from main input box, not conversation reply)
+    const thunderBtn = btn.classList.contains('wk-send-btn--thunder');
+    if (thunderBtn) {
       const recipientName = nsLabel.trim();
       if (!recipientName) return;
       const ws3 = getState();
       if (!ws3.address) return;
-
-      // Empty input + ⚡ = quest all pending on-chain signals (storage rebate), keep local history
-      if (!msg) {
-        const tBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-        if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
-        try {
-          const namesWithThunder = Object.entries(_thunderCounts).filter(([, c]) => c > 0);
-          if (namesWithThunder.length === 0) {
-            showToast('No pending signals');
-          } else {
-            const { decryptAndQuest } = await import('./client/thunder.js');
-            // Store quested signals in local log before clearing on-chain
-            const _myLog = app.suinsName || ws3.address;
-            for (const [name, count] of namesWithThunder) {
-              const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
-              if (!nft) continue;
-              const payloads = await decryptAndQuest(ws3.address, name + '.sui', nft.objectId, count, (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes));
-              for (const p of payloads) {
-                const _pSender = p.sender || p.senderAddress.slice(0, 8);
-                await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender);
-              }
-              _thunderCounts[name] = 0;
-            }
-            try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
-            _patchNsOwnedList();
-            // Refresh conversation if viewing a relevant name
-            _thunderConvoTarget = '';
-            _renderConversation(recipientName);
-            showToast(`\u26a1 ${namesWithThunder.length} name${namesWithThunder.length > 1 ? 's' : ''} cleared \u2014 storage rebate claimed`);
-          }
-          // One-off: clean up stale name-keyed logs from old format
-          try {
-            for (let i = localStorage.length - 1; i >= 0; i--) {
-              const k = localStorage.key(i);
-              if (k?.startsWith('ski:thunder-log:') && !k.startsWith(`ski:thunder-log:0x`)) {
-                localStorage.removeItem(k);
-              }
-            }
-          } catch {}
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Burn failed';
-          if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
-        } finally {
-          if (tBtn) { tBtn.textContent = 'Thunder'; tBtn.disabled = false; }
-        }
-        return;
+      // Open conversation area for new signal input
+      const convoEl = document.getElementById('wk-thunder-convo');
+      const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+      if (convoEl && !_thunderConvoOpen) {
+        _thunderConvoOpen = true;
+        convoEl.removeAttribute('hidden');
+        _renderConversation(recipientName);
       }
-      const tBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-      if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
-      try {
-        const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
-        const senderName = app.suinsName || '';
-        const recipientNftId = await lookupRecipientNftId(recipientName);
-        if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
-        const txBytes = await buildThunderSendTx(ws3.address, senderName, recipientName, recipientNftId, msg);
-        // Store signal locally before sending — survives browser crash mid-tx
-        const _logName = senderName || ws3.address;
-        await _storeThunderLocal(_logName, recipientName, msg, 'out');
-        let _txOk = false;
-        try {
-          await signAndExecuteTransaction(txBytes);
-          _txOk = true;
-        } catch (txErr) {
-          // Tx failed or rejected — remove the pre-stored signal
-          _removeLastThunderLocal(_logName).catch(() => {});
-          throw txErr;
-        }
-        if (_txOk) {
-          showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
-          thunderMsgInput.value = '';
-          _renderConversation(recipientName);
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Thunder send failed';
-        if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
-      } finally {
-        if (tBtn) { tBtn.textContent = '\u26a1'; tBtn.disabled = false; }
-      }
+      if (msgInput) { msgInput.focus(); }
       return;
     }
 
@@ -6568,16 +6591,58 @@ function renderSkiMenu() {
       }
     }
   });
-  // Enter in thunder input or inline ⚡ button → trigger send
-  document.getElementById('wk-thunder-msg')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      document.getElementById('wk-send-btn')?.click();
+  // Enter in conversation reply input or inline ⚡ button → send signal
+  const _thunderSendFromConvo = async () => {
+    const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+    const msg = msgInput?.value.trim();
+    if (!msg) return;
+    // Determine recipient: card domain (for replies to owned names) or input box (for new conversations)
+    const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase();
+    const recipientName = cardDomain || nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+    if (!recipientName) return;
+    const ws = getState();
+    if (!ws.address) return;
+    const sendBtn = document.getElementById('wk-thunder-send') as HTMLButtonElement | null;
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '\u2026'; }
+    try {
+      const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
+      const senderName = app.suinsName || '';
+      const recipientNftId = await lookupRecipientNftId(recipientName);
+      if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
+      const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
+      const _logName = senderName || ws.address;
+      await _storeThunderLocal(_logName, recipientName, msg, 'out');
+      let _txOk = false;
+      try {
+        await signAndExecuteTransaction(txBytes);
+        _txOk = true;
+      } catch (txErr) {
+        _removeLastThunderLocal(_logName).catch(() => {});
+        throw txErr;
+      }
+      if (_txOk) {
+        showToast(`\u26a1 Signal sent to ${recipientName}.sui`);
+        if (msgInput) msgInput.value = '';
+        await _refreshThunderLocalCounts();
+        _thunderConvoTarget = '';
+        _renderConversation(recipientName);
+        _syncNftCardToInput();
+        // Auto-add recipient as wishlist chip if not in roster
+        _addThunderContact(recipientName);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Signal failed';
+      if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
+    } finally {
+      if (sendBtn) { sendBtn.textContent = '\u26a1'; sendBtn.disabled = false; }
     }
+  };
+  document.getElementById('wk-thunder-msg')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); _thunderSendFromConvo(); }
   });
   document.getElementById('wk-thunder-send')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    document.getElementById('wk-send-btn')?.click();
+    _thunderSendFromConvo();
   });
 
   nsInput?.addEventListener('input', (e) => {
@@ -6660,6 +6725,7 @@ function renderSkiMenu() {
     _patchNsStatus();
     _patchNsRoute();
     _patchNsOwnedList();
+    _syncNftCardToInput();
     const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
     if (btn) btn.title = !validLabel && val ? 'Invalid SuiNS name' : val ? `Mint ${val}.sui` : 'Mint .sui';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
@@ -7607,18 +7673,12 @@ function renderSkiMenu() {
       if (changed) {
         try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
         _patchNsOwnedList();
-        // Switch NFT card to name with most thunder
-        const _topT = Object.entries(_thunderCounts)
-          .filter(([, c]) => c > 0)
-          .sort(([, a], [, b]) => b - a)[0];
-        if (_topT) {
-          const chip = document.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${_topT[0]}"]`);
-          if (chip) _showNftPopover(chip, _topT[0]);
-        }
+        _syncNftCardToInput();
       }
     } catch { /* silent */ }
   };
   _pollThunder();
+  _refreshThunderLocalCounts().then(() => _syncNftCardToInput());
   _thunderPollTimer = setInterval(_pollThunder, 30_000);
 
   // Prune stale shade orders (consumed/cancelled) on first menu open
@@ -7808,12 +7868,7 @@ function renderSkiMenu() {
     });
     _updateSendBtnMode();
     _setInput();
-    // Pin the inline NFT card for this chip
-    const clickedChip = Array.from(allChips).find(c => (c as HTMLElement).dataset.domain?.toLowerCase() === domain.toLowerCase()) as HTMLElement | undefined;
-    if (clickedChip) {
-      _showNftPopover(clickedChip, domain);
-      _nftPopoverPinned = true;
-    }
+    _syncNftCardToInput();
     // Re-set after microtask and animation frame in case of async re-renders
     Promise.resolve().then(_setInput);
     requestAnimationFrame(_setInput);
@@ -7826,27 +7881,11 @@ function renderSkiMenu() {
   _attachOwnedGridWheel();
   _attachNftPopoverListeners();
 
-  // NFT card click → quest thunder if the card's name has pending signals
+  // NFT card click → toggle conversation open/closed
   document.getElementById('ski-nft-inline')?.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('a')) return;
     e.stopPropagation();
-    const popover = document.getElementById('ski-nft-inline');
-    const domain = popover?.dataset.domain?.toLowerCase();
-    if (!domain) return;
-    const count = _thunderCounts[domain] ?? 0;
-    if (count > 0) {
-      const thunderRow = document.getElementById('wk-thunder-row');
-      const wasHidden = !thunderRow || thunderRow.style.display === 'none';
-      // Show the thunder row + conversation
-      if (thunderRow) thunderRow.style.display = '';
-      _renderConversation(domain);
-      // First click just opens the row — second click decrypts
-      if (wasHidden) return;
-      const badge = document.querySelector<HTMLElement>(`.wk-ns-thunder-badge[data-domain="${domain}"]`);
-      if (badge) { badge.click(); return; }
-    }
-    // No thunder — behave like clicking the chip (populate input)
-    const chip = document.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
-    if (chip) chip.click();
+    _toggleThunderConvo();
   });
 
 }
@@ -7866,10 +7905,11 @@ async function handleDisconnect(reopenModal = false) {
   nsTransferInputOpen = false;
   nsTransferRecipient = '';
   _thunderCounts = {};
+  _thunderLocalCounts = {};
   _thunderDecryptBusy = false;
-  try { localStorage.removeItem('ski:thunder-open'); } catch {}
+  _thunderConvoOpen = false;
+  try { localStorage.removeItem('ski:thunder-card-open'); } catch {}
   try { localStorage.removeItem('ski:ns-variant'); } catch {}
-  try { sessionStorage.removeItem('ski:thunder-received'); } catch {}
   try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
   _thunderConvoTarget = '';
   if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }

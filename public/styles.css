@@ -1957,16 +1957,42 @@ body {
 }
 .wk-send-btn--thunder:hover { background: rgba(255, 184, 0, 0.25) !important; }
 /* Thunder message row + input */
-.wk-thunder-row {
+.wk-thunder-convo {
   margin-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.wk-thunder-input-row {
+.wk-thunder-reply-row {
   display: flex;
   position: relative;
 }
+.wk-thunder-unqueued {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #FFB800;
+  background: rgba(255, 184, 0, 0.06);
+  border: 1px solid rgba(255, 184, 0, 0.2);
+  border-radius: 8px;
+}
+.wk-thunder-quest-btn {
+  all: unset;
+  cursor: pointer;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #FFB800;
+  background: rgba(255, 184, 0, 0.15);
+  border: 1px solid rgba(255, 184, 0, 0.4);
+  border-radius: 6px;
+  padding: 3px 10px;
+  transition: background 0.15s;
+}
+.wk-thunder-quest-btn:hover { background: rgba(255, 184, 0, 0.3); }
 .wk-thunder-received {
   display: flex;
   flex-direction: column;
@@ -2036,6 +2062,7 @@ body {
   padding: 8px 40px 8px 12px;
   min-width: 0;
   box-sizing: border-box;
+  text-align: right;
 }
 .wk-thunder-send {
   position: absolute;
@@ -2509,6 +2536,7 @@ body {
   padding: 10px;
   gap: 12px;
   box-shadow: none;
+  cursor: pointer;
   border-radius: 10px;
   min-height: 88px;
 }
@@ -2598,6 +2626,13 @@ body {
   color: #facc15;
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+.ski-nft-thunder--unqueued {
+  animation: thunder-pulse 1.5s ease-in-out infinite;
+}
+@keyframes thunder-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .ski-nft-owner {
@@ -5405,6 +5440,36 @@ body {
 .ski-suins-qr-popup[hidden] { display: none; }
 
 /* ── Superteam demo card + player ─────────────────────────────────── */
+.ski-demo-toggle {
+  all: unset;
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 20;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ski-demo-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
+}
+.ski-demo-toggle--active {
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.1);
+}
+.ski-demo--hidden {
+  display: none !important;
+}
 .ski-demo {
   max-width: 90vw;
   width: fit-content;

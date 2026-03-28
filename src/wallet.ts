@@ -394,8 +394,9 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       return normalizeTxResult(r);
     }
 
-    // WaaP: use augmentBytes to add .serialize()/.toJSON() to Uint8Array.
-    // WaaP's server-side execution handles simple PTBs.
+    // WaaP: signAndExecuteTransaction with augmented bytes.
+    // WaaP's signTransaction produces invalid signatures (iframe re-serialization bug),
+    // so we must use signAndExecuteTransaction which executes server-side.
     if (/waap/i.test(wallet.name)) {
       const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
 

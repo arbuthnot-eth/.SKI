@@ -192,7 +192,7 @@ function parseStruckEvents(effects: any): Array<{ payload: Uint8Array; aesKey: U
  * Strike all pending thunder in one PTB, then decrypt all payloads.
  * One wallet signature. Returns all decrypted messages.
  */
-export async function questAndDecryptAll(
+export async function decryptAndQuest(
   recipientAddress: string,
   recipientName: string,
   nftObjectId: string,
@@ -206,11 +206,15 @@ export async function questAndDecryptAll(
   const struck = parseStruckEvents(result.effects ?? result);
   if (struck.length === 0) throw new Error('No Struck events in tx effects');
 
-  // Decrypt all payloads in parallel
-  return Promise.all(
+  // Decrypt all payloads in parallel — skip any that fail (bad key from old deploys)
+  const results: ThunderPayload[] = [];
+  await Promise.all(
     struck.map(async (s) => {
-      const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
-      return JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload;
+      try {
+        const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
+        results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
+      } catch { /* skip — likely stale strike from old deploy */ }
     }),
   );
+  return results;
 }

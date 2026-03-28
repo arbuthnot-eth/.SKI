@@ -114,7 +114,9 @@ export async function buildThunderSendTx(
       tx.object('0x6'),
     ],
   });
-  return tx.build({ client: gqlClient as never });
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
 }
 
 // ─── Query ──────────────────────────────────────────────────────────
@@ -194,7 +196,9 @@ export async function buildBatchQuestTx(
       ],
     });
   }
-  return tx.build({ client: gqlClient as never });
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
 }
 
 /** Parse Questfi events from tx effects. */

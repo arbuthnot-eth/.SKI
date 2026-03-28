@@ -15,6 +15,13 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
+/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
+async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
+  const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
 // ─── Contract constants ────────────────────────────────────────────────
 
 /** Original mainnet subdomains package (new_leaf / new). */
@@ -586,8 +593,23 @@ export async function lookupNftOwner(domain: string): Promise<string | null> {
 export async function buildSetDefaultNsTx(rawAddress: string, domain: string): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
+  const transport = gqlClient;
+  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+
+  // Find the NFT so we can set target address first
+  const owned = await fetchOwnedDomains(walletAddress);
+  const nft = owned.find(d => d.name === fullDomain && d.kind === 'nft');
+
   const tx = new Transaction();
   tx.setSender(walletAddress);
+
+  // Set target address to our wallet first (required before set_reverse_lookup)
+  if (nft) {
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    suinsTx.setTargetAddress({ nft: tx.object(nft.objectId), address: walletAddress });
+  }
+
+  // Then set as default (reverse lookup)
   tx.moveCall({
     target: '0x71af035413ed499710980ed8adb010bbf2cc5cacf4ab37c7710a4bb87eb58ba5::controller::set_reverse_lookup',
     arguments: [
@@ -596,9 +618,9 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
     ],
   });
   try {
-    return await tx.build({ client: grpcClient as never });
+    return await buildWithTx(tx, grpcClient);
   } catch {
-    return tx.build({ client: gqlClient as never });
+    return buildWithTx(tx, transport);
   }
 }
 
@@ -643,7 +665,7 @@ export async function buildSetTargetAddressTx(
   tx.setSender(walletAddress);
   const suinsTx = new SuinsTransaction(suinsClient, tx);
   suinsTx.setTargetAddress({ nft: tx.object(nftDomain.objectId), address: target });
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /** Build a subname PTB and return bytes ready for WaaP signing. */
@@ -659,7 +681,7 @@ export async function buildSubnameTxBytes(
   const transport = gqlClient;
   const tx = buildSubnameTx(parent, subLabel, normalizeSuiAddress(targetAddress), type, undefined, feeRecipient);
   tx.setSender(walletAddress);
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /** Returns the NS-discounted registration price in USD for a `.sui` label (1 year). */
@@ -786,7 +808,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // Return NS remainder to wallet
     tx.transferObjects([nsCoin], tx.pure.address(walletAddress));
 
-    return tx.build({ client: transport as never });
+    return buildWithTx(tx, transport);
   };
 
   const buildUsdcSwap = async (): Promise<Uint8Array | null> => {
@@ -827,7 +849,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
     tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
 
-    return tx.build({ client: transport as never });
+    return buildWithTx(tx, transport);
   };
 
   const buildSuiDirect = async (): Promise<Uint8Array | null> => {
@@ -857,7 +879,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     tx.mergeCoins(tx.gas, [suiPayment]);
 
-    return tx.build({ client: transport as never });
+    return buildWithTx(tx, transport);
   };
 
   // ── Try paths in preferred order ──
@@ -1013,7 +1035,7 @@ export async function buildKioskPurchaseTx(
   // Transfer NFT directly to buyer (SuiNS needs AddressOwner, not kiosk)
   tx.transferObjects([nft], tx.pure.address(walletAddress));
 
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /**
@@ -1076,7 +1098,7 @@ export async function buildTradeportPurchaseTx(
   // Return leftover coin (function borrows &mut Coin, doesn't consume it)
   tx.transferObjects([payment], tx.pure.address(walletAddress));
 
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /**
@@ -1254,7 +1276,7 @@ export async function buildSwapAndPurchaseTx(
     tx.transferObjects([payment], tx.pure.address(walletAddress));
   }
 
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 // ─── Shade — privacy-preserving grace-period escrow ──────────────────
@@ -1477,7 +1499,7 @@ export async function buildExecuteShadeOrderTx(
   // Step 5: Merge remaining SUI back into gas (matches existing SUI registration pattern)
   tx.mergeCoins(tx.gas, [releasedCoin]);
 
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /**
@@ -1495,7 +1517,7 @@ export async function buildCancelShadeOrderTx(
     target: `${SHADE_PACKAGE}::shade::cancel`,
     arguments: [tx.object(orderObjectId)],
   });
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /**
@@ -1514,7 +1536,7 @@ export async function buildCancelRefundShadeOrderTx(
     target: `${SHADE_PACKAGE}::shade::cancel_refund`,
     arguments: [tx.object(orderObjectId)],
   });
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /**
@@ -1533,7 +1555,7 @@ export async function buildReapCancelledShadeOrderTx(
     target: `${SHADE_PACKAGE}::shade::reap_cancelled`,
     arguments: [tx.object(orderObjectId)],
   });
-  return tx.build({ client: transport as never });
+  return buildWithTx(tx, transport);
 }
 
 /**
@@ -1957,7 +1979,7 @@ export async function buildSelfSwapTx(
     });
     tx.transferObjects([suiSwapResult[0], suiSwapResult[1], suiSwapResult[2]], tx.pure.address(walletAddress));
     return {
-      txBytes: await tx.build({ client: transport as never }),
+      txBytes: await buildWithTx(tx, transport),
       fromSymbol: 'SUI',
       toSymbol: 'USDC',
     };
@@ -1985,7 +2007,7 @@ export async function buildSelfSwapTx(
     });
     tx.transferObjects([suiOut, usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
     return {
-      txBytes: await tx.build({ client: transport as never }),
+      txBytes: await buildWithTx(tx, transport),
       fromSymbol: 'USDC',
       toSymbol: 'SUI',
     };
@@ -2051,7 +2073,7 @@ export async function buildSwapTx(
       ],
     });
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], nsCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'NS', toSymbol: 'USDC', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'NS', toSymbol: 'USDC', tx };
   }
 
   // WAL → USDC (DeepBook: WAL is base, USDC is quote)
@@ -2071,7 +2093,7 @@ export async function buildSwapTx(
       ],
     });
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], walCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'WAL', toSymbol: 'USDC', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'WAL', toSymbol: 'USDC', tx };
   }
 
   // USDC → XAUM (single Bluefin hop)
@@ -2104,7 +2126,7 @@ export async function buildSwapTx(
     const [xaumCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
     const [usdcDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
     tx.transferObjects([xaumCoin, usdcDust, usdcCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'USDC', toSymbol: 'XAUM', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'USDC', toSymbol: 'XAUM', tx };
   }
 
   // SUI → XAUM (DeepBook SUI→USDC, then Bluefin USDC→XAUM)
@@ -2149,7 +2171,7 @@ export async function buildSwapTx(
     const [xaumCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
     const [usdcDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
     tx.transferObjects([xaumCoin, usdcDust, suiChange, deepChange], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'SUI', toSymbol: 'XAUM', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'SUI', toSymbol: 'XAUM', tx };
   }
 
   // XAUM → USDC (single Bluefin hop, X→Y)
@@ -2178,7 +2200,7 @@ export async function buildSwapTx(
     const [xaumDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
     const [usdcOut] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
     tx.transferObjects([usdcOut, xaumDust, xaumCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'XAUM', toSymbol: 'USDC', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'XAUM', toSymbol: 'USDC', tx };
   }
 
   // XAUM → SUI (Bluefin XAUM→USDC, then DeepBook USDC→SUI)
@@ -2219,7 +2241,7 @@ export async function buildSwapTx(
       ],
     });
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], xaumDust, xaumCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'XAUM', toSymbol: 'SUI', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'XAUM', toSymbol: 'SUI', tx };
   }
 
   // IKA ↔ SUI via Cetus CLMM (IKA/SUI pool — SUI is coinX, IKA is coinY)
@@ -2255,7 +2277,7 @@ export async function buildSwapTx(
     });
     // receiveA = IKA dust, receiveB = SUI out
     tx.transferObjects([receiveA, receiveB, ikaCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'IKA', toSymbol: 'SUI', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'IKA', toSymbol: 'SUI', tx };
   }
 
   if (inputCoinType === SUI_TYPE && outputCoinType === IKA_TYPE) {
@@ -2275,7 +2297,7 @@ export async function buildSwapTx(
     });
     // receiveA = IKA out, receiveB = SUI dust
     tx.transferObjects([receiveA, receiveB], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'SUI', toSymbol: 'IKA', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'SUI', toSymbol: 'IKA', tx };
   }
 
   if (inputCoinType === IKA_TYPE && outputCoinType === USDC_TYPE) {
@@ -2309,7 +2331,7 @@ export async function buildSwapTx(
       ],
     });
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], ikaDust, ikaCoin], tx.pure.address(walletAddress));
-    return { txBytes: await tx.build({ client: transport as never }), fromSymbol: 'IKA', toSymbol: 'USDC', tx };
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'IKA', toSymbol: 'USDC', tx };
   }
 
   // Generic fallback: discover route via Bluefin aggregator, build PTB for single-hop swaps
@@ -2378,7 +2400,7 @@ export async function buildSwapTx(
           const [coinOutY] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [coinY], arguments: [balOutY] });
           tx.transferObjects([coinOutX, coinOutY, coinObj], tx.pure.address(walletAddress));
         }
-        return { txBytes: await tx.build({ client: transport as never }), fromSymbol: inputCoinType.split('::').pop()!, toSymbol: outputCoinType.split('::').pop()!, tx };
+        return { txBytes: await buildWithTx(tx, transport), fromSymbol: inputCoinType.split('::').pop()!, toSymbol: outputCoinType.split('::').pop()!, tx };
       }
     }
   } catch (e) {
@@ -2455,5 +2477,5 @@ export async function buildTransferNftTx(
     tx.pure.address(recipient),
   );
 
-  return tx.build({ client: gqlClient as never });
+  return buildWithTx(tx, gqlClient);
 }

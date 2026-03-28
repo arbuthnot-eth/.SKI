@@ -1092,6 +1092,35 @@ body {
   flex-shrink: 0;
   text-transform: uppercase;
 }
+.wk-thunder-quick {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #FFB800;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.wk-thunder-quick:hover {
+  border-color: rgba(255, 184, 0, 0.4);
+  background: rgba(255, 184, 0, 0.1);
+}
+.wk-thunder-quick--active {
+  border-color: rgba(255, 184, 0, 0.4);
+  background: rgba(255, 184, 0, 0.12);
+}
+.wk-thunder-quick--active:hover {
+  border-color: rgba(255, 184, 0, 0.7);
+  background: rgba(255, 184, 0, 0.25);
+}
+.wk-thunder-quick[hidden] { display: none; }
 .wk-send-btn {
   all: unset;
   cursor: pointer;
@@ -1212,8 +1241,29 @@ body {
   color: #fbbf24;
 }
 .wk-send-btn--swap-gold:hover { border-color: rgba(212, 160, 23, 0.8); background: #fff; color: #b45309; }
-/* SUIAMI purple (owned name) */
+/* SUIAMI — deep black default, border glow on hover */
 .wk-send-btn--suiami {
+  width: auto;
+  padding: 0 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  margin-left: auto;
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(5, 5, 15, 0.9);
+  color: rgba(255, 255, 255, 0.5);
+  transition: border-color 0.2s, color 0.2s;
+}
+.wk-send-btn--suiami:hover:not(:disabled) {
+  border-color: rgba(168, 85, 247, 0.6);
+  color: #c4b5fd;
+}
+.wk-send-btn--suiami:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+/* SUIAMI purple (owned name — active) */
+.wk-send-btn--suiami-active {
   width: auto;
   padding: 0 8px;
   font-size: 0.6rem;
@@ -1224,7 +1274,7 @@ body {
   background: linear-gradient(135deg, rgba(126, 34, 206, 0.3), rgba(168, 85, 247, 0.25));
   color: #c4b5fd;
 }
-.wk-send-btn--suiami:hover {
+.wk-send-btn--suiami-active:hover {
   border-color: rgba(168, 85, 247, 0.8);
   background: #fff;
   color: #7c3aed;
@@ -1496,9 +1546,9 @@ body {
 .wk-ns-price-chip {
   display: flex;
   align-items: flex-end;
-  flex-direction: column;
   flex-shrink: 0;
-  min-width: 32px;
+  min-width: 0;
+  align-self: flex-end;
 }
 .wk-ns-low-bal {
   font-size: 0.5rem;
@@ -1514,8 +1564,12 @@ body {
   gap: 2px;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #a78bfa;
+  color: #e8eaed;
   white-space: nowrap;
+}
+.wk-ns-price-minus {
+  color: #ef4444;
+  font-weight: 700;
 }
 
 .wk-dd-ns-section--owned .wk-ns-dot-sui {
@@ -1946,8 +2000,8 @@ body {
 /* Thunder button — Thunderbun orange */
 .wk-send-btn--thunder {
   width: auto !important;
-  height: auto !important;
-  padding: 4px 10px !important;
+  height: 26px !important;
+  padding: 0 8px !important;
   font-size: 0.7rem !important;
   font-weight: 700 !important;
   letter-spacing: 0.02em;
@@ -1957,42 +2011,47 @@ body {
 }
 .wk-send-btn--thunder:hover { background: rgba(255, 184, 0, 0.25) !important; }
 /* Thunder message row + input */
+.wk-thunder-convo[hidden] { display: none; }
 .wk-thunder-convo {
   margin-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.wk-thunder-reply-row {
-  display: flex;
-  position: relative;
-}
-.wk-thunder-unqueued {
+.wk-thunder-reply-row { display: flex; position: relative; }
+.wk-thunder-reply-row[hidden] { display: none; }
+.wk-thunder-unquested[hidden] { display: none; }
+.wk-thunder-unquested {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 6px 8px;
+  height: 32px;
+  padding: 0 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: #FFB800;
-  background: rgba(255, 184, 0, 0.06);
-  border: 1px solid rgba(255, 184, 0, 0.2);
-  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: rgba(148, 163, 184, 0.6);
+  background: rgba(5, 5, 15, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.2s;
 }
 .wk-thunder-quest-btn {
   all: unset;
   cursor: pointer;
-  font-size: 0.65rem;
-  font-weight: 700;
-  color: #FFB800;
-  background: rgba(255, 184, 0, 0.15);
-  border: 1px solid rgba(255, 184, 0, 0.4);
-  border-radius: 6px;
-  padding: 3px 10px;
-  transition: background 0.15s;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
 }
-.wk-thunder-quest-btn:hover { background: rgba(255, 184, 0, 0.3); }
+.wk-thunder-unquested-count {
+  color: #FFB800;
+}
 .wk-thunder-received {
   display: flex;
   flex-direction: column;
@@ -2003,32 +2062,51 @@ body {
 }
 .wk-thunder-bubble {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.7rem;
-  padding: 4px 8px;
+  font-size: 0.75rem;
+  padding: 6px 10px;
   border-radius: 8px;
   max-width: 85%;
   word-break: break-word;
+  position: relative;
 }
 .wk-thunder-bubble--in {
   align-self: flex-start;
-  background: rgba(96, 165, 250, 0.1);
-  border: 1px solid rgba(96, 165, 250, 0.25);
-  color: #93c5fd;
-}
-.wk-thunder-bubble--out {
-  align-self: flex-end;
   background: rgba(255, 184, 0, 0.1);
   border: 1px solid rgba(255, 184, 0, 0.25);
   color: #FFB800;
+}
+.wk-thunder-bubble--out {
+  align-self: flex-end;
+  background: rgba(96, 165, 250, 0.1);
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  color: #93c5fd;
   text-align: right;
 }
 .wk-thunder-bubble-sender {
   font-weight: 700;
   margin-right: 4px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 184, 0, 0.3);
+}
+.wk-thunder-bubble-sender:hover {
+  text-decoration-color: rgba(255, 184, 0, 0.7);
 }
 .wk-thunder-bubble-msg {
   font-weight: 500;
 }
+.wk-thunder-bubble-copy {
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 0.55rem;
+  opacity: 0;
+  cursor: pointer;
+  color: inherit;
+  transition: opacity 0.15s;
+}
+.wk-thunder-bubble:hover .wk-thunder-bubble-copy { opacity: 0.5; }
+.wk-thunder-bubble-copy:hover { opacity: 1 !important; }
 .wk-thunder-bubble { cursor: pointer; transition: opacity 0.15s; }
 .wk-thunder-bubble--selected {
   opacity: 0.5;
@@ -2082,8 +2160,9 @@ body {
 .wk-thunder-send:hover {
   background: rgba(255, 184, 0, 0.3);
 }
-.wk-thunder-msg::placeholder { color: rgba(255, 184, 0, 0.55); font-weight: 500; }
-.wk-thunder-msg:focus { border-color: #FFB800; background: rgba(255, 184, 0, 0.1); }
+.wk-thunder-msg::placeholder { color: rgba(255, 184, 0, 0.55); font-weight: 500; direction: rtl; }
+.wk-thunder-msg:focus { border-color: #FFB800; background: rgba(10, 10, 20, 0.95); text-align: left; }
+.wk-thunder-msg:focus::placeholder { color: transparent; }
 .wk-thunder-msg--received { color: #fff; border-color: rgba(255, 184, 0, 0.5); background: rgba(255, 184, 0, 0.12); cursor: pointer; }
 /* Thunderbolt badge on roster chip */
 .wk-ns-thunder-badge {
@@ -2552,6 +2631,17 @@ body {
   justify-content: center;
   flex-shrink: 0;
 }
+.ski-nft-badges {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.ski-nft-sun {
+  cursor: pointer;
+  font-size: 1rem;
+  transition: opacity 0.15s;
+}
+.ski-nft-sun:hover { opacity: 0.7; }
 .ski-nft-card--inline .ski-nft-qr {
   width: 64px;
   height: 64px;
@@ -2627,7 +2717,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.02em;
 }
-.ski-nft-thunder--unqueued {
+.ski-nft-thunder--unquested {
   animation: thunder-pulse 1.5s ease-in-out infinite;
 }
 @keyframes thunder-pulse {

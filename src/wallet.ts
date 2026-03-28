@@ -394,9 +394,9 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       return normalizeTxResult(r);
     }
 
-    // WaaP: signAndExecuteTransaction with augmented bytes.
-    // WaaP's signTransaction produces invalid signatures (iframe re-serialization bug),
-    // so we must use signAndExecuteTransaction which executes server-side.
+    // WaaP: pass unbuilt Transaction so WaaP builds server-side with its own v1 SDK.
+    // Passing pre-built v2 bytes causes v1/v2 BCS mismatch → invalid signature.
+    // Falls back to augmented bytes if no unbuilt Transaction is attached.
     if (/waap/i.test(wallet.name)) {
       const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
 
@@ -404,8 +404,10 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
         const execFeat = wallet.features['sui:signAndExecuteTransaction'] as {
           signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
         };
+        // Prefer unbuilt Transaction (.tx property) over pre-built bytes
+        const tx = (transaction as { tx?: unknown }).tx ?? transaction;
         const r = await execFeat.signAndExecuteTransaction({
-          transaction: augmentBytes(transaction), account, chain, options: { showEffects: true },
+          transaction: tx instanceof Uint8Array ? augmentBytes(tx) : tx, account, chain, options: { showEffects: true },
         });
         // WaaP may return empty digest even on success — treat as success
         return { digest: r.digest || '', effects: r.effects };

@@ -45,7 +45,7 @@ All UI copy, code comments, and variable names should use these terms consistent
 │           [private thunder...      ] [⚡]│  reply input (right-justified text)
 ├─────────────────────────────────────────┤
 │  ⌘SKI ROSTER              $69/mo    65 │
-│  stables 34d  │  genie● 139d  │  ...   │  ● = has new unqueued signals
+│  stables 34d  │  genie● 139d  │  ...   │  ● = has new unquested signals
 │  version 42d  │  brando◆ 0    │  ...   │  ◆ = wishlist/contact
 └─────────────────────────────────────────┘
 ```
@@ -55,20 +55,20 @@ All UI copy, code comments, and variable names should use these terms consistent
 - Always visible above roster, positioned between the input row and the roster.
 - Synced to input value (if it matches an owned name) or falls back to most-thundered name.
 - Badge shows **total signal count** (sent + received): `⚡12`.
-- New unqueued on-chain signals get a distinct visual indicator (pulse/color on badge).
+- New unquested on-chain signals get a distinct visual indicator (pulse/color on badge).
 - Click card → toggles conversation open/closed below the card, pushing roster down.
 
 ### Hard Refresh Behavior
 
-- **Unqueued signals exist on any owned name:** Card shows the name with the most unqueued signals. Conversation auto-opens.
-- **No unqueued signals:** Card recalls its last open/closed state from `localStorage`. Shows last-viewed name or first owned name.
+- **Unqueued signals exist on any owned name:** Card shows the name with the most unquested signals. Conversation auto-opens.
+- **No unquested signals:** Card recalls its last open/closed state from `localStorage`. Shows last-viewed name or first owned name.
 - The input box is always empty on hard refresh. Card selection is independent of input.
 
 ## Conversation View
 
 - Renders below the card, above the roster. Pushes roster down when open.
 - Bubbles: outgoing right-aligned, incoming left-aligned with sender name label.
-- If unqueued on-chain signals exist: shows `⚡N new` with a **Quest** button (questing costs gas, returns storage rebate).
+- If unquested on-chain signals exist: shows `⚡N new` with a **Quest** button (questing costs gas, returns storage rebate).
 - After quest: new signals appear in conversation, badge count updates.
 - Reply input at bottom of conversation: text right-justified against the ⚡ send button.
 - Click card again or click outside → collapses conversation.
@@ -86,14 +86,14 @@ Restored to its core purposes — no longer the thunder conversation controller:
 
 - **Owned names** (blue square ■): Click → shows NFT card + can open conversation.
 - **Wishlist/contact names** (black diamond ◆): Click → populates input box with that name for sending a new signal. Does NOT open a conversation (you don't own the NFT).
-- **Thunder badge on chip**: Shows total signal count. Dot/color indicator for unqueued.
+- **Thunder badge on chip**: Shows total signal count. Dot/color indicator for unquested.
 - **Sort order**: Unqueued first → most signals → earliest expiry.
 
 ## Thunder Count Badge
 
 - Count = **total signals** in the conversation (sent + received). Goes up over time.
 - **Unqueued indicator**: Distinct visual treatment (color change, dot, or pulse) when new on-chain signals exist that haven't been quested yet.
-- After questing, the unqueued indicator clears but the total count remains (and increases by the number of newly quested signals).
+- After questing, the unquested indicator clears but the total count remains (and increases by the number of newly quested signals).
 
 ## Sending Identity
 
@@ -102,7 +102,7 @@ Restored to its core purposes — no longer the thunder conversation controller:
 
 ## Receiving Flow
 
-1. See `⚡3` badge (unqueued) on card or chip.
+1. See `⚡3` badge (unquested) on card or chip.
 2. Click card → conversation opens.
 3. See `⚡3 new — [Quest]` at bottom of existing signals.
 4. Click Quest → quest PTB executes on-chain (gas cost, storage rebate returned), signals decrypted.
@@ -128,8 +128,8 @@ Restored to its core purposes — no longer the thunder conversation controller:
 ### Local Storage Keys
 
 - `ski:thunder-card-open` — `'1'` or `'0'`, persists card conversation open/closed state.
-- `ski:thunder-card-domain` — last-viewed domain on the card (for no-unqueued restore).
-- Existing `ski:thunder-counts` — on-chain unqueued signal counts (from poll).
+- `ski:thunder-card-domain` — last-viewed domain on the card (for no-unquested restore).
+- Existing `ski:thunder-counts` — on-chain unquested signal counts (from poll).
 - Existing `ski:thunder-log:{address}` — encrypted conversation log.
 
 ### Thunder Log Entries

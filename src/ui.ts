@@ -48,8 +48,14 @@ import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
 
 
-/** Sign a sponsored transaction: user signs, then fetch sponsor sig, submit both. */
+/** Sign a sponsored transaction: user signs, then fetch sponsor sig, submit both.
+ *  Falls back to signAndExecuteTransaction for WaaP (signTransaction is broken). */
 async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest: string }> {
+  // WaaP: signTransaction is broken (iframe re-serialization), skip sponsorship
+  const ws = getState();
+  if (/waap/i.test(ws.walletName || '')) {
+    return signAndExecuteTransaction(txBytes);
+  }
   // 1. User signs
   const { signature: userSig } = await signTransaction(txBytes);
 
@@ -3152,7 +3158,7 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') ?? ''; } catch { return ''; } })();
+let nsLabel = ''; // always empty on hard refresh — card defaults to most-thundered
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3173,7 +3179,7 @@ let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
 let _thunderConvoOpen = (() => {
-  // On hard refresh: if unqueued signals exist, auto-open; else recall last state
+  // On hard refresh: if unquested signals exist, auto-open; else recall last state
   try {
     const counts: Record<string, number> = JSON.parse(localStorage.getItem('ski:thunder-counts') || '{}');
     const hasUnqueued = Object.values(counts).some(c => c > 0);
@@ -3199,17 +3205,23 @@ async function _refreshThunderLocalCounts() {
   } catch { _thunderLocalCounts = {}; }
 }
 
-/** Toggle conversation open/closed for the current card domain. */
+/** Toggle card + conversation open/closed. */
 function _toggleThunderConvo() {
   const convoEl = document.getElementById('wk-thunder-convo');
+  const cardEl = document.getElementById('ski-nft-inline');
+  const quickBtn = document.getElementById('wk-thunder-quick');
   if (!convoEl) return;
   _thunderConvoOpen = !_thunderConvoOpen;
   if (_thunderConvoOpen) {
+    if (cardEl) cardEl.removeAttribute('hidden');
     convoEl.removeAttribute('hidden');
-    const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain;
+    quickBtn?.classList.add('wk-thunder-quick--active');
+    const cardDomain = cardEl?.dataset.domain;
     if (cardDomain) _renderConversation(cardDomain);
   } else {
     convoEl.setAttribute('hidden', '');
+    if (cardEl) cardEl.setAttribute('hidden', '');
+    quickBtn?.classList.remove('wk-thunder-quick--active');
   }
   try { localStorage.setItem('ski:thunder-card-open', _thunderConvoOpen ? '1' : '0'); } catch {}
 }
@@ -3235,8 +3247,8 @@ async function _renderConversation(counterparty: string, force = false) {
     if (!isOut && !e.dir) {
       msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
     }
-    const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender">${esc(sender)}</span> ` : '');
-    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${esc(msgText)}</span></div>`;
+    const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender" data-sender="${esc(sender)}">${esc(sender)}</span> ` : '');
+    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${esc(msgText)}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
   }).join('');
 
   const deleteBtn = _selectedThunderTs.size > 0
@@ -3245,15 +3257,19 @@ async function _renderConversation(counterparty: string, force = false) {
 
   receivedEl.innerHTML = rows + deleteBtn;
 
-  // Show unqueued signals indicator with Quest button
-  const unqueuedEl = document.getElementById('wk-thunder-unqueued');
-  const unqueuedCount = _thunderCounts[bare] ?? 0;
-  if (unqueuedEl) {
-    if (unqueuedCount > 0) {
-      unqueuedEl.innerHTML = `\u26a1${unqueuedCount} new \u2014 <button class="wk-thunder-quest-btn" id="wk-thunder-quest" type="button">Quest</button>`;
-      unqueuedEl.removeAttribute('hidden');
+  // Show decrypt bar OR reply input — never both
+  const unquestedEl = document.getElementById('wk-thunder-unquested');
+  const replyWrap = document.getElementById('wk-thunder-reply-wrap');
+  const _questDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase() || bare;
+  const unquestedCount = _thunderCounts[_questDomain] ?? 0;
+  if (unquestedEl && replyWrap) {
+    if (unquestedCount > 0) {
+      unquestedEl.innerHTML = `<button class="wk-thunder-quest-btn" id="wk-thunder-quest" type="button">Decrypt</button> \u2014 <span class="wk-thunder-unquested-count">\u26a1${unquestedCount}</span>`;
+      unquestedEl.removeAttribute('hidden');
+      replyWrap.setAttribute('hidden', '');
     } else {
-      unqueuedEl.setAttribute('hidden', '');
+      unquestedEl.setAttribute('hidden', '');
+      replyWrap.removeAttribute('hidden');
     }
   }
 
@@ -3270,6 +3286,30 @@ async function _renderConversation(counterparty: string, force = false) {
       if (_selectedThunderTs.has(ts)) _selectedThunderTs.delete(ts);
       else _selectedThunderTs.add(ts);
       _renderConversation(bare, true);
+    });
+  });
+
+  // Bind sender name click → populate input
+  receivedEl.querySelectorAll('.wk-thunder-bubble-sender').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const sender = (el as HTMLElement).dataset.sender;
+      if (!sender) return;
+      nsLabel = sender;
+      const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+      if (inp) inp.value = sender;
+      skipNextFocusClear = true;
+      fetchAndShowNsPrice(sender);
+      _updateSendBtnMode();
+    });
+  });
+
+  // Bind copy button on bubbles
+  receivedEl.querySelectorAll('.wk-thunder-bubble-copy').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const text = (el as HTMLElement).dataset.copy || '';
+      navigator.clipboard.writeText(text).then(() => showToast('Copied')).catch(() => {});
     });
   });
 
@@ -3315,7 +3355,7 @@ async function _renderConversation(counterparty: string, force = false) {
     showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
   });
 
-  // Bind Quest button — decrypt unqueued on-chain signals
+  // Bind Quest button — decrypt unquested on-chain signals for the CARD domain (our owned name)
   document.getElementById('wk-thunder-quest')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (_thunderDecryptBusy) return;
@@ -3324,28 +3364,46 @@ async function _renderConversation(counterparty: string, force = false) {
     btn.disabled = true;
     btn.textContent = '\u2026';
     try {
+      // Quest signals on the card's domain (our owned name), not the conversation counterparty
+      const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase() || '';
+      if (!cardDomain) { showToast('No card domain'); return; }
       const { decryptAndQuest } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === bare && d.kind === 'nft');
+      const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === cardDomain && d.kind === 'nft');
       if (!nft) { showToast('SuiNS NFT not found'); return; }
-      const count = _thunderCounts[bare] ?? 0;
+      const count = _thunderCounts[cardDomain] ?? 0;
       if (count === 0) return;
       const payloads = await decryptAndQuest(
-        ws.address, bare + '.sui', nft.objectId, count,
+        ws.address, cardDomain + '.sui', nft.objectId, count,
         (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
       );
       const _myLog = app.suinsName || ws.address;
       for (const p of payloads) {
         const _pSender = p.sender || p.senderAddress.slice(0, 8);
-        await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender);
+        await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
       }
-      _thunderCounts[bare] = 0;
+      _thunderCounts[cardDomain] = 0;
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
       _thunderConvoTarget = '';
-      _renderConversation(bare, true);
-      if (payloads.length > 0) showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} quested`);
+      await _refreshThunderLocalCounts();
+      _renderConversation(cardDomain, true);
+      _syncNftCardToInput();
+      if (payloads.length > 0) {
+        // Fill input with the sender's name or address for easy reply
+        const first = payloads[0];
+        const senderBare = (first.sender || '').replace(/\.sui$/, '');
+        const replyTarget = senderBare || first.senderAddress;
+        if (replyTarget) {
+          nsLabel = replyTarget;
+          const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+          if (inp) inp.value = replyTarget;
+          skipNextFocusClear = true;
+          fetchAndShowNsPrice(replyTarget);
+        }
+        showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} quested`);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Quest failed';
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -3357,7 +3415,7 @@ async function _renderConversation(counterparty: string, force = false) {
 
 /** Restore conversation on menu render — handled by _syncNftCardToInput now. */
 function _restoreConversation() {
-  // _syncNftCardToInput handles conversation restore based on card domain + unqueued state
+  // _syncNftCardToInput handles conversation restore based on card domain + unquested state
 }
 
 // ─── Encrypted local thunder log ─────────────────────────────────────
@@ -3388,9 +3446,10 @@ interface ThunderLogEntry {
   msg: string;
   ts: number;
   dir?: 'in' | 'out';
+  addr?: string; // counterparty wallet address — groups conversations across names
 }
 
-async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string): Promise<void> {
+async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string, counterpartyAddr?: string): Promise<void> {
   const ws = getState();
   if (!ws.address) return;
   let key: CryptoKey;
@@ -3414,7 +3473,7 @@ async function _storeThunderLocal(_ownerName: string, recipientName: string, mes
   } catch { /* corrupt or first entry */ }
 
   // Append new entry (cap at 200 strikes)
-  entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir });
+  entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir, ...(counterpartyAddr ? { addr: counterpartyAddr } : {}) });
   if (entries.length > 200) entries = entries.slice(-200);
 
   // Encrypt and store
@@ -3446,14 +3505,30 @@ async function _readThunderLog(): Promise<ThunderLogEntry[]> {
   } catch { return []; }
 }
 
-/** Get conversation entries filtered by counterparty name. */
+/** Get conversation entries filtered by counterparty name OR address.
+ *  Groups all names owned by the same address into one conversation. */
 async function _getConversation(counterparty: string): Promise<ThunderLogEntry[]> {
   const all = await _readThunderLog();
   const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+
+  // Collect all addresses associated with this counterparty name
+  const addrs = new Set<string>();
+  for (const e of all) {
+    const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
+    const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
+    if ((to === bare || from === bare) && e.addr) addrs.add(e.addr.toLowerCase());
+  }
+  // Also check nsTargetAddress for the current input name
+  if (nsTargetAddress) addrs.add(nsTargetAddress.toLowerCase());
+
   return all.filter(e => {
     const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
     const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-    return to === bare || from === bare;
+    // Match by name
+    if (to === bare || from === bare) return true;
+    // Match by address — any entry whose counterparty address matches
+    if (e.addr && addrs.has(e.addr.toLowerCase())) return true;
+    return false;
   });
 }
 
@@ -3711,6 +3786,7 @@ async function fetchAndShowNsPrice(label: string) {
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
+    _syncNftCardToInput();
   };
 
   if (label.length >= 5) {
@@ -4162,21 +4238,28 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
     expiryHtml = `<span class="ski-nft-expiry">\u2014</span>`;
   }
 
-  // Thunder badge: total signal count (local log) + unqueued indicator
-  const unqueuedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
+  // Thunder badges: 🌩️N (total quested from local log) + ⚡N (unquested on-chain, pulsing)
+  const unquestedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
   const totalCount = _thunderLocalCounts[domainBare.toLowerCase()] ?? 0;
-  const displayCount = totalCount + unqueuedCount;
-  const unqueuedDot = unqueuedCount > 0 ? ' ski-nft-thunder--unqueued' : '';
-  const thunderBadgeHtml = displayCount > 0
-    ? `<span class="ski-nft-thunder${unqueuedDot}">\u26a1${displayCount}</span>`
+  const questedBadge = totalCount > 0
+    ? `<span class="ski-nft-thunder">\u26c8\ufe0f${totalCount}</span>`
     : '';
-  const thunderCardCls = unqueuedCount > 0 ? ' ski-nft-card--thunder' : '';
+  const unquestedBadge = unquestedCount > 0
+    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested">\u26a1${unquestedCount}</span>`
+    : '';
+  const thunderBadgeHtml = questedBadge + unquestedBadge;
+  const thunderCardCls = unquestedCount > 0 ? ' ski-nft-card--thunder' : '';
 
   popover.innerHTML = `
     <div class="ski-nft-card ski-nft-card--inline${thunderCardCls}">
       <a class="ski-nft-qr" id="ski-nft-qr-slot" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener" title="${esc(domainBare)}.sui.ski"></a>
       <div class="ski-nft-info">
-        <span class="ski-nft-domain">${esc(domainBare)}<span class="ski-nft-tld">.sui</span>${thunderBadgeHtml}</span>
+        ${thunderBadgeHtml ? (() => {
+    const totalUnquested = Object.values(_thunderCounts).reduce((s, c) => s + c, 0);
+    const sunHtml = `<span class="ski-nft-sun" id="ski-nft-sun" title="Decrypt all">\u2600\ufe0f${totalUnquested > 0 ? totalUnquested : ''}</span>`;
+    return `<div class="ski-nft-badges">${sunHtml}${thunderBadgeHtml}</div>`;
+  })() : ''}
+        <span class="ski-nft-domain">${esc(domainBare)}<span class="ski-nft-tld">.sui</span></span>
         <a class="ski-nft-link" href="${esc(suiSkiUrl)}" target="_blank" rel="noopener">${esc(domainBare)}.sui.ski \u2197</a>
         ${expiryHtml}
       </div>
@@ -4186,7 +4269,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   popover.removeAttribute('hidden');
 
   // Async load QR — thunder-yellow when domain has pending thunder
-  const qrColor = thunderCount > 0 ? '#facc15' : undefined;
+  const qrColor = unquestedCount > 0 ? '#facc15' : undefined;
   const qrSlot = popover.querySelector('#ski-nft-qr-slot');
   if (qrSlot) {
     getQrSvg(suiSkiUrl, qrColor).then(svg => {
@@ -4198,13 +4281,13 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 /** Sync NFT card to the input box value; fall back to most-thundered chip.
  *  Also manages conversation open/closed state on hard refresh. */
 function _syncNftCardToInput() {
-  const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
-  if (!grid) return;
   const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
   let domain = '';
   if (inputBare) {
-    const owned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === inputBare && d.kind === 'nft');
-    if (owned) domain = inputBare;
+    // Show card for any resolved name (owned or taken) — not just owned
+    const isResolved = nsAvail === 'owned' || nsAvail === 'taken' || nsAvail === 'grace';
+    const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === inputBare);
+    if (isResolved || isOwned) domain = inputBare;
   }
   if (!domain) {
     // Fall back to most-thundered name
@@ -4215,11 +4298,11 @@ function _syncNftCardToInput() {
   }
   if (!domain) domain = _lastNftCardDomain;
   if (domain) {
-    const chip = grid.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
-    if (chip) {
-      _showNftPopover(chip, domain);
-      _nftPopoverPinned = true;
-    }
+    // Try to find the chip, but show card even without one
+    const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+    const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+    _showNftPopover(chip || document.getElementById('ski-nft-inline')!, domain);
+    _nftPopoverPinned = true;
   } else {
     _hideNftPopover(true);
   }
@@ -4227,17 +4310,21 @@ function _syncNftCardToInput() {
   // Manage conversation visibility
   const convoEl = document.getElementById('wk-thunder-convo');
   if (!convoEl || !domain) return;
+  const quickBtn = document.getElementById('wk-thunder-quick');
   const hasUnqueued = Object.values(_thunderCounts).some(c => c > 0);
   if (hasUnqueued && !_thunderConvoOpen) {
-    // Auto-open on hard refresh when unqueued signals exist
+    // Auto-open on hard refresh when unquested signals exist
     _thunderConvoOpen = true;
     convoEl.removeAttribute('hidden');
+    quickBtn?.classList.add('wk-thunder-quick--active');
     _renderConversation(domain);
   } else if (_thunderConvoOpen) {
     convoEl.removeAttribute('hidden');
+    quickBtn?.classList.add('wk-thunder-quick--active');
     _renderConversation(domain);
   } else {
     convoEl.setAttribute('hidden', '');
+    quickBtn?.classList.remove('wk-thunder-quick--active');
   }
 }
 
@@ -4288,7 +4375,7 @@ function _attachNftPopoverListeners() {
         const _myLog = app.suinsName || ws.address;
         for (const p of payloads) {
           const _pSender = p.sender || p.senderAddress.slice(0, 8);
-          await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender);
+          await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
         }
 
         // Set input to sender's name for reply
@@ -4838,7 +4925,7 @@ function _nsPriceHtml(): string {
     const fee = _activeListing.source === 'tradeport' ? sui * 0.03 : 0;
     const totalSui = sui + fee;
     const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
-    const priceText = usdVal != null ? `$${usdVal.toFixed(2)}` : `${fmtSui(totalSui)} SUI`;
+    const priceText = usdVal != null ? `<span class="wk-ns-price-minus">-$</span>${usdVal.toFixed(2)}` : `<span class="wk-ns-price-minus">-</span>${fmtSui(totalSui)} SUI`;
     return `<span class="wk-ns-price-val wk-ns-kiosk-pill">${priceText}</span>`;
   }
   // Grace period (no marketplace listing) — shade countdown or registration cost
@@ -4851,9 +4938,9 @@ function _nsPriceHtml(): string {
     if (nsPriceUsd != null) {
       if (balView === 'sui' && suiPriceCache) {
         const sui = nsPriceUsd / suiPriceCache.price * 1.05;
-        return `<span class="wk-ns-price-val wk-ns-grace-pill">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
+        return `<span class="wk-ns-price-val wk-ns-grace-pill"><span class="wk-ns-price-minus">-</span>${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
       }
-      return `<span class="wk-ns-price-val wk-ns-grace-pill">$${nsPriceUsd.toFixed(2)}</span>`;
+      return `<span class="wk-ns-price-val wk-ns-grace-pill"><span class="wk-ns-price-minus">-$</span>${nsPriceUsd.toFixed(2)}</span>`;
     }
     return `<span class="wk-ns-price-val wk-ns-grace-pill">${_graceCountdown()}</span>`;
   }
@@ -4861,15 +4948,15 @@ function _nsPriceHtml(): string {
   if (nsAvail === 'owned') return '';
   const _walletAddr = getState().address?.toLowerCase() ?? '';
   if (nsTargetAddress && nsTargetAddress.toLowerCase() === _walletAddr) return '';
-  // Show price — defaults are NS-discounted (25% off base) while async fetch runs
+  // Show price as cost — red -$ prefix
   const len = nsLabel.replace(/\.sui$/, '').length;
   const displayPrice = nsPriceUsd ?? (len === 3 ? 375 : len === 4 ? 75 : 7.50);
-  const priceStr = displayPrice < 10 ? `$${displayPrice.toFixed(2)}` : `$${displayPrice.toFixed(0)}`;
+  const priceNum = displayPrice < 10 ? displayPrice.toFixed(2) : displayPrice.toFixed(0);
   if (balView === 'sui' && suiPriceCache && suiPriceCache.price > 0) {
     const sui = displayPrice / suiPriceCache.price;
-    return `<span class="wk-ns-price-val">${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
+    return `<span class="wk-ns-price-val"><span class="wk-ns-price-minus">-</span>${fmtSui(sui)}<img src="${SUI_DROP_URI}" class="wk-ns-price-drop" alt="SUI" aria-hidden="true"></span>`;
   }
-  return `<span class="wk-ns-price-val">${priceStr}</span>`;
+  return `<span class="wk-ns-price-val"><span class="wk-ns-price-minus">-$</span>${priceNum}</span>`;
 }
 
 // ─── Sign Message ───────────────────────────────────────────────────
@@ -5223,8 +5310,8 @@ function renderSkiMenu() {
     ? `<span class="wk-popout-bal-val wk-popout-bal-val--usd">${fmtMenuBalHtml(app.usd)}</span>`
     : `<span class="wk-popout-bal-val wk-popout-bal-val--sui">${fmtMenuBalHtml(getTotalSui())}</span>`;
   const balToggleHtml = `<div class="wk-popout-balance">
-        <span class="wk-popout-bal-display">${dotSvg}${balValHtml}</span>
-        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI">
+        <span class="wk-popout-bal-display">${dotSvg}${balValHtml}</span><span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
+        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI" style="margin-left:auto">
           <input type="checkbox" id="wk-bal-toggle"${balView === 'usd' ? ' checked' : ''}>
           <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
         </label>
@@ -5430,7 +5517,7 @@ function renderSkiMenu() {
   const _registerDisabled = _subnameMode ? false : _nsListing() ? false : _nsInitVariant === 'black-diamond';
   const _inputHtml = _subnameMode
     ? `<input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}">`
-    : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-clear-btn" class="wk-ns-clear-btn" type="button" title="Clear" style="${nsLabel ? '' : 'display:none'}">\u2715</button><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Create subname">\u25b8</button></div>`;
+    : `<div class="wk-ns-input-wrap"><input id="wk-ns-label-input" class="wk-ns-label-input" type="text" value="${esc(nsLabel)}" maxlength="63" spellcheck="false" autocomplete="off" placeholder="${_inputPlaceholder}"><button id="wk-ns-clear-btn" class="wk-ns-clear-btn" type="button" title="Clear" style="${nsLabel ? '' : 'display:none'}">\u2715</button><button id="wk-ns-pin-btn" class="wk-ns-pin-btn" type="button" title="Show target address">\u25be</button></div>`;
   const _nsRouteInitHtml = _suiamiVerifyHtml || _nsRouteHtml();
   const nsRowHtml = `
       <div id="wk-dd-ns-section" class="wk-dd-ns-section${_nsInitSectionClass}${_subnameMode ? ' wk-dd-ns-section--subname' : ''}${nsSectionOpen ? '' : ' wk-dd-ns-section--collapsed'}">
@@ -5438,13 +5525,12 @@ function renderSkiMenu() {
           <span id="wk-ns-status" class="wk-ns-status">${_nsStatusSvg(_subnameMode ? 'blue-square' : _nsInitVariant)}</span>
           ${_inputHtml}
           <span class="wk-ns-dot-sui">${esc(_dotSuiText)}</span>
-          <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_subnameMode ? '' : _nsPriceHtml()}</span>
-          <button id="wk-send-btn" class="wk-send-btn" type="button" title="Send"${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'}>\u2192</button>
+          <button id="wk-thunder-quick" class="wk-thunder-quick" type="button" title="Thunder" hidden>\u26a1</button><button id="wk-send-btn" class="wk-send-btn wk-send-btn--suiami" type="button" title="SUIAMI" disabled>SUIAMI</button>
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}" style="display:none">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
         <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
         <div id="ski-nft-inline" class="ski-nft-inline" hidden></div>
-        <div id="wk-thunder-convo" class="wk-thunder-convo" hidden><div id="wk-thunder-received" class="wk-thunder-received"></div><div id="wk-thunder-unqueued" class="wk-thunder-unqueued" hidden></div><div class="wk-thunder-reply-row"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="private thunder\u2026" spellcheck="false" autocomplete="off"><button id="wk-thunder-send" class="wk-thunder-send" type="button" title="Send signal">\u26a1</button></div></div>
+        <div id="wk-thunder-convo" class="wk-thunder-convo" hidden><div id="wk-thunder-received" class="wk-thunder-received"></div><div id="wk-thunder-unquested" class="wk-thunder-unquested" hidden></div><div id="wk-thunder-reply-wrap" class="wk-thunder-reply-row"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off"><button id="wk-thunder-send" class="wk-thunder-send" type="button" title="Send signal">\u26a1</button></div></div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
       </div>`;
 
@@ -5800,31 +5886,39 @@ function renderSkiMenu() {
     // Market mode: listed names always show BUY regardless of coin chips state
     const marketMode = !suiamiMode && !mintMode && hasListing && hasLabel;
     const resolving = !suiamiMode && !mintMode && !marketMode && hasLabel && !nsAvail;
-    // SWAP: input ≠ output AND target is self (or empty)
-    const swapMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !inEqualsOut && !sendingToOther;
-    // SUIAMI: input = output AND target is self
-    const suiamiSendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && inEqualsOut && selfTarget && !sendingToOther;
-    // THUNDER: viewing someone else's taken name, no amount — takes priority over SEND
     const hasAmount = !!pendingSendAmount && Number(pendingSendAmount) > 0;
-    const thunderMode = !mintMode && !marketMode && !resolving && !suiamiMode
+    // SWAP: input ≠ output AND target is self (or empty) AND has amount
+    const swapMode = coinChipsOpen && !mintMode && !marketMode && !resolving && !inEqualsOut && !sendingToOther && hasAmount;
+    // SUIAMI: input = output AND target is self
+    const suiamiSendMode = coinChipsOpen && !mintMode && !marketMode && !resolving && inEqualsOut && selfTarget && !sendingToOther && hasAmount;
+    // THUNDER: viewing someone else's taken name, no amount, coins NOT open
+    const thunderMode = !coinChipsOpen && !mintMode && !marketMode && !resolving && !suiamiMode
       && hasLabel && isTaken && !isOwned && nsTargetAddress != null && !hasAmount;
     // SEND: sending to someone else (any token combo), colored by output
-    // Show SEND even when coins are collapsed if target is someone else
+    // Also activates when coins are open with a recipient (even without amount — disabled send)
     const sendMode = !thunderMode && !mintMode && !marketMode && !resolving && sendingToOther && !(swapMode || suiamiSendMode);
 
-    btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold', 'wk-send-btn--thunder');
+    btn.classList.remove('wk-send-btn--suiami', 'wk-send-btn--suiami-active', 'wk-send-btn--suiami-green', 'wk-send-btn--send', 'wk-send-btn--market', 'wk-send-btn--resolving', 'wk-send-btn--mint', 'wk-send-btn--swap-usd', 'wk-send-btn--swap-sui', 'wk-send-btn--swap-gold', 'wk-send-btn--thunder');
     if (mintMode) btn.classList.add('wk-send-btn--mint');
     else if (swapMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`);
     else if (suiamiSendMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`); // SUIAMI colored by output
     else if (sendMode) btn.classList.add(`wk-send-btn--swap-${swapOutputKey}`); // SEND colored by output
     else if (thunderMode) btn.classList.add('wk-send-btn--thunder');
     else if (suiamiGreen) btn.classList.add('wk-send-btn--suiami-green');
-    else if (suiamiPurple) btn.classList.add('wk-send-btn--suiami');
+    else if (suiamiPurple) btn.classList.add('wk-send-btn--suiami-active');
     else if (marketMode) btn.classList.add('wk-send-btn--market');
     else if (resolving) btn.classList.add('wk-send-btn--resolving');
     // Hide price chip when sending, swapping, or name is taken (not mintable)
     const priceChip = document.getElementById('wk-ns-price-chip');
     if (priceChip) priceChip.style.display = ((sendMode || swapMode) && !mintMode) || (isTaken && !isOwned && !hasListing) ? 'none' : '';
+    // ⚡ mini button: show when unquested signals exist, conversation is open, or has history
+    const quickBtn = document.getElementById('wk-thunder-quick') as HTMLButtonElement | null;
+    if (quickBtn) {
+      const hasUnquested = Object.values(_thunderCounts).some(c => c > 0);
+      const hasHistory = Object.values(_thunderLocalCounts).some(c => c > 0);
+      const showQuick = hasUnquested || hasHistory || _thunderConvoOpen;
+      if (showQuick) { quickBtn.removeAttribute('hidden'); } else { quickBtn.setAttribute('hidden', ''); }
+    }
     // Conversation is now controlled by card click (_toggleThunderConvo), not input mode
 
     // Auto-configure swap for minting: set amount to mint price (with NS discount)
@@ -5965,12 +6059,15 @@ function renderSkiMenu() {
       }
     } else if (resolving) {
       btn.disabled = true;
-      btn.textContent = '\u2026';
+      btn.textContent = 'SUIAMI';
+      btn.classList.add('wk-send-btn--suiami');
       btn.title = 'Resolving\u2026';
     } else {
-      // No specific mode — hide the button
-      btn.style.display = 'none';
-      return;
+      // Default: blacked-out SUIAMI
+      btn.disabled = true;
+      btn.textContent = 'SUIAMI';
+      btn.classList.add('wk-send-btn--suiami');
+      btn.title = 'SuiAMI';
     }
     btn.style.display = '';
   }
@@ -6064,6 +6161,66 @@ function renderSkiMenu() {
       if (btn) { btn.disabled = false; btn.textContent = 'TRADE'; }
     }
   }
+
+  // ⚡ quick button — toggle thunder card + conversation
+  document.getElementById('wk-thunder-quick')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (_thunderConvoOpen) {
+      // Close — just toggle off
+      _toggleThunderConvo();
+      return;
+    }
+    // Opening — collapse balance, zero amount, set up domain, then open
+    if (coinChipsOpen) {
+      coinChipsOpen = false;
+      _persistCoinChipsOpen();
+      const coinsEl = document.getElementById('wk-coins-collapse');
+      if (coinsEl) coinsEl.classList.add('wk-qr-collapse--hidden');
+    }
+    pendingSendAmount = '';
+    const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    // Use current input name if present, else most-thundered, else most-messaged
+    let domain = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+    if (!domain) {
+      const top = Object.entries(_thunderCounts)
+        .filter(([, c]) => c > 0)
+        .sort(([, a], [, b]) => b - a)[0];
+      if (top) domain = top[0];
+    }
+    if (!domain) {
+      // Fall back to name with most conversation history
+      const topLocal = Object.entries(_thunderLocalCounts)
+        .filter(([, c]) => c > 0)
+        .sort(([, a], [, b]) => b - a)[0];
+      if (topLocal) domain = topLocal[0];
+    }
+    if (!domain) return;
+    nsLabel = domain;
+    const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+    if (inp) inp.value = domain;
+    skipNextFocusClear = true;
+    // Show card directly (don't use _syncNftCardToInput which may fight the toggle)
+    const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+    const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+    _showNftPopover(chip || document.getElementById('ski-nft-inline')!, domain);
+    _nftPopoverPinned = true;
+    fetchAndShowNsPrice(domain);
+    _updateSendBtnMode();
+    // Open
+    _toggleThunderConvo();
+    if (_thunderConvoOpen) {
+      const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase() || '';
+      const hasUnquested = (_thunderCounts[cardDomain] ?? 0) > 0;
+      if (!hasUnquested) {
+        const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+        if (msgInput) msgInput.focus();
+      }
+    }
+  });
 
   // Send / Swap / Mint / SuiAMI
   document.getElementById('wk-send-btn')?.addEventListener('click', async () => {
@@ -6216,21 +6373,41 @@ function renderSkiMenu() {
     }
 
     // Thunder mode — signal to recipient (from main input box, not conversation reply)
-    const thunderBtn = btn.classList.contains('wk-send-btn--thunder');
+    const _actionBtn = document.getElementById('wk-send-btn');
+    const thunderBtn = _actionBtn?.classList.contains('wk-send-btn--thunder') || _actionBtn?.textContent?.trim() === 'Thunder';
     if (thunderBtn) {
-      const recipientName = nsLabel.trim();
-      if (!recipientName) return;
+      let recipientName = nsLabel.trim();
+      // If input is empty, populate with most-thundered owned name
+      if (!recipientName) {
+        const top = Object.entries(_thunderCounts)
+          .filter(([, c]) => c > 0)
+          .sort(([, a], [, b]) => b - a)[0];
+        if (top) {
+          recipientName = top[0];
+          nsLabel = recipientName;
+          const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+          if (inp) inp.value = recipientName;
+          skipNextFocusClear = true;
+          _syncNftCardToInput();
+          fetchAndShowNsPrice(recipientName);
+        }
+        if (!recipientName) return;
+      }
       const ws3 = getState();
       if (!ws3.address) return;
-      // Open conversation area for new signal input
-      const convoEl = document.getElementById('wk-thunder-convo');
-      const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
-      if (convoEl && !_thunderConvoOpen) {
-        _thunderConvoOpen = true;
-        convoEl.removeAttribute('hidden');
-        _renderConversation(recipientName);
+      // Ensure card + conversation are open, then focus reply input
+      if (!_thunderConvoOpen) {
+        const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+        const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${recipientName}"]`);
+        _showNftPopover(chip || document.getElementById('ski-nft-inline')!, recipientName);
+        _nftPopoverPinned = true;
+        _toggleThunderConvo();
       }
-      if (msgInput) { msgInput.focus(); }
+      // Always focus the reply input — show it even if decrypt bar is visible
+      const replyWrap = document.getElementById('wk-thunder-reply-wrap');
+      if (replyWrap?.hasAttribute('hidden')) replyWrap.removeAttribute('hidden');
+      const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+      if (msgInput) { msgInput.value = ''; msgInput.focus(); }
       return;
     }
 
@@ -6639,7 +6816,7 @@ function renderSkiMenu() {
       if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
       const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
       const _logName = senderName || ws.address;
-      await _storeThunderLocal(_logName, recipientName, msg, 'out');
+      await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       let _txOk = false;
       try {
         await signAndExecuteTransaction(txBytes);
@@ -6657,6 +6834,8 @@ function renderSkiMenu() {
         _syncNftCardToInput();
         // Auto-add recipient as wishlist chip if not in roster
         _addThunderContact(recipientName);
+        // Refocus reply input for next message
+        if (msgInput) msgInput.focus();
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Signal failed';
@@ -7048,27 +7227,40 @@ function renderSkiMenu() {
     if (!ws2.address) return;
     const label = nsLabel.trim();
     if (!label) return;
-    const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     const pinBtn = document.getElementById('wk-ns-pin-btn');
-    if (pinBtn) pinBtn.style.opacity = '0.4';
-    try {
-      const owned = await fetchOwnedDomains(nsRealOwnerAddr || ws2.address);
-      const found = owned.find(d => d.name === domain && d.kind === 'nft');
-      if (!found) { showToast(`No NFT found for ${domain}`); return; }
-      nsSubnameParent = found;
-      nsLabel = '';
-      nsPriceUsd = null;
-      nsAvail = null;
-      nsGraceEndMs = 0;
-      nsPriceFetchFor = '';
-      nsLastDigest = '';
-      renderSkiMenu();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed';
-      showToast(msg);
-    } finally {
-      if (pinBtn) pinBtn.style.opacity = '';
+
+    // If route is already open (address showing) → second click does subname flow
+    if (nsRouteOpen && pinBtn?.textContent === '\u25b8') {
+      if (pinBtn) pinBtn.style.opacity = '0.4';
+      try {
+        const domain = label.endsWith('.sui') ? label : `${label}.sui`;
+        const owned = await fetchOwnedDomains(nsRealOwnerAddr || ws2.address);
+        const found = owned.find(d => d.name === domain && d.kind === 'nft');
+        if (!found) { showToast(`No NFT found for ${domain}`); return; }
+        nsSubnameParent = found;
+        nsLabel = '';
+        nsPriceUsd = null;
+        nsAvail = null;
+        nsGraceEndMs = 0;
+        nsPriceFetchFor = '';
+        nsLastDigest = '';
+        renderSkiMenu();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed';
+        showToast(msg);
+      } finally {
+        if (pinBtn) pinBtn.style.opacity = '';
+      }
+      return;
     }
+
+    // First click → show the proper target address route row, flip arrow to right
+    nsRouteOpen = true;
+    _persistRouteOpen();
+    if (pinBtn) pinBtn.textContent = '\u25b8';
+    _patchNsRoute();
+    const route = document.getElementById('wk-ns-route');
+    if (route) route.classList.remove('wk-ns-route-wrap--hidden');
   });
 
   document.getElementById('wk-ns-status')?.addEventListener('click', async (e) => {
@@ -7909,10 +8101,108 @@ function renderSkiMenu() {
   _attachOwnedGridWheel();
   _attachNftPopoverListeners();
 
-  // NFT card click → toggle conversation open/closed
+  // ☀️ sun button — fresh on-chain scan + decrypt all signals across all owned names
+  document.getElementById('ski-nft-inline')?.addEventListener('click', async (e) => {
+    const sunEl = (e.target as HTMLElement).closest('#ski-nft-sun');
+    if (!sunEl) return; // not the sun — fall through to card click below
+    e.stopPropagation();
+    if (_thunderDecryptBusy) return;
+    _thunderDecryptBusy = true;
+    (sunEl as HTMLElement).style.opacity = '0.4';
+    try {
+      const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
+      const ws = getState();
+      if (!ws.address) return;
+      // Fresh on-chain scan — list all ragtags on Storm via gRPC
+      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
+      const freshCounts = await getThunderCountsBatch(nftNames);
+      // Merge fresh counts into _thunderCounts
+      for (const [bare, count] of Object.entries(freshCounts)) {
+        _thunderCounts[bare] = count;
+      }
+      const _myLog = app.suinsName || ws.address;
+      let totalDecrypted = 0;
+      let lastSender = '';
+      const namesWithThunder = Object.entries(_thunderCounts).filter(([, c]) => c > 0);
+      if (namesWithThunder.length === 0) {
+        showToast('\u2600\ufe0f No signals to decrypt');
+      } else {
+        for (const [name, count] of namesWithThunder) {
+          const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
+          if (!nft) continue;
+          const payloads = await decryptAndQuest(
+            ws.address, name + '.sui', nft.objectId, count,
+            (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+          );
+          for (const p of payloads) {
+            const _pSender = p.sender || p.senderAddress.slice(0, 8);
+            await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
+            lastSender = (p.sender || '').replace(/\.sui$/, '') || p.senderAddress;
+          }
+          totalDecrypted += payloads.length;
+          _thunderCounts[name] = 0;
+        }
+        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} decrypted`);
+      }
+      try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
+      _patchNsOwnedList();
+      await _refreshThunderLocalCounts();
+      _syncNftCardToInput();
+      if (lastSender) {
+        nsLabel = lastSender;
+        const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (inp) inp.value = lastSender;
+        skipNextFocusClear = true;
+        fetchAndShowNsPrice(lastSender);
+      }
+      if (_thunderConvoOpen) {
+        _thunderConvoTarget = '';
+        const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain;
+        if (cardDomain) _renderConversation(cardDomain, true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Decrypt failed';
+      if (!msg.toLowerCase().includes('reject')) showToast(msg);
+    } finally {
+      _thunderDecryptBusy = false;
+      (sunEl as HTMLElement).style.opacity = '';
+    }
+  });
+
+  // NFT card click → populate input with card domain + toggle conversation
   document.getElementById('ski-nft-inline')?.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).closest('a')) return;
+    if ((e.target as HTMLElement).closest('#ski-nft-sun')) return; // handled above
     e.stopPropagation();
+    const domain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase();
+    if (domain) {
+      // Simulate chip click: set input, update all status immediately
+      nsLabel = domain;
+      const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+      if (inp) inp.value = domain;
+      skipNextFocusClear = true;
+      const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === domain);
+      nsAvail = isOwned ? 'owned' : null;
+      nsPriceUsd = null;
+      nsPriceFetchFor = '';
+      nsGraceEndMs = 0;
+      nsTargetAddress = null;
+      nsNftOwner = null;
+      nsLastDigest = '';
+      nsKioskListing = null; nsTradeportListing = null;
+      nsShadeOrder = null;
+      pendingSendAmount = '';
+      const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+      if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+      document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+      const _ac = document.getElementById('wk-send-clear');
+      if (_ac) _ac.style.display = 'none';
+      _patchNsPrice();
+      _patchNsStatus();
+      _patchNsRoute();
+      _updateSendBtnMode();
+      fetchAndShowNsPrice(domain);
+    }
     _toggleThunderConvo();
   });
 
@@ -8088,8 +8378,14 @@ function bindEvents() {
     }
   });
 
+  // Track whether the page has focus — ignore the click that restores focus
+  let _hadFocus = document.hasFocus();
+  window.addEventListener('blur', () => { _hadFocus = false; });
+  window.addEventListener('focus', () => { setTimeout(() => { _hadFocus = true; }, 200); });
+
   document.addEventListener('click', (e) => {
     if (!app.skiMenuOpen) return;
+    if (!_hadFocus) return; // click was just to bring focus back to the window
     if (els.skiDot?.contains(e.target as Node)) return;
     if (els.skiBtn?.contains(e.target as Node)) return;
     if (els.skiMenu?.contains(e.target as Node)) return;

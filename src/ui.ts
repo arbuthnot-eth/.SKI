@@ -7458,9 +7458,20 @@ function renderSkiMenu() {
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
-    _patchNsOwnedList();
+    // Don't re-render the roster — just update dim classes in-place to avoid re-sorting
+    const allChips = document.querySelectorAll('.wk-ns-owned-chip');
+    allChips.forEach(c => {
+      const cd = (c as HTMLElement).dataset.domain?.toLowerCase() ?? '';
+      c.classList.toggle('wk-ns-owned-chip--dim', cd !== domain.toLowerCase() && domain.length > 0);
+    });
     _updateSendBtnMode();
     _setInput();
+    // Pin the inline NFT card for this chip
+    const clickedChip = Array.from(allChips).find(c => (c as HTMLElement).dataset.domain?.toLowerCase() === domain.toLowerCase()) as HTMLElement | undefined;
+    if (clickedChip) {
+      _showNftPopover(clickedChip, domain);
+      _nftPopoverPinned = true;
+    }
     // Re-set after microtask and animation frame in case of async re-renders
     Promise.resolve().then(_setInput);
     requestAnimationFrame(_setInput);

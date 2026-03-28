@@ -54,7 +54,7 @@ public struct ThunderBolt has store, copy, drop {
     timestamp_ms: u64,
 }
 
-public struct ThunderInbox has store {
+public struct ThunderIn has store {
     bolts: vector<ThunderBolt>,
 }
 
@@ -81,10 +81,10 @@ entry fun deposit(
     let bolt = ThunderBolt { payload, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
 
     if (dynamic_field::exists_(&thunder_in.id, name_hash)) {
-        let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
+        let inbox: &mut ThunderIn = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
         inbox.bolts.push_back(bolt);
     } else {
-        dynamic_field::add(&mut thunder_in.id, name_hash, ThunderInbox { bolts: vector[bolt] });
+        dynamic_field::add(&mut thunder_in.id, name_hash, ThunderIn { bolts: vector[bolt] });
     };
 
     event::emit(ThunderDeposited { name_hash, timestamp_ms });
@@ -105,7 +105,7 @@ entry fun strike(
     let computed_hash = keccak256(&domain_bytes);
     assert!(computed_hash == name_hash, ENotOwner);
 
-    let inbox: &mut ThunderInbox = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
+    let inbox: &mut ThunderIn = dynamic_field::borrow_mut(&mut thunder_in.id, name_hash);
     assert!(!inbox.bolts.is_empty(), EEmptyInbox);
 
     let bolt = inbox.bolts.remove(0);
@@ -113,7 +113,7 @@ entry fun strike(
 
     // If that was the last bolt, remove the dynamic field entirely → full storage rebate
     if (empty) {
-        let ThunderInbox { bolts: _ } = dynamic_field::remove<vector<u8>, ThunderInbox>(&mut thunder_in.id, name_hash);
+        let ThunderIn { bolts: _ } = dynamic_field::remove<vector<u8>, ThunderIn>(&mut thunder_in.id, name_hash);
     };
 
     // Un-XOR the key
@@ -134,7 +134,7 @@ entry fun strike(
 /// Count pending thunder. Permissionless.
 public fun count(thunder_in: &Thunder, name_hash: vector<u8>): u64 {
     if (!dynamic_field::exists_(&thunder_in.id, name_hash)) return 0;
-    let inbox: &ThunderInbox = dynamic_field::borrow(&thunder_in.id, name_hash);
+    let inbox: &ThunderIn = dynamic_field::borrow(&thunder_in.id, name_hash);
     inbox.bolts.length()
 }
 

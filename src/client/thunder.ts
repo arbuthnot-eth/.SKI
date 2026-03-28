@@ -203,7 +203,26 @@ export async function decryptAndQuest(
   const txBytes = await buildBatchQuestTx(recipientAddress, recipientName, nftObjectId, count, sponsorAddress);
   const result = await executeTx(txBytes);
 
-  const struck = parseStruckEvents(result.effects ?? result);
+  // Try parsing events from wallet response first
+  let struck = parseStruckEvents(result.effects ?? result);
+
+  // If no events found, fetch tx details from RPC (wallet may not return events)
+  if (struck.length === 0 && result.digest) {
+    // Wait briefly for tx to be indexed
+    await new Promise(r => setTimeout(r, 2000));
+    const txRes = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_getTransactionBlock',
+        params: [result.digest, { showEvents: true, showEffects: true }],
+      }),
+    });
+    const txJson = await txRes.json() as any;
+    struck = parseStruckEvents(txJson?.result ?? {});
+  }
+
   if (struck.length === 0) throw new Error('No Struck events in tx effects');
 
   // Decrypt all payloads in parallel — skip any that fail (bad key from old deploys)

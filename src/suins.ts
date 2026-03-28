@@ -2420,7 +2420,6 @@ export async function buildSendTx(
     }
     const [sendCoin] = tx.splitCoins(primaryCoin, [tx.pure.u64(amount)]);
     tx.transferObjects([sendCoin], tx.pure.address(recipient));
-    tx.transferObjects([primaryCoin], tx.pure.address(sender)); // return remainder
   }
 
   return tx.build({ client: transport as never });

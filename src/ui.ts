@@ -3156,6 +3156,113 @@ let nsTransferRecipient = ''; // value in the transfer-recipient input
 let _thunderCounts: Record<string, number> = (() => { try { const v = localStorage.getItem('ski:thunder-counts'); return v ? JSON.parse(v) : {}; } catch { return {}; } })();
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
+let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
+
+const _selectedThunderTs = new Set<number>();
+
+/** Render the conversation view for a counterparty in the thunder received area. */
+async function _renderConversation(counterparty: string, force = false) {
+  const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+  if (!bare) return;
+
+  const entries = await _getConversation(bare);
+
+  // Re-query DOM after async — elements may have been rebuilt by renderSkiMenu
+  const receivedEl = document.getElementById('wk-thunder-received');
+  const thunderRowEl = document.getElementById('wk-thunder-row');
+  if (!receivedEl || !thunderRowEl) return;
+
+  if (entries.length === 0) { receivedEl.setAttribute('hidden', ''); return; }
+
+  const rows = entries.map(e => {
+    const isOut = e.dir === 'out' || (!e.dir && !e.from && !e.msg.startsWith('\u26a1 from'));
+    const sender = isOut ? '' : (e.from || '').replace(/\.sui$/, '');
+    const cls = isOut ? 'wk-thunder-bubble--out' : 'wk-thunder-bubble--in';
+    const selCls = _selectedThunderTs.has(e.ts) ? ' wk-thunder-bubble--selected' : '';
+    let msgText = e.msg;
+    if (!isOut && !e.dir) {
+      msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
+    }
+    const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender">${esc(sender)}</span> ` : '');
+    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${esc(msgText)}</span></div>`;
+  }).join('');
+
+  const deleteBtn = _selectedThunderTs.size > 0
+    ? `<button class="wk-thunder-delete-btn" id="wk-thunder-delete" type="button">\u2715 ${_selectedThunderTs.size}</button>`
+    : '';
+
+  receivedEl.innerHTML = rows + deleteBtn;
+  receivedEl.removeAttribute('hidden');
+  thunderRowEl.style.display = '';
+  _thunderConvoTarget = bare;
+  try { localStorage.setItem('ski:thunder-open', '1'); } catch {}
+  try { sessionStorage.setItem('ski:thunder-convo', bare); } catch {}
+  receivedEl.scrollTop = receivedEl.scrollHeight;
+
+  // Bind bubble click → toggle selection
+  receivedEl.querySelectorAll('.wk-thunder-bubble').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const ts = Number((el as HTMLElement).dataset.ts);
+      if (_selectedThunderTs.has(ts)) _selectedThunderTs.delete(ts);
+      else _selectedThunderTs.add(ts);
+      _renderConversation(bare, true);
+    });
+  });
+
+  // Bind delete button
+  document.getElementById('wk-thunder-delete')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (_selectedThunderTs.size === 0) return;
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+
+    // Check if any selected entries are unquested incoming signals (still on-chain)
+    // For now, all displayed entries are already quested (decrypted from Struck events)
+    // or sent by us — so we just delete from local log
+
+    const ws = getState();
+    if (!ws.address) return;
+    const key = await _deriveThunderKey(ws.address);
+    const storageKey = `ski:thunder-log:${ws.address}`;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const { ct, iv } = JSON.parse(raw);
+        const plaintext = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
+          key,
+          Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
+        );
+        let all: ThunderLogEntry[] = JSON.parse(new TextDecoder().decode(plaintext));
+        all = all.filter(entry => !_selectedThunderTs.has(entry.ts));
+        // Re-encrypt
+        const updated = new TextEncoder().encode(JSON.stringify(all));
+        const newIv = crypto.getRandomValues(new Uint8Array(12));
+        const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
+        localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
+      }
+    } catch {}
+
+    const count = _selectedThunderTs.size;
+    _selectedThunderTs.clear();
+    _thunderConvoTarget = '';
+    _renderConversation(bare, true);
+    showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
+  });
+}
+
+/** Restore conversation on menu render if the input matches the cached counterparty. */
+function _restoreConversation() {
+  try {
+    const cached = sessionStorage.getItem('ski:thunder-convo');
+    const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+    if (cached && inputBare === cached) {
+      _renderConversation(cached);
+    }
+  } catch {}
+}
 
 // ─── Encrypted local thunder log ─────────────────────────────────────
 // Bolted and quested strikes are AES-GCM encrypted in localStorage keyed
@@ -3170,15 +3277,18 @@ async function _deriveThunderKey(seed: string): Promise<CryptoKey> {
 
 interface ThunderLogEntry {
   to: string;
+  from?: string;
   msg: string;
   ts: number;
+  dir?: 'in' | 'out';
 }
 
-async function _storeThunderLocal(senderName: string, recipientName: string, message: string): Promise<void> {
+async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string): Promise<void> {
   const ws = getState();
   if (!ws.address) return;
   const key = await _deriveThunderKey(ws.address);
-  const storageKey = `ski:thunder-log:${senderName.replace(/\.sui$/, '').toLowerCase() || ws.address}`;
+  // Key by wallet address — stable across primary name changes
+  const storageKey = `ski:thunder-log:${ws.address}`;
 
   // Decrypt existing log
   let entries: ThunderLogEntry[] = [];
@@ -3196,7 +3306,7 @@ async function _storeThunderLocal(senderName: string, recipientName: string, mes
   } catch { /* corrupt or first entry */ }
 
   // Append new entry (cap at 200 strikes)
-  entries.push({ to: recipientName, msg: message, ts: Date.now() });
+  entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir });
   if (entries.length > 200) entries = entries.slice(-200);
 
   // Encrypt and store
@@ -3206,6 +3316,61 @@ async function _storeThunderLocal(senderName: string, recipientName: string, mes
   const ct = btoa(String.fromCharCode(...ciphertext));
   const ivB64 = btoa(String.fromCharCode(...iv));
   localStorage.setItem(storageKey, JSON.stringify({ ct, iv: ivB64 }));
+}
+
+/** Read the full encrypted thunder log for the current user. */
+async function _readThunderLog(): Promise<ThunderLogEntry[]> {
+  const ws = getState();
+  if (!ws.address) return [];
+  const key = await _deriveThunderKey(ws.address);
+  const storageKey = `ski:thunder-log:${ws.address}`;
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return [];
+    const { ct, iv } = JSON.parse(raw);
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
+      key,
+      Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
+    );
+    return JSON.parse(new TextDecoder().decode(plaintext)) as ThunderLogEntry[];
+  } catch { return []; }
+}
+
+/** Get conversation entries filtered by counterparty name. */
+async function _getConversation(counterparty: string): Promise<ThunderLogEntry[]> {
+  const all = await _readThunderLog();
+  const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+  return all.filter(e => {
+    const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
+    const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
+    return to === bare || from === bare;
+  });
+}
+
+/** Remove the last entry from the encrypted thunder log (undo a pre-stored signal on tx failure). */
+async function _removeLastThunderLocal(_senderName: string): Promise<void> {
+  const ws = getState();
+  if (!ws.address) return;
+  const key = await _deriveThunderKey(ws.address);
+  const storageKey = `ski:thunder-log:${ws.address}`;
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return;
+    const { ct, iv } = JSON.parse(raw);
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
+      key,
+      Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
+    );
+    const entries: ThunderLogEntry[] = JSON.parse(new TextDecoder().decode(plaintext));
+    if (entries.length === 0) return;
+    entries.pop();
+    const updated = new TextEncoder().encode(JSON.stringify(entries));
+    const newIv = crypto.getRandomValues(new Uint8Array(12));
+    const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
+    localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
+  } catch { /* corrupt — ignore */ }
 }
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
@@ -3694,11 +3859,15 @@ function _nsOwnedListHtml(): string {
   // Header: "SKI Keystore" headline left, stats stacked right
   const monthlyUsd = (yearlyUsd / 12);
   const monthlySavings = (savingsUsd / 12);
+  const _statsVisible = (() => { try { return localStorage.getItem('ski:roster-stats') !== '0'; } catch { return true; } })();
   let statsHtml = '';
   if (yearlyUsd > 0) {
-    statsHtml = `<div class="wk-ns-owned-stats"><span class="wk-ns-owned-renewal">$${monthlyUsd.toFixed(2)}/mo</span><span class="wk-ns-owned-savings">-$${monthlySavings.toFixed(2)}/mo</span></div>`;
+    statsHtml = `<div class="wk-ns-owned-stats" id="wk-roster-stats"${_statsVisible ? '' : ' hidden'}><span class="wk-ns-owned-renewal">$${monthlyUsd.toFixed(2)}/mo</span><span class="wk-ns-owned-savings">-$${monthlySavings.toFixed(2)}/mo</span></div>`;
   }
-  const header = `<div class="wk-ns-owned-header"><span class="wk-ns-owned-title"><svg class="wk-ns-owned-logo" viewBox="200 430 960 400" xmlns="http://www.w3.org/2000/svg">${SKI_SVG_TEXT.replace(/<svg[^>]*>/, '').replace(/<\/svg>/, '').replace(/<!--[\s\S]*?-->/g, '').replace(/<circle[^/]*\/>|<rect[^/]*\/>/g, '')}</svg><span class="wk-ns-owned-label">Roster</span></span><span class="wk-ns-owned-tally">${totalOwned}</span>${statsHtml}</div>`;
+  const header = `<div class="wk-ns-owned-header">
+    <span class="wk-ns-owned-title"><svg class="wk-ns-owned-logo" viewBox="170 430 990 400" xmlns="http://www.w3.org/2000/svg">${SKI_SVG_TEXT.replace(/<svg[^>]*>/, '').replace(/<\/svg>/, '').replace(/<!--[\s\S]*?-->/g, '').replace(/<circle[^/]*\/>|<rect[^/]*\/>/g, '')}</svg><span class="wk-ns-owned-label">Roster</span></span>
+    ${statsHtml}<button class="wk-ns-owned-tally" id="wk-roster-tally" type="button" title="Toggle cost stats" onclick="event.stopPropagation();var s=document.getElementById('wk-roster-stats');if(s){var v=s.hasAttribute('hidden');if(v)s.removeAttribute('hidden');else s.setAttribute('hidden','');try{localStorage.setItem('ski:roster-stats',v?'1':'0')}catch(e){}}">${totalOwned}</button>
+  </div>`;
 
   // QR code — render inline from cache when possible, async-load on miss
   // Shade-aware: red QR when shade order exists or domain is in grace with no shade
@@ -3719,7 +3888,7 @@ function _nsOwnedListHtml(): string {
       : `<div id="wk-roster-qr" data-qr-addr="${esc(qrAddr)}"${actionAttr}${colorAttr}></div>`;
   }
 
-  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div><div id="ski-nft-inline" class="ski-nft-inline" hidden></div></div>`;
+  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
 }
 
 /** Clear the NS input and reset price/status when opening the roster. */
@@ -3907,11 +4076,15 @@ function _attachNftPopoverListeners() {
   const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
   if (!grid) return;
 
-  // Restore last viewed NFT card
-  if (_lastNftCardDomain) {
-    const chip = grid.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${_lastNftCardDomain}"]`);
+  // Default to name with most thunder, fallback to last viewed
+  const _topThunder = Object.entries(_thunderCounts)
+    .filter(([, c]) => c > 0)
+    .sort(([, a], [, b]) => b - a)[0];
+  let cardDomain = _topThunder ? _topThunder[0] : _lastNftCardDomain;
+  if (cardDomain) {
+    const chip = grid.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${cardDomain}"]`);
     if (chip) {
-      _showNftPopover(chip, _lastNftCardDomain);
+      _showNftPopover(chip, cardDomain);
       _nftPopoverPinned = true;
     }
   }
@@ -3957,33 +4130,21 @@ function _attachNftPopoverListeners() {
 
         if (payloads.length === 0) { showToast('No strikes found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
 
-        // Show first strike in thunder input + toast, populate sender for reply
+        // Show first strike above the input + toast, populate sender for reply
         const first = payloads[0];
-        const senderShort = first.sender || first.senderAddress.slice(0, 8) + '\u2026';
+        const senderName = first.sender || first.senderAddress.slice(0, 8) + '\u2026';
         const extra = payloads.length > 1 ? ` (+${payloads.length - 1} more)` : '';
-        showToast(`\u26a1 ${senderShort}: ${first.message}${extra}`);
-        // Display decrypted strike in the thunder input (ephemeral)
-        const thunderMsgEl = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
-        const thunderRowEl = document.getElementById('wk-thunder-row');
-        if (thunderMsgEl && thunderRowEl) {
-          thunderRowEl.style.display = '';
-          thunderMsgEl.value = `\u26a1 ${senderShort}: ${first.message}`;
-          thunderMsgEl.readOnly = true;
-          thunderMsgEl.classList.add('wk-thunder-msg--received');
-          // Clear on next click/focus
-          const clearReceived = () => {
-            thunderMsgEl.value = '';
-            thunderMsgEl.readOnly = false;
-            thunderMsgEl.classList.remove('wk-thunder-msg--received');
-            thunderMsgEl.removeEventListener('focus', clearReceived);
-            thunderMsgEl.removeEventListener('click', clearReceived);
-          };
-          thunderMsgEl.addEventListener('focus', clearReceived);
-          thunderMsgEl.addEventListener('click', clearReceived);
+        showToast(`\u26a1 ${senderName}: ${first.message}${extra}`);
+        // Store all received strikes in encrypted local log
+        const _myLog = app.suinsName || ws.address;
+        for (const p of payloads) {
+          const _pSender = p.sender || p.senderAddress.slice(0, 8);
+          await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender);
         }
 
-        if (first.sender) {
-          const senderBare = first.sender.replace(/\.sui$/, '');
+        // Set input to sender's name for reply
+        const senderBare = (first.sender || '').replace(/\.sui$/, '');
+        if (senderBare) {
           nsLabel = senderBare;
           const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
           if (inp) inp.value = senderBare;
@@ -3991,11 +4152,9 @@ function _attachNftPopoverListeners() {
           fetchAndShowNsPrice(senderBare);
         }
 
-        // Store received strikes in encrypted local log
-        const myName = app.suinsName || getState().address;
-        for (const p of payloads) {
-          _storeThunderLocal(myName, badgeDomain, `\u26a1 from ${p.sender || p.senderAddress.slice(0, 8)}: ${p.message}`).catch(() => {});
-        }
+        // Show conversation with the sender
+        _thunderConvoTarget = ''; // force re-render
+        _renderConversation(senderBare || nsLabel.trim());
 
         // All struck — clear count for this name
         _thunderCounts[badgeDomain] = 0;
@@ -4201,12 +4360,9 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white outline with dark fill visible on both dark and light backgrounds
-  const outerPad = pad;
-  const innerPad = pad + sw * 1.1;
-  const outerPath = `M${half},${outerPad} L${s - outerPad},${half} L${half},${s - outerPad} L${outerPad},${half}Z`;
-  const innerPath = `M${half},${innerPad} L${s - innerPad},${half} L${half},${s - innerPad} L${innerPad},${half}Z`;
-  return `<svg ${base}><path d="${outerPath}" fill="white"/><path d="${innerPath}" fill="#141424"/></svg>`;
+  // black-diamond: white outline with subtle fill visible on dark backgrounds
+  const dPath = `M${half},${pad} L${s - pad},${half} L${half},${s - pad} L${pad},${half}Z`;
+  return `<svg ${base}><path d="${dPath}" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.6)" stroke-width="${sw}"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -4241,6 +4397,7 @@ function _patchNsStatus() {
   if (!icon) return;
   const variant = _nsVariant();
   icon.innerHTML = _nsStatusSvg(variant);
+  try { localStorage.setItem('ski:ns-variant', variant); } catch {}
   const sec = document.getElementById('wk-dd-ns-section');
   const isOwned = nsAvail === 'owned';
   const hasActiveShade = !!nsShadeOrder && nsShadeOrder.domain === nsLabel.trim();
@@ -5098,7 +5255,13 @@ function renderSkiMenu() {
 
   const coinBreakdownHtml = _selChip ? `<div class="wk-coin-breakdown-wrap"><div class="wk-coin-breakdown"><button class="wk-coin-arrow wk-coin-arrow--left wk-coin-arrow--to-${_prevColor}" id="wk-coin-prev" type="button"${_arrowDisabled} title="${esc(_prevTip)}">\u2039</button><span class="wk-coin-item ${_selChip.colorCls} wk-coin-item--selected" data-coin="${esc(_selChip.key)}" id="wk-coin-selected" title="${esc(_selChip.tooltip ?? _selChip.key)}">${_selChip.icon}<span class="wk-coin-val">${_selChip.html}</span></span><button class="wk-coin-arrow wk-coin-arrow--right wk-coin-arrow--to-${_nextColor}" id="wk-coin-next" type="button"${_arrowDisabled} title="${esc(_nextTip)}">\u203A</button></div>${_coinGridHtml}</div>` : '';
 
-  const _nsInitVariant = _nsVariant();
+  const _nsInitVariant = (() => {
+    const live = _nsVariant();
+    if (live !== 'black-diamond') return live;
+    // On first render, roster hasn't loaded yet — use cached variant if label matches
+    try { const cached = localStorage.getItem('ski:ns-variant'); if (cached && nsLabel) return cached as SkiDotVariant; } catch {}
+    return live;
+  })();
   const _nsInitLooksAvailable = nsAvail === 'available';
   const _nsInitWalletAddr = getState().address?.toLowerCase() ?? '';
   const _nsInitSelfTarget = _nsInitWalletAddr !== '' && (
@@ -5138,12 +5301,13 @@ function renderSkiMenu() {
           ${_inputHtml}
           <span class="wk-ns-dot-sui">${esc(_dotSuiText)}</span>
           <span id="wk-ns-price-chip" class="wk-ns-price-chip">${_subnameMode ? '' : _nsPriceHtml()}</span>
-          <button id="wk-send-btn" class="wk-send-btn" type="button" title="Send"${pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'}>\u2192</button>
+          <button id="wk-send-btn" class="wk-send-btn${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? ' wk-send-btn--thunder' : ''; } catch { return ''; } })()}" type="button" title="Send"${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? '' : (pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'); } catch { return pendingSendAmount && Number(pendingSendAmount) > 0 ? '' : ' disabled'; } })()}>${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? 'Thunder' : '\u2192'; } catch { return '\u2192'; } })()}</button>
           <button id="wk-dd-ns-register" class="wk-dd-ns-register-btn${nsAvail === 'grace' && !_nsInitShadeOrder ? ' wk-shade-ready' : nsAvail === 'grace' && _nsInitShadeOrder && _nsInitGraceExpired ? ' wk-shade-execute' : nsAvail === 'grace' && _nsInitShadeOrder ? ' wk-shade-active' : ''}" type="button"${_registerDisabled ? ' disabled' : ''} title="${_registerTitle}" style="display:none">${nsAvail === 'grace' && !_nsInitShadeOrder ? '\u2299' : nsAvail === 'grace' && _nsInitShadeOrder && !_nsInitGraceExpired ? '\u2713' : '\u2192'}</button>
         </div>
         <div id="wk-ns-route" class="wk-ns-route-wrap${nsRouteOpen ? '' : ' wk-ns-route-wrap--hidden'}">${_nsRouteInitHtml}</div>
-        <div id="wk-thunder-row" class="wk-thunder-row" style="display:none"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="private thunder\u2026" spellcheck="false" autocomplete="off"></div>
+        <div id="wk-thunder-row" class="wk-thunder-row" style="display:${(() => { try { return localStorage.getItem('ski:thunder-open') === '1' ? '' : 'none'; } catch { return 'none'; } })()}"><div id="wk-thunder-received" class="wk-thunder-received" hidden></div><div class="wk-thunder-input-row"><input id="wk-thunder-msg" class="wk-thunder-msg" type="text" placeholder="private thunder\u2026" spellcheck="false" autocomplete="off"><button id="wk-thunder-send" class="wk-thunder-send" type="button" title="Send signal">\u26a1</button></div></div>
         <div id="wk-ns-owned-list" class="wk-ns-owned-list${nsRosterOpen ? '' : ' wk-ns-owned-list--hidden'}">${_nsOwnedListHtml()}</div>
+        <div id="ski-nft-inline" class="ski-nft-inline" hidden></div>
       </div>`;
 
   // Unified menu — same layout for both states; name badge only when SuiNS name exists
@@ -5523,9 +5687,22 @@ function renderSkiMenu() {
     // Hide price chip when sending, swapping, or name is taken (not mintable)
     const priceChip = document.getElementById('wk-ns-price-chip');
     if (priceChip) priceChip.style.display = ((sendMode || swapMode) && !mintMode) || (isTaken && !isOwned && !hasListing) ? 'none' : '';
-    // Show/hide Thunder bolt row
+    // Show/hide Thunder bolt row + render conversation
     const thunderRow = document.getElementById('wk-thunder-row');
-    if (thunderRow) thunderRow.style.display = thunderMode ? '' : 'none';
+    if (thunderRow) {
+      thunderRow.style.display = thunderMode ? '' : 'none';
+      try { localStorage.setItem('ski:thunder-open', thunderMode ? '1' : '0'); } catch {}
+      // Only render conversation when counterparty changes (avoid async re-render flicker)
+      if (thunderMode) {
+        const _convoTarget = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+        if (_convoTarget !== _thunderConvoTarget) {
+          _thunderConvoTarget = _convoTarget;
+          _renderConversation(_convoTarget);
+        }
+      } else {
+        _thunderConvoTarget = '';
+      }
+    }
 
     // Auto-configure swap for minting: set amount to mint price (with NS discount)
     if (mintMode && coinChipsOpen) {
@@ -5612,8 +5789,8 @@ function renderSkiMenu() {
       }
     } else if (thunderMode) {
       btn.disabled = false;
-      btn.textContent = '\u26a1';
-      btn.title = `Bolt \u2014 encrypt a strike to ${nsLabel.trim()}.sui`;
+      btn.textContent = 'Thunder';
+      btn.title = `Thunder \u2014 encrypt a signal to ${nsLabel.trim()}.sui`;
     } else if (suiamiMode) {
       btn.disabled = false;
       btn.textContent = 'SUIAMI';
@@ -5921,11 +6098,57 @@ function renderSkiMenu() {
     const isThunderSend = thunderRow && thunderRow.style.display !== 'none';
     if (isThunderSend && thunderMsgInput) {
       const msg = thunderMsgInput.value.trim();
-      if (!msg) { showToast('Type a message'); return; }
       const recipientName = nsLabel.trim();
       if (!recipientName) return;
       const ws3 = getState();
       if (!ws3.address) return;
+
+      // Empty input + ⚡ = quest all pending on-chain signals (storage rebate), keep local history
+      if (!msg) {
+        const tBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+        if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
+        try {
+          const namesWithThunder = Object.entries(_thunderCounts).filter(([, c]) => c > 0);
+          if (namesWithThunder.length === 0) {
+            showToast('No pending signals');
+          } else {
+            const { decryptAndQuest } = await import('./client/thunder.js');
+            // Store quested signals in local log before clearing on-chain
+            const _myLog = app.suinsName || ws3.address;
+            for (const [name, count] of namesWithThunder) {
+              const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
+              if (!nft) continue;
+              const payloads = await decryptAndQuest(ws3.address, name + '.sui', nft.objectId, count, (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes));
+              for (const p of payloads) {
+                const _pSender = p.sender || p.senderAddress.slice(0, 8);
+                await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender);
+              }
+              _thunderCounts[name] = 0;
+            }
+            try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
+            _patchNsOwnedList();
+            // Refresh conversation if viewing a relevant name
+            _thunderConvoTarget = '';
+            _renderConversation(recipientName);
+            showToast(`\u26a1 ${namesWithThunder.length} name${namesWithThunder.length > 1 ? 's' : ''} cleared \u2014 storage rebate claimed`);
+          }
+          // One-off: clean up stale name-keyed logs from old format
+          try {
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+              const k = localStorage.key(i);
+              if (k?.startsWith('ski:thunder-log:') && !k.startsWith(`ski:thunder-log:0x`)) {
+                localStorage.removeItem(k);
+              }
+            }
+          } catch {}
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Burn failed';
+          if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
+        } finally {
+          if (tBtn) { tBtn.textContent = 'Thunder'; tBtn.disabled = false; }
+        }
+        return;
+      }
       const tBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
       if (tBtn) { tBtn.disabled = true; tBtn.textContent = '\u2026'; }
       try {
@@ -5934,11 +6157,23 @@ function renderSkiMenu() {
         const recipientNftId = await lookupRecipientNftId(recipientName);
         if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
         const txBytes = await buildThunderSendTx(ws3.address, senderName, recipientName, recipientNftId, msg);
-        await signAndExecuteTransaction(txBytes);
-        showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
-        // Store bolted strike locally (encrypted) under sender's primary name
-        _storeThunderLocal(senderName || ws3.address, recipientName, msg).catch(() => {});
-        thunderMsgInput.value = '';
+        // Store signal locally before sending — survives browser crash mid-tx
+        const _logName = senderName || ws3.address;
+        await _storeThunderLocal(_logName, recipientName, msg, 'out');
+        let _txOk = false;
+        try {
+          await signAndExecuteTransaction(txBytes);
+          _txOk = true;
+        } catch (txErr) {
+          // Tx failed or rejected — remove the pre-stored signal
+          _removeLastThunderLocal(_logName).catch(() => {});
+          throw txErr;
+        }
+        if (_txOk) {
+          showToast(`\u26a1 Thunder sent to ${recipientName}.sui`);
+          thunderMsgInput.value = '';
+          _renderConversation(recipientName);
+        }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Thunder send failed';
         if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
@@ -6229,6 +6464,7 @@ function renderSkiMenu() {
   _attachOwnedGridWheel();
   _attachNftPopoverListeners();
   _restoreRosterScroll();
+  _restoreConversation();
   const nsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
   nsInput?.addEventListener('click', (e) => e.stopPropagation());
   function _togglePasteBtn() {}
@@ -6332,12 +6568,16 @@ function renderSkiMenu() {
       }
     }
   });
-  // Enter in thunder input → trigger send button (same as clicking ⚡)
+  // Enter in thunder input or inline ⚡ button → trigger send
   document.getElementById('wk-thunder-msg')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       document.getElementById('wk-send-btn')?.click();
     }
+  });
+  document.getElementById('wk-thunder-send')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('wk-send-btn')?.click();
   });
 
   nsInput?.addEventListener('input', (e) => {
@@ -7367,6 +7607,14 @@ function renderSkiMenu() {
       if (changed) {
         try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
         _patchNsOwnedList();
+        // Switch NFT card to name with most thunder
+        const _topT = Object.entries(_thunderCounts)
+          .filter(([, c]) => c > 0)
+          .sort(([, a], [, b]) => b - a)[0];
+        if (_topT) {
+          const chip = document.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${_topT[0]}"]`);
+          if (chip) _showNftPopover(chip, _topT[0]);
+        }
       }
     } catch { /* silent */ }
   };
@@ -7422,6 +7670,12 @@ function renderSkiMenu() {
   document.getElementById('wk-ns-owned-list')?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const t = e.target as HTMLElement;
+
+    // Header click (except tally button) → toggle roster
+    if (t.closest('.wk-ns-owned-header') && !t.closest('#wk-roster-tally')) {
+      _toggleRoster();
+      return;
+    }
 
     // QR code shade action (red QR click)
     const qrEl = t.closest('#wk-roster-qr[data-qr-action]') as HTMLElement | null;
@@ -7572,6 +7826,29 @@ function renderSkiMenu() {
   _attachOwnedGridWheel();
   _attachNftPopoverListeners();
 
+  // NFT card click → quest thunder if the card's name has pending signals
+  document.getElementById('ski-nft-inline')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const popover = document.getElementById('ski-nft-inline');
+    const domain = popover?.dataset.domain?.toLowerCase();
+    if (!domain) return;
+    const count = _thunderCounts[domain] ?? 0;
+    if (count > 0) {
+      const thunderRow = document.getElementById('wk-thunder-row');
+      const wasHidden = !thunderRow || thunderRow.style.display === 'none';
+      // Show the thunder row + conversation
+      if (thunderRow) thunderRow.style.display = '';
+      _renderConversation(domain);
+      // First click just opens the row — second click decrypts
+      if (wasHidden) return;
+      const badge = document.querySelector<HTMLElement>(`.wk-ns-thunder-badge[data-domain="${domain}"]`);
+      if (badge) { badge.click(); return; }
+    }
+    // No thunder — behave like clicking the chip (populate input)
+    const chip = document.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+    if (chip) chip.click();
+  });
+
 }
 
 // ─── Disconnect handler ──────────────────────────────────────────────
@@ -7590,6 +7867,11 @@ async function handleDisconnect(reopenModal = false) {
   nsTransferRecipient = '';
   _thunderCounts = {};
   _thunderDecryptBusy = false;
+  try { localStorage.removeItem('ski:thunder-open'); } catch {}
+  try { localStorage.removeItem('ski:ns-variant'); } catch {}
+  try { sessionStorage.removeItem('ski:thunder-received'); } catch {}
+  try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
+  _thunderConvoTarget = '';
   if (_thunderPollTimer) { clearInterval(_thunderPollTimer); _thunderPollTimer = null; }
   nsRosterOpen = false; _persistRosterOpen();
   try { localStorage.removeItem('ski:roster-scroll'); } catch {}

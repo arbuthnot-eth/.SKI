@@ -1,14 +1,18 @@
-/** Thunder — Seal-encrypt SuiNS messaging types and constants. */
+/** Thunder — encrypt SuiNS messaging types and constants. */
 
 export const THUNDER_VERSION = 1;
 
-/** Thunder package ID (mainnet). */
+/**
+ * Thunder mainnet deployment.
+ * Package: 0xc164...::thunder (module)
+ * Storm:   0xe8e7...::thunder::Storm (shared object — NOT the UpgradeCap)
+ *
+ * To verify: sui client object <STORM_ID> → type should be ...::thunder::Storm
+ */
 export const THUNDER_PACKAGE_ID = '0xc164180c5aca24b42c5b865c6fcf9160deeed8eafee37635135ac54ab6632a1a';
+export const STORM_ID = '0xe8e7d1a55a1cd4ea73be796bb73a2d2f3371c772de5fbdc4c084e939100b45a0';
 
-/** Storm shared object ID (mainnet). */
-export const STORM_ID = '0x00dffb7759cbf71c5f205b431c2484c0f7f40ff2fae900bc265fdae98454f4cb';
-
-/** Thunder payload — the cleartext inside the encrypt blob. */
+/** Thunder payload — the cleartext inside the encrypt payload. */
 export interface ThunderPayload {
   v: typeof THUNDER_VERSION;
   sender: string;
@@ -16,11 +20,4 @@ export interface ThunderPayload {
   message: string;
   timestamp: string;
   suiami?: string;
-}
-
-/** On-chain ThunderPointer fields (mirrors Move struct). */
-export interface ThunderPointerData {
-  blobId: Uint8Array;
-  sealedNamespace: Uint8Array;
-  timestampMs: number;
 }

@@ -3138,7 +3138,7 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = '';
+let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') ?? ''; } catch { return ''; } })();
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;

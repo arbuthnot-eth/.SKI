@@ -1,10 +1,10 @@
-# Thunder — Seal-Encrypted SuiNS Messaging
+# Thunder — Seal-Encrypt SuiNS Messaging
 
 ## Summary
 
-Thunder is encrypted messaging between SuiNS identities. Messages are Seal-encrypted (2-of-3 threshold), stored on Walrus as opaque blobs, with on-chain inbox pointers in a shared `ThunderMailbox` object. Fully opaque until the recipient decrypts — no sender identity, no message content, no social graph leaked.
+Thunder lets SuiNS identities send Seal-encrypt messages to each other. Seal encrypts messages (2-of-3 threshold), Walrus stores the opaque blobs, and on-chain inbox pointers in a shared `ThunderMailbox` object tell the recipient something is waiting. Everything stays opaque until the recipient decrypts — no sender identity, no message content, no social graph leaked.
 
-Built on the forked and mainnet-deployed Sui Stack Messaging SDK (`@mysten/messaging` v0.4.0, package `0x74e34e2e4a2ba60d935db245c0ed93070bbbe23bf1558ae5c6a2a8590c8ad470`) which provides envelope encryption, Thunder action schema, and Move contract primitives.
+Built on the forked and mainnet-deployed Sui Stack Messaging SDK (`@mysten/messaging` v0.4.0, package `0x74e34e2e4a2ba60d935db245c0ed93070bbbe23bf1558ae5c6a2a8590c8ad470`) which provides envelope encrypt/decrypt, Thunder action schema, and Move contract primitives.
 
 ## On-Chain Structure
 
@@ -22,7 +22,7 @@ ThunderMailbox {
 
 ThunderPointer {
   blob_id: vector<u8>,           // Walrus blob ID (content-addressed)
-  sealed_namespace: vector<u8>,  // Seal namespace for decryption
+  sealed_namespace: vector<u8>,  // Seal namespace to decrypt
   timestamp_ms: u64,             // when sent
 }
 ```
@@ -37,12 +37,12 @@ ThunderPointer {
 Custom `seal_approve` entry function:
 - Namespace = `sha3_256(recipient_suins_name)` (e.g. `sha3_256("cash")`)
 - Policy: caller must own the SuinsRegistration NFT whose `domain` field matches the name
-- Seal key servers (Overclock, NodeInfra, Studio Mirai) evaluate this policy before releasing decryption keys
+- Seal key servers (Overclock, NodeInfra, Studio Mirai) evaluate this policy before releasing the key to decrypt
 - Deployed alongside the mailbox in the `contracts/thunder/` package
 
 ## Message Payload
 
-The Seal-encrypted payload (stored on Walrus) contains:
+Seal encrypts the full payload before it goes to Walrus:
 
 ```json
 {
@@ -55,13 +55,13 @@ The Seal-encrypted payload (stored on Walrus) contains:
 }
 ```
 
-- `sender` / `senderAddress` — inside the encrypted blob, invisible until decrypted
-- `suiami` — optional SUIAMI proof embedded in the message, so the recipient can cryptographically verify the sender's identity without a separate handshake
+- `sender` / `senderAddress` — inside the encrypt blob, invisible until the recipient decrypts
+- `suiami` — optional SUIAMI proof so the recipient can verify the sender's identity cryptographically
 - `v` — version field for future schema evolution
 
-The entire JSON is serialized to bytes, encrypted via Seal envelope encryption (AES-GCM with Seal-wrapped DEK), and written to Walrus as a single blob.
+The JSON serializes to bytes, Seal encrypts it (AES-GCM with a Seal-wrapped DEK), and the result writes to Walrus as a single blob.
 
-## Seal Encryption Flow
+## Seal Encrypt / Decrypt Flow
 
 ### Encrypt (sender side)
 
@@ -72,17 +72,17 @@ The entire JSON is serialized to bytes, encrypted via Seal envelope encryption (
    - `threshold` = 2 (of 3 key servers)
    - `data` = JSON payload bytes
 3. Result: `EncryptedObject` (ciphertext + Seal metadata)
-4. Write `EncryptedObject` bytes to Walrus → get `blobId`
+4. Write the encrypt bytes to Walrus → get `blobId`
 5. Call `ThunderMailbox::deposit(mailbox, name_hash, ThunderPointer { blob_id, sealed_namespace, timestamp_ms })`
 
 ### Decrypt (recipient side)
 
 1. Query `ThunderMailbox` for pending pointers at your name hash
-2. For each pointer, fetch the blob from Walrus by `blob_id`
+2. For each pointer, fetch the encrypt blob from Walrus by `blob_id`
 3. Create a Seal `SessionKey` (requires wallet signature — one session key can decrypt multiple messages)
 4. Build a `seal_approve` transaction referencing your SuinsRegistration NFT
-5. Call `client.seal.decrypt({ data: blob, sessionKey, txBytes })` — Seal key servers verify NFT ownership, release key
-6. Parse decrypted JSON → reveal sender, message, optional SUIAMI proof
+5. Call `client.seal.decrypt({ data: blob, sessionKey, txBytes })` — Seal key servers verify NFT ownership, release key to decrypt
+6. Parse the now-clear JSON → reveal sender, message, optional SUIAMI proof
 7. Call `ThunderMailbox::pop(mailbox, name_hash, nft)` to remove the pointer
 
 ## SKI UI Integration
@@ -93,7 +93,7 @@ The entire JSON is serialized to bytes, encrypted via Seal envelope encryption (
 2. No amount entered, balance section collapsed or open → button shows **THUNDER** with thunderbolt icon in Thunderbun orange (`#FFB800`)
 3. The `.sui` suffix area or a new row below the NS input becomes a message input (placeholder: "sealed message...")
 4. User types message, hits THUNDER button (or Enter)
-5. Button shows `...` during encrypt + Walrus write + on-chain deposit
+5. Button shows `...` while Seal encrypts + Walrus stores + on-chain deposits
 6. Toast: `⚡ Thunder sent to cash.sui`
 7. Message input clears, button returns to THUNDER state
 
@@ -140,21 +140,21 @@ Priority: `thunderMode` activates when viewing someone else's taken name with no
 
 - `@mysten/seal` v1.1.1 (already installed)
 - `@mysten/walrus` (add to package.json — for blob read/write)
-- `@mysten/messaging` v0.4.0 (for `EnvelopeEncryption`, `serializeThunderAction`, Thunder action types) — or cherry-pick just the encryption primitives
+- `@mysten/messaging` v0.4.0 (for `EnvelopeEncryption`, `serializeThunderAction`, Thunder action types) — or cherry-pick just the encrypt/decrypt primitives
 - Seal key servers: Overclock, NodeInfra, Studio Mirai (already configured for Shade)
 
 ## Constraints
 
-- **No sender identity leak**: sender name, address, and message content are all inside the Seal-encrypted payload. On-chain mailbox only reveals: "someone sent something to this name hash at this time."
+- **No sender identity leak**: sender name, address, and message content are all inside the Seal-encrypt payload. On-chain mailbox only reveals: "someone sent something to this name hash at this time."
 - **Permissionless send**: anyone can deposit a Thunder pointer. No channel creation, no membership setup, no handshake required.
 - **Gas costs**: sender pays gas for the mailbox deposit tx. Walrus writes are free (publisher mode). Recipient pays gas to pop/clear.
-- **Walrus blob lifetime**: blobs have configurable epoch lifetime. Default to max available epochs. If a blob expires before decryption, the Thunder is lost — acceptable for v1.
-- **Session key**: Seal decryption requires a session key (wallet signature). One session key per sign-in session can decrypt all pending Thunders.
+- **Walrus blob lifetime**: blobs have configurable epoch lifetime. Default to max available epochs. If a blob expires before decrypt, the Thunder is lost — acceptable for v1.
+- **Session key**: Seal decrypt requires a session key (wallet signature). One session key per sign-in session can decrypt all pending Thunders.
 
 ## Out of Scope (v1)
 
 - Group messaging / channels (future: use SDK's Channel model)
-- Cross-chain decryption via IKA dWallets (that's Storm)
+- Cross-chain decrypt via IKA dWallets (that's Storm)
 - Attachments / media (future: use SDK's Walrus attachment flow)
 - Read receipts / delivery confirmation
 - Message threading / replies (v1 reply is just: send a Thunder back)

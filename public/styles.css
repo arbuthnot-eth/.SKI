@@ -3027,9 +3027,10 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 60px 5px 22px;
+  padding: 5px 60px 5px 10px;
   box-sizing: border-box;
   backdrop-filter: blur(4px);
+  text-align: left;
 }
 .ski-idle-ns-input:focus { border-color: rgba(96, 165, 250, 0.6); background: rgba(255, 255, 255, 0.12); }
 .ski-idle-ns-input::placeholder { color: rgba(255, 255, 255, 0.3); }
@@ -3047,11 +3048,11 @@ body {
   all: unset;
   cursor: pointer;
   flex-shrink: 0;
-  padding: 4px 8px;
+  padding: 4px 10px;
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.6rem;
-  font-weight: 700;
+  font-size: 0.7rem;
+  font-weight: 800;
   letter-spacing: 0.5px;
   transition: background 0.15s, border-color 0.15s;
 }

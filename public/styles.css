@@ -2987,6 +2987,27 @@ body {
   border-radius: 12px;
   object-fit: cover;
 }
+.ski-idle-iusd-btn {
+  all: unset;
+  cursor: pointer;
+  position: absolute;
+  top: 8%;
+  left: 6%;
+  z-index: 3;
+  width: 22%;
+  height: auto;
+  border-radius: 50%;
+  transition: transform 0.2s, filter 0.2s;
+}
+.ski-idle-iusd-btn:hover {
+  transform: scale(1.08);
+  filter: brightness(1.2) drop-shadow(0 0 8px rgba(255, 184, 0, 0.5));
+}
+.ski-idle-iusd-icon {
+  width: 100%;
+  height: auto;
+  border-radius: 50%;
+}
 .ski-idle-ns-row {
   display: flex;
   align-items: center;

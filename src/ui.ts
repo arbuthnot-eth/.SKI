@@ -8685,6 +8685,9 @@ function bindEvents() {
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+          <button class="ski-idle-iusd-btn" id="ski-idle-iusd" type="button" title="Swap 95% of wallet to iUSD">
+            <img src="/assets/iusd-256.png" class="ski-idle-iusd-icon" alt="iUSD">
+          </button>
           <div class="ski-idle-ns-row">
             <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
             <div class="ski-idle-ns-input-wrap">
@@ -8844,6 +8847,82 @@ function bindEvents() {
       });
 
       _updateIdleStatus();
+
+      // iUSD coin click → swap 95% of wallet to iUSD
+      _idleOverlay.querySelector('#ski-idle-iusd')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.style.opacity = '0.4';
+        try {
+          // Calculate 95% of SUI balance (keep 5% for gas)
+          const suiBal = app.sui;
+          const swapAmount = Math.floor(suiBal * 0.95 * 1e9); // 95% in MIST
+          if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
+
+          // Build PTB: attest SUI as collateral → mint iUSD
+          const { Transaction } = await import('@mysten/sui/transactions');
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const walletAddr = normalizeSuiAddress(ws.address);
+          const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
+          const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
+          const TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
+
+          const tx = new Transaction();
+          tx.setSender(walletAddr);
+
+          // 1. Attest SUI value as senior tranche collateral
+          // Value in MIST = swapAmount (1 SUI MIST = 1 iUSD MIST at $3/SUI...
+          // but we need USD value. Use suiPrice if available)
+          const suiPrice = suiPriceCache?.price ?? 3;
+          const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6); // iUSD has 6 decimals
+          const collateralValueMist = BigInt(swapAmount); // store raw SUI MIST as value
+
+          tx.moveCall({
+            package: IUSD_PKG,
+            module: 'iusd',
+            function: 'update_collateral',
+            arguments: [
+              tx.object(TREASURY),
+              tx.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
+              tx.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
+              tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+              tx.pure.u64(collateralValueMist),
+              tx.pure.u8(0), // senior tranche
+              tx.object('0x6'),
+            ],
+          });
+
+          // 2. Mint iUSD — amount based on collateral at 150% ratio
+          const mintAmount = BigInt(Math.floor(usdValue / 1.5)); // 150% collateral ratio
+          if (mintAmount <= 0n) { showToast('Amount too small'); return; }
+
+          tx.moveCall({
+            package: IUSD_PKG,
+            module: 'iusd',
+            function: 'mint_and_transfer',
+            arguments: [
+              tx.object(TREASURY_CAP),
+              tx.object(TREASURY),
+              tx.pure.u64(mintAmount),
+              tx.pure.address(walletAddr),
+              tx.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
+            ],
+          });
+
+          const bytes = await tx.build({ client: (await import('../rpc.js')).gqlClient as never }) as Uint8Array & { tx?: unknown };
+          bytes.tx = tx;
+          await signAndExecuteTransaction(bytes);
+          showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
+          refreshPortfolio(true);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Mint failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+        } finally {
+          btn.style.opacity = '';
+        }
+      });
 
       // Diamond click → toggle target address row
       _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', (e) => {

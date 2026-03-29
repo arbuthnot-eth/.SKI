@@ -8771,8 +8771,37 @@ function bindEvents() {
         }
       };
 
+      // Pause GIF while typing, resume on blur
+      const _gifImg = _idleOverlay.querySelector('.ski-idle-img') as HTMLImageElement | null;
+      const _pauseGif = () => { if (_gifImg) _gifImg.style.animationPlayState = 'paused'; };
+      const _resumeGif = () => { if (_gifImg) _gifImg.style.animationPlayState = ''; };
+      const _freezeGif = () => {
+        if (!_gifImg) return;
+        // Canvas freeze — capture current frame, swap src
+        const canvas = document.createElement('canvas');
+        canvas.width = _gifImg.naturalWidth || _gifImg.width;
+        canvas.height = _gifImg.naturalHeight || _gifImg.height;
+        const ctx2d = canvas.getContext('2d');
+        if (ctx2d) {
+          ctx2d.drawImage(_gifImg, 0, 0);
+          _gifImg.dataset.gifSrc = _gifImg.src;
+          _gifImg.src = canvas.toDataURL();
+        }
+      };
+      const _unfreezeGif = () => {
+        if (!_gifImg || !_gifImg.dataset.gifSrc) return;
+        _gifImg.src = _gifImg.dataset.gifSrc;
+        delete _gifImg.dataset.gifSrc;
+      };
+
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('focus', _freezeGif);
+      _idleNsInput?.addEventListener('blur', _unfreezeGif);
+
+      const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+      _idleThunderInputEl?.addEventListener('focus', _freezeGif);
+      _idleThunderInputEl?.addEventListener('blur', _unfreezeGif);
       _idleNsInput?.addEventListener('input', () => {
         const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
         _idleNsInput!.value = val;

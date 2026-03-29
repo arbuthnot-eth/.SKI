@@ -870,6 +870,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: order 0.15s;
+}
+/* QR right-justified — swap column order */
+.wk-qr-collapse--right .wk-qr-content-left {
+  order: 2;
+}
+.wk-qr-collapse--right .wk-qr-content-main {
+  order: 1;
+}
+
+/* QR side toggle */
+.wk-qr-side-toggle {
+  flex-shrink: 0;
 }
 .wk-qr-content-left .wk-popout-name-badge {
   margin: 0;

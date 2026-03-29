@@ -5458,9 +5458,14 @@ function renderSkiMenu() {
   const balValHtml = balView === 'usd'
     ? `<span class="wk-popout-bal-val wk-popout-bal-val--usd">${fmtMenuBalHtml(app.usd)}</span>`
     : `<span class="wk-popout-bal-val wk-popout-bal-val--sui">${fmtMenuBalHtml(getTotalSui())}</span>`;
+  const _qrRight = (() => { try { return localStorage.getItem('ski:qr-right') === '1'; } catch { return false; } })();
   const balToggleHtml = `<div class="wk-popout-balance">
         <span class="wk-popout-bal-display">${dotSvg}${balValHtml}</span><span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
-        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI" style="margin-left:auto">
+        <label class="ski-layout-toggle wk-qr-side-toggle" title="QR position">
+          <input type="checkbox" id="wk-qr-side-toggle"${_qrRight ? ' checked' : ''}>
+          <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
+        </label>
+        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI">
           <input type="checkbox" id="wk-bal-toggle"${balView === 'usd' ? ' checked' : ''}>
           <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
         </label>
@@ -5721,7 +5726,7 @@ function renderSkiMenu() {
               </div>
             </div>
             ${balToggleHtml}
-            <div id="wk-coins-collapse" class="wk-qr-collapse-wrap${coinChipsOpen ? '' : ' wk-qr-collapse--hidden'}">
+            <div id="wk-coins-collapse" class="wk-qr-collapse-wrap${coinChipsOpen ? '' : ' wk-qr-collapse--hidden'}${_qrRight ? ' wk-qr-collapse--right' : ''}">
               <div class="wk-qr-content-left">
                 <div class="wk-qr-content-qr" id="wk-addr-qr" title="${esc(displayAddr)}" data-qr-addr="${esc(displayAddr)}"></div>
               </div>
@@ -5834,6 +5839,12 @@ function renderSkiMenu() {
     if (msgInput) { msgInput.value = ''; msgInput.focus(); }
   });
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
+  document.getElementById('wk-qr-side-toggle')?.addEventListener('change', (e) => {
+    const checked = (e.target as HTMLInputElement).checked;
+    try { localStorage.setItem('ski:qr-right', checked ? '1' : '0'); } catch {}
+    const collapse = document.getElementById('wk-coins-collapse');
+    if (collapse) collapse.classList.toggle('wk-qr-collapse--right', checked);
+  });
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
   _renderNetworkSelect();
   document.getElementById('wk-network-select')?.addEventListener('click', (e) => {
@@ -8629,7 +8640,8 @@ function bindEvents() {
 
   const _resetIdle = () => {
     if (_idleTimer) clearTimeout(_idleTimer);
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    // Don't auto-dismiss overlay — user must click to close
+    if (_idleOverlay) return;
     _idleTimer = setTimeout(() => {
       if (!app.skiMenuOpen) return;
       _idleOverlay = document.createElement('div');

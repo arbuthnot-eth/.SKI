@@ -8670,14 +8670,14 @@ function bindEvents() {
       _idleOverlay.style.width = `${width}px`;
       _idleOverlay.style.height = `${height}px`;
       _idleOverlay.innerHTML = `
-        <div class="ski-idle-media">
-          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
-        </div>
-        <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
         <div class="ski-idle-thunder-row">
           <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off">
           <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button">\u26a1</button>
         </div>
+        <div class="ski-idle-media">
+          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+        </div>
+        <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
       `;
       const _dismissIdle = (keepOverlay = false) => {
         if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }

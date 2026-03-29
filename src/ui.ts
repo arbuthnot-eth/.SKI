@@ -8568,7 +8568,7 @@ let _idleOverlay: HTMLElement | null = null;
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; return; }
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); }
     openModal();
@@ -8577,8 +8577,8 @@ function bindEvents() {
   els.skiBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
 
-    // Dismiss idle overlay if showing
-    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    // If idle overlay is showing, just dismiss it and keep menu open
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; return; }
 
     if (!getState().address) {
       if (modalOpen) { closeModal(); return; }

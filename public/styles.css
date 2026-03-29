@@ -2986,6 +2986,43 @@ body {
   border-radius: 12px;
   object-fit: cover;
 }
+.ski-idle-thunder-row {
+  display: flex;
+  width: 100%;
+  position: relative;
+}
+.ski-idle-thunder-input {
+  width: 100%;
+  background: rgba(255, 184, 0, 0.06);
+  border: 1px solid rgba(255, 184, 0, 0.3);
+  border-radius: 8px;
+  outline: none;
+  color: #FFB800;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 8px 40px 8px 12px;
+  box-sizing: border-box;
+  text-align: right;
+}
+.ski-idle-thunder-input::placeholder { color: rgba(255, 184, 0, 0.4); direction: rtl; }
+.ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(10, 10, 20, 0.95); text-align: left; }
+.ski-idle-thunder-input:focus::placeholder { color: transparent; }
+.ski-idle-thunder-send {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 184, 0, 0.15);
+  border: 1px solid rgba(255, 184, 0, 0.4);
+  border-radius: 6px;
+  color: #FFB800;
+  font-size: 0.85rem;
+  padding: 4px 7px;
+  cursor: pointer;
+  line-height: 1;
+}
+.ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.3); }
 .ski-idle-follow {
   display: block;
   text-align: center;

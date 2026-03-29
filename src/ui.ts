@@ -8674,6 +8674,10 @@ function bindEvents() {
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
         </div>
         <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
+        <div class="ski-idle-thunder-row">
+          <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off">
+          <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button">\u26a1</button>
+        </div>
       `;
       const _dismissIdle = (keepOverlay = false) => {
         if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
@@ -8713,8 +8717,46 @@ function bindEvents() {
         e.stopPropagation();
         _triggerSuiami();
       });
+      // Thunder input — doesn't dismiss, Enter sends
+      const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+      const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send');
+      const _sendIdleThunder = async () => {
+        const msg = _idleThunderInput?.value.trim();
+        if (!msg) return;
+        const ws = getState();
+        if (!ws.address) return;
+        try {
+          // Find recipient: most-thundered name or card domain
+          const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+          const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+          const recipientName = top?.[0] || topLocal?.[0] || '';
+          if (!recipientName) { showToast('No recipient'); return; }
+          const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
+          const senderName = app.suinsName || '';
+          const recipientNftId = await lookupRecipientNftId(recipientName);
+          if (!recipientNftId) { showToast('Cannot find recipient'); return; }
+          const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
+          await _storeThunderLocal(senderName || ws.address, recipientName, msg, 'out');
+          await signAndExecuteTransaction(txBytes);
+          if (_idleThunderInput) _idleThunderInput.value = '';
+          showToast(`\u26a1 Signal sent to ${recipientName}.sui`);
+          _addThunderContact(recipientName);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Signal failed';
+          if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
+        }
+      };
+      _idleThunderInput?.addEventListener('click', (e) => e.stopPropagation());
+      _idleThunderInput?.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
+      });
+      _idleThunderSend?.addEventListener('click', (e) => { e.stopPropagation(); _sendIdleThunder(); });
+      // Click outside GIF/input/follow dismisses
       _idleOverlay.addEventListener('click', (e) => {
-        if (!(e.target as HTMLElement).closest('a') && !(e.target as HTMLElement).closest('.ski-idle-media')) _dismissIdle();
+        const t = e.target as HTMLElement;
+        if (t.closest('a') || t.closest('.ski-idle-media') || t.closest('.ski-idle-thunder-row')) return;
+        _dismissIdle();
       });
       document.body.appendChild(_idleOverlay);
     }, IDLE_MS);

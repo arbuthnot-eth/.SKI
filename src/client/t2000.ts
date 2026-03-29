@@ -10,8 +10,8 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { gqlClient } from '../rpc.js';
 
 // These get updated after mainnet deploy
-let T2000_PACKAGE = '0x0'; // TODO: set after publish
-let ARMORY_ID = '0x0'; // TODO: set after publish
+let T2000_PACKAGE = '0x3e708a6e1dfd6f96b54e0145613d505e508577df4a80aa5523caf380abba5e33';
+let ARMORY_ID = '0xc78197ce97f89833e5da857cc4da41e7d71163c259128350c8c145a1ecfc67e5';
 
 /** Available missions — each maps to a TreasuryAgents strategy */
 export const MISSIONS = {

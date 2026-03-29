@@ -9,8 +9,8 @@ export const THUNDER_VERSION = 1;
  *
  * To verify: sui client object <STORM_ID> → type should be ...::thunder::Storm
  */
-export const THUNDER_PACKAGE_ID = '0xab627152bfbafeb06f567c1932f4d2eba11799160042219d2edaa0706c306ee6';
-export const STORM_ID = '0xebafb2bc3e63664cbf7d9521fca7a809c35d89403fbc3a6669042eacefc34dc1';
+export const THUNDER_PACKAGE_ID = '0x7d2a68288a8687c54901d3e47511dc65c5a41c50d09378305c556a65cbe2f782';
+export const STORM_ID = '0x04928995bbb8e1ab9beff0ccb2747ea1ce404140be8dcc8929827c3985d836e6';
 
 /** Thunder signal — the cleartext content. */
 export interface ThunderPayload {

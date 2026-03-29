@@ -8619,6 +8619,32 @@ function bindEvents() {
   document.addEventListener('visibilitychange', () => {
     if (getState().address && document.visibilityState === 'visible') refreshPortfolio(true);
   });
+
+  // Idle screensaver — show SKI pixel art over menu after 2 min idle
+  let _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let _idleOverlay: HTMLElement | null = null;
+  const IDLE_MS = 120_000; // 2 minutes
+
+  const _resetIdle = () => {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    _idleTimer = setTimeout(() => {
+      if (!app.skiMenuOpen) return;
+      _idleOverlay = document.createElement('a');
+      _idleOverlay.className = 'ski-idle-overlay';
+      (_idleOverlay as HTMLAnchorElement).href = 'https://x.com/brando_sui/status/2038116096675344614';
+      (_idleOverlay as HTMLAnchorElement).target = '_blank';
+      (_idleOverlay as HTMLAnchorElement).rel = 'noopener';
+      _idleOverlay.innerHTML = '<img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">';
+      _idleOverlay.addEventListener('click', (e) => { e.stopPropagation(); });
+      els.skiMenu?.appendChild(_idleOverlay);
+    }, IDLE_MS);
+  };
+
+  ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
+    document.addEventListener(evt, _resetIdle, { passive: true });
+  });
+  _resetIdle();
 }
 
 // ─── Init ────────────────────────────────────────────────────────────

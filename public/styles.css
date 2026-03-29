@@ -3036,6 +3036,7 @@ body {
   all: unset;
   cursor: pointer;
   flex-shrink: 0;
+  margin-left: auto;
   padding: 4px 8px;
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;

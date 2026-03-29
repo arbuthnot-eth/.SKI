@@ -157,6 +157,7 @@ export interface AppState {
   btcAddress: string;
   ethAddress: string;
   solAddress: string;
+  solBalance: number;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -172,6 +173,7 @@ const app: AppState = {
   btcAddress: '',
   ethAddress: '',
   solAddress: '',
+  solBalance: 0,
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -2629,10 +2631,10 @@ function _renderNetworkSelect() {
 
 // Token price cache — maps symbol → { price, fetchedAt }
 // CoinGecko IDs for known Sui tokens
-const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika' };
+const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.02, WAL: 0.08, DEEP: 0.03, XAUM: 4900, IKA: 0.01 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -2755,6 +2757,21 @@ function getTotalSui(): number {
   return totalUsd / price;
 }
 
+/** Fetch SOL balance for the IKA dWallet Solana address. Single lightweight RPC call. */
+async function _fetchSolBalance(): Promise<void> {
+  if (!app.solAddress) return;
+  try {
+    const res = await fetch('https://solana-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] }),
+    });
+    const data = await res.json() as { result?: { value?: number } };
+    const lamports = data?.result?.value ?? 0;
+    app.solBalance = lamports / 1e9; // lamports → SOL
+  } catch { /* non-blocking */ }
+}
+
 export async function refreshPortfolio(force = false) {
   const ws = getState();
   if (!ws.address) return;
@@ -2766,12 +2783,13 @@ export async function refreshPortfolio(force = false) {
   const fetchedFor = ws.address; // capture before any await
 
   try {
-    // gRPC for all balances + SUI price + token prices + SuiNS in parallel
+    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance in parallel
     const [allBalResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.listBalances({ owner: fetchedFor }).catch(() => null),
       lookupSuiNS(fetchedFor),
       fetchSuiPrice(),
       fetchTokenPrices(),
+      _fetchSolBalance(),
     ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
@@ -2819,10 +2837,13 @@ export async function refreshPortfolio(force = false) {
       const tp = getTokenPrice(c.symbol);
       if (tp != null && tp > 0) tokensUsd += c.balance * tp;
     }
+    // Include Solana balance in total
+    const solPrice = getTokenPrice('SOL');
+    const solUsd = (solPrice && app.solBalance > 0) ? app.solBalance * solPrice : 0;
     if (suiUsd != null) {
-      app.usd = suiUsd + app.stableUsd + tokensUsd;
+      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd;
     } else if (app.usd == null) {
-      app.usd = app.stableUsd + tokensUsd > 0 ? app.stableUsd + tokensUsd : null;
+      app.usd = app.stableUsd + tokensUsd + solUsd > 0 ? app.stableUsd + tokensUsd + solUsd : null;
     }
 
     // Keep active detail balance in sync if it's showing the connected wallet
@@ -3248,7 +3269,12 @@ async function _renderConversation(counterparty: string, force = false) {
       msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
     }
     const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender" data-sender="${esc(sender)}">${esc(sender)}</span> ` : '');
-    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${esc(msgText)}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
+    // Render @mentions as clickable
+    const msgHtml = esc(msgText).replace(/@([a-z0-9-]{3,63})(\.sui)?/gi, (_, name) => {
+      const bare = name.toLowerCase();
+      return `<span class="wk-thunder-mention" data-mention="${bare}">@${bare}</span>`;
+    });
+    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
   }).join('');
 
   const deleteBtn = _selectedThunderTs.size > 0
@@ -3313,6 +3339,22 @@ async function _renderConversation(counterparty: string, force = false) {
     });
   });
 
+  // Bind @mention click → populate input + add as contact
+  receivedEl.querySelectorAll('.wk-thunder-mention').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const name = (el as HTMLElement).dataset.mention;
+      if (!name) return;
+      nsLabel = name;
+      const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+      if (inp) inp.value = name;
+      skipNextFocusClear = true;
+      _addThunderContact(name);
+      fetchAndShowNsPrice(name);
+      _updateSendBtnMode();
+    });
+  });
+
   // Bind delete button
   document.getElementById('wk-thunder-delete')?.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -3351,7 +3393,9 @@ async function _renderConversation(counterparty: string, force = false) {
     const count = _selectedThunderTs.size;
     _selectedThunderTs.clear();
     _thunderConvoTarget = '';
+    await _refreshThunderLocalCounts();
     _renderConversation(bare, true);
+    _syncNftCardToInput();
     showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
   });
 
@@ -3390,6 +3434,12 @@ async function _renderConversation(counterparty: string, force = false) {
       await _refreshThunderLocalCounts();
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
+      // Schedule sweep for this ragtag (auto-cleanup after 7 days idle)
+      Promise.all([import('./client/shade.js'), import('./client/thunder.js')]).then(([{ scheduleThunderSweep }, { nameHash }]) => {
+        const hash = nameHash(cardDomain);
+        const hex = Array.from(hash).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+        scheduleThunderSweep(ws.address, hex, cardDomain);
+      }).catch(() => {});
       if (payloads.length > 0) {
         // Fill input with the sender's name or address for easy reply
         const first = payloads[0];
@@ -5592,6 +5642,7 @@ function renderSkiMenu() {
               </div>
             </div>
             ${nsRowHtml}
+            <button class="wk-dd-thunder-bar" id="wk-dd-thunder" type="button">\u26a1 Thunder</button>
           </div>
           <div class="wk-dd-panel wk-dd-panel--settings">
             ${settingsHtml}
@@ -5643,6 +5694,40 @@ function renderSkiMenu() {
     }
   });
   document.getElementById('wk-dd-switch')?.addEventListener('click', menuLockin);
+  document.getElementById('wk-dd-thunder')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (_thunderConvoOpen) {
+      // Close everything
+      _toggleThunderConvo();
+      return;
+    }
+    // Open — pick domain, show card, open convo, focus input
+    let domain = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+    if (!domain) {
+      const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+      if (top) domain = top[0];
+    }
+    if (!domain) {
+      const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+      if (topLocal) domain = topLocal[0];
+    }
+    if (domain) {
+      nsLabel = domain;
+      const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+      if (inp) inp.value = domain;
+      skipNextFocusClear = true;
+      const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
+      const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+      _showNftPopover(chip || document.getElementById('ski-nft-inline')!, domain);
+      _nftPopoverPinned = true;
+    }
+    _toggleThunderConvo();
+    // Show reply input + focus
+    const replyWrap = document.getElementById('wk-thunder-reply-wrap');
+    if (replyWrap?.hasAttribute('hidden')) replyWrap.removeAttribute('hidden');
+    const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
+    if (msgInput) { msgInput.value = ''; msgInput.focus(); }
+  });
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
   _renderNetworkSelect();
@@ -6395,15 +6480,25 @@ function renderSkiMenu() {
       }
       const ws3 = getState();
       if (!ws3.address) return;
-      // Ensure card + conversation are open, then focus reply input
+      // Show card + reply input only (no conversation history)
       if (!_thunderConvoOpen) {
         const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
         const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${recipientName}"]`);
         _showNftPopover(chip || document.getElementById('ski-nft-inline')!, recipientName);
         _nftPopoverPinned = true;
-        _toggleThunderConvo();
+        // Open convo area but clear history bubbles
+        _thunderConvoOpen = true;
+        const convoEl = document.getElementById('wk-thunder-convo');
+        const cardEl = document.getElementById('ski-nft-inline');
+        const quickBtn = document.getElementById('wk-thunder-quick');
+        if (cardEl) cardEl.removeAttribute('hidden');
+        if (convoEl) convoEl.removeAttribute('hidden');
+        quickBtn?.classList.add('wk-thunder-quick--active');
+        try { localStorage.setItem('ski:thunder-card-open', '1'); } catch {}
       }
-      // Always focus the reply input — show it even if decrypt bar is visible
+      // Clear conversation bubbles — just show reply input
+      const received = document.getElementById('wk-thunder-received');
+      if (received) received.innerHTML = '';
       const replyWrap = document.getElementById('wk-thunder-reply-wrap');
       if (replyWrap?.hasAttribute('hidden')) replyWrap.removeAttribute('hidden');
       const msgInput = document.getElementById('wk-thunder-msg') as HTMLInputElement | null;
@@ -6834,6 +6929,14 @@ function renderSkiMenu() {
         _syncNftCardToInput();
         // Auto-add recipient as wishlist chip if not in roster
         _addThunderContact(recipientName);
+        // Auto-add @mentioned names as contacts
+        const mentions = msg.match(/@([a-z0-9-]{3,63})(?:\.sui)?/gi);
+        if (mentions) {
+          for (const m of mentions) {
+            const bare = m.slice(1).replace(/\.sui$/i, '').toLowerCase();
+            if (bare) _addThunderContact(bare);
+          }
+        }
         // Refocus reply input for next message
         if (msgInput) msgInput.focus();
       }

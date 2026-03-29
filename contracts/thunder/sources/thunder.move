@@ -6,7 +6,8 @@
 /// Storm is the shared object. Anyone can send a signal.
 /// Only the SuiNS name owner can quest (NFT-gated).
 /// Ragtag holds signals per name. Questing emits decrypted keys.
-/// Empty ragtags are removed for storage rebate.
+/// Empty ragtags survive for 7 days (reused by new signals).
+/// After 7 days idle, anyone can sweep for the storage rebate.
 module thunder::thunder;
 
 use sui::dynamic_field;
@@ -19,6 +20,12 @@ use suins::suins_registration::SuinsRegistration;
 
 const ENotOwner: u64 = 0;
 const EEmpty: u64 = 1;
+const ENotExpired: u64 = 2;
+
+// ─── Constants ─────────────────────────────────────────────────────
+
+/// 7 days in milliseconds
+const RAGTAG_TTL_MS: u64 = 604_800_000;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
@@ -52,8 +59,10 @@ public struct Signal has store, copy, drop {
 }
 
 /// Per-name ragtag. Dynamic field on Storm, keyed by name_hash.
+/// Survives empty for up to RAGTAG_TTL_MS after last activity.
 public struct Ragtag has store {
     signals: vector<Signal>,
+    last_activity_ms: u64,
 }
 
 // ─── Init ───────────────────────────────────────────────────────────
@@ -65,6 +74,7 @@ fun init(ctx: &mut TxContext) {
 // ─── Send ──────────────────────────────────────────────────────────
 
 /// Send a signal to someone's ragtag. Permissionless — anyone can send.
+/// Refreshes the ragtag TTL on every signal.
 entry fun signal(
     storm: &mut Storm,
     name_hash: vector<u8>,
@@ -80,8 +90,12 @@ entry fun signal(
     if (dynamic_field::exists_(&storm.id, name_hash)) {
         let ragtag: &mut Ragtag = dynamic_field::borrow_mut(&mut storm.id, name_hash);
         ragtag.signals.push_back(sig);
+        ragtag.last_activity_ms = timestamp_ms; // refresh TTL
     } else {
-        dynamic_field::add(&mut storm.id, name_hash, Ragtag { signals: vector[sig] });
+        dynamic_field::add(&mut storm.id, name_hash, Ragtag {
+            signals: vector[sig],
+            last_activity_ms: timestamp_ms,
+        });
     };
 
     event::emit(Signaled { name_hash, timestamp_ms });
@@ -91,11 +105,13 @@ entry fun signal(
 
 /// Quest — claim the first signal from your ragtag. Requires SuinsRegistration NFT.
 /// Un-XORs the AES key and emits Questfi with payload + key + nonce.
+/// Empty ragtags are kept alive (reused by future signals).
 /// Batch multiple quests in one PTB.
 entry fun quest(
     storm: &mut Storm,
     name_hash: vector<u8>,
     nft: &SuinsRegistration,
+    clock: &Clock,
     _ctx: &TxContext,
 ) {
     let domain_bytes = nft.domain().to_string().into_bytes();
@@ -106,12 +122,7 @@ entry fun quest(
     assert!(!ragtag.signals.is_empty(), EEmpty);
 
     let sig = ragtag.signals.remove(0);
-    let empty = ragtag.signals.is_empty();
-
-    // Remove empty ragtag → full storage rebate
-    if (empty) {
-        let Ragtag { signals: _ } = dynamic_field::remove<vector<u8>, Ragtag>(&mut storm.id, name_hash);
-    };
+    ragtag.last_activity_ms = clock.timestamp_ms(); // refresh TTL on quest too
 
     // Un-XOR the key
     let nft_id_bytes = object::id(nft).to_bytes();
@@ -124,6 +135,27 @@ entry fun quest(
         aes_key: real_key,
         aes_nonce: sig.aes_nonce,
     });
+}
+
+// ─── Sweep (permissionless cleanup) ────────────────────────────────
+
+/// Sweep — delete an empty ragtag that has been idle for > 7 days.
+/// Permissionless — anyone can call this to claim the storage rebate.
+entry fun sweep(
+    storm: &mut Storm,
+    name_hash: vector<u8>,
+    clock: &Clock,
+    _ctx: &mut TxContext,
+) {
+    let ragtag: &Ragtag = dynamic_field::borrow(&storm.id, name_hash);
+    assert!(ragtag.signals.is_empty(), EEmpty);
+    let now = clock.timestamp_ms();
+    assert!(now >= ragtag.last_activity_ms + RAGTAG_TTL_MS, ENotExpired);
+
+    // Remove the expired empty ragtag → storage rebate
+    let Ragtag { signals: _, last_activity_ms: _ } = dynamic_field::remove<vector<u8>, Ragtag>(
+        &mut storm.id, name_hash,
+    );
 }
 
 // ─── Queries ────────────────────────────────────────────────────────

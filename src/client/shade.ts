@@ -168,4 +168,19 @@ export function disconnectShadeExecutor(): void {
   stateCallback = null;
 }
 
+/**
+ * Schedule a thunder sweep — DO will call thunder::sweep() after 7 days idle.
+ */
+export async function scheduleThunderSweep(ownerAddress: string, nameHash: string, domain: string): Promise<void> {
+  try {
+    const addr = _lastOwnerAddress || ownerAddress;
+    const url = `${_host()}/agents/shade-executor-agent/${addr}?schedule-sweep`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nameHash, domain }),
+    });
+  } catch { /* non-blocking */ }
+}
+
 export type { ShadeExecutorOrder, ShadeExecutorState };

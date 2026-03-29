@@ -22,7 +22,7 @@ import {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /** Hash the full domain with .sui — matches the Move contract's keccak256(nft.domain().to_string()). */
-function nameHash(name: string): Uint8Array {
+export function nameHash(name: string): Uint8Array {
   const full = name.toLowerCase().replace(/\.sui$/, '') + '.sui';
   return keccak_256(new TextEncoder().encode(full));
 }
@@ -193,6 +193,7 @@ export async function buildBatchQuestTx(
         tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
         tx.object(nftObjectId),
+        tx.object('0x6'), // clock
       ],
     });
   }

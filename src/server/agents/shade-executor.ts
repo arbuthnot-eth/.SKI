@@ -62,8 +62,16 @@ export interface ShadeExecutorOrder {
   error?: string;
 }
 
+export interface ThunderSweepEntry {
+  nameHash: string; // hex-encoded keccak256 of domain
+  domain: string;   // bare domain name (e.g. "brando")
+  sweepAfterMs: number; // when to sweep (quest time + 7 days)
+  status: 'pending' | 'completed' | 'failed';
+}
+
 export interface ShadeExecutorState {
   orders: ShadeExecutorOrder[];
+  sweeps?: ThunderSweepEntry[];
 }
 
 interface Env {
@@ -134,6 +142,15 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
           status: 400,
           headers: { 'content-type': 'application/json' },
         });
+      }
+    }
+    if ((url.pathname.endsWith('/schedule-sweep') || url.searchParams.has('schedule-sweep')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as { nameHash: string; domain: string };
+        const result = await this.scheduleSweep(params);
+        return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
       }
     }
     if (url.pathname.endsWith('/reset-failed') || url.searchParams.has('reset-failed')) {
@@ -311,6 +328,29 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     return { reset: count };
   }
 
+  // ─── Thunder sweep scheduling ──────────────────────────────────────
+
+  @callable()
+  async scheduleSweep(params: { nameHash: string; domain: string }): Promise<{ success: boolean }> {
+    const sweeps = (this.state.sweeps ?? []).filter(s => s.nameHash !== params.nameHash);
+    sweeps.push({
+      nameHash: params.nameHash,
+      domain: params.domain,
+      sweepAfterMs: Date.now() + 604_800_000, // 7 days
+      status: 'pending',
+    });
+    this.setState({ ...this.state, sweeps });
+    this.scheduleNextAlarm();
+    return { success: true };
+  }
+
+  @callable()
+  async cancelSweep(params: { nameHash: string }): Promise<{ success: boolean }> {
+    const sweeps = (this.state.sweeps ?? []).filter(s => s.nameHash !== params.nameHash);
+    this.setState({ ...this.state, sweeps });
+    return { success: true };
+  }
+
   // ─── Poke — external trigger to re-check and re-schedule ──────────
 
   @callable()
@@ -338,6 +378,13 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   private async _shadeAlarm() {
     try {
       const now = Date.now();
+
+      // Execute ready thunder sweeps
+      const readySweeps = (this.state.sweeps ?? [])
+        .filter(s => s.status === 'pending' && s.sweepAfterMs <= now);
+      for (const sweep of readySweeps) {
+        await this.executeSweep(sweep);
+      }
 
       // Find orders ready to execute (grace period expired)
       const readyOrders = this.state.orders
@@ -818,15 +865,70 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     });
   }
 
+  // ─── Thunder sweep execution ────────────────────────────────────────
+
+  private async executeSweep(sweep: ThunderSweepEntry) {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+      console.error('[ShadeExecutor] sweep: no keeper key');
+      return;
+    }
+    try {
+      console.log(`[ShadeExecutor] sweeping ragtag for ${sweep.domain}`);
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = keypair.getPublicKey().toSuiAddress();
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const THUNDER_PKG = '0xab627152bfbafeb06f567c1932f4d2eba11799160042219d2edaa0706c306ee6';
+      const STORM_OBJ = '0xebafb2bc3e63664cbf7d9521fca7a809c35d89403fbc3a6669042eacefc34dc1';
+
+      const nameHashBytes = Array.from(hexToBytes(sweep.nameHash));
+      const tx = new Transaction();
+      tx.setSender(normalizeSuiAddress(keeperAddr));
+      tx.moveCall({
+        package: THUNDER_PKG,
+        module: 'thunder',
+        function: 'sweep',
+        arguments: [
+          tx.object(STORM_OBJ),
+          tx.pure.vector('u8', nameHashBytes),
+          tx.object('0x6'), // clock
+        ],
+      });
+
+      const txBytes = await tx.build({ client: transport as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const digest = await this.submitTransaction(txBytes, signature);
+
+      // Mark completed
+      const sweeps = (this.state.sweeps ?? []).map(s =>
+        s.nameHash === sweep.nameHash ? { ...s, status: 'completed' as const } : s,
+      );
+      this.setState({ ...this.state, sweeps });
+      console.log(`[ShadeExecutor] sweep completed for ${sweep.domain}: ${digest}`);
+    } catch (err) {
+      console.error(`[ShadeExecutor] sweep failed for ${sweep.domain}:`, err);
+      // Mark failed — don't retry (ragtag may have new signals)
+      const sweeps = (this.state.sweeps ?? []).map(s =>
+        s.nameHash === sweep.nameHash ? { ...s, status: 'failed' as const } : s,
+      );
+      this.setState({ ...this.state, sweeps });
+    }
+  }
+
   private scheduleNextAlarm() {
     const pendingOrders = this.state.orders
       .filter(o => o.status === 'pending')
       .sort((a, b) => a.executeAfterMs - b.executeAfterMs);
+    const pendingSweeps = (this.state.sweeps ?? [])
+      .filter(s => s.status === 'pending')
+      .sort((a, b) => a.sweepAfterMs - b.sweepAfterMs);
 
-    if (pendingOrders.length > 0) {
-      // Schedule exactly at expiry — every ms counts in a name race
-      const nextMs = Math.max(pendingOrders[0].executeAfterMs, Date.now());
-      this.ctx.storage.setAlarm(nextMs);
+    const nextOrder = pendingOrders[0]?.executeAfterMs ?? Infinity;
+    const nextSweep = pendingSweeps[0]?.sweepAfterMs ?? Infinity;
+    const nextMs = Math.min(nextOrder, nextSweep);
+
+    if (nextMs < Infinity) {
+      this.ctx.storage.setAlarm(Math.max(nextMs, Date.now()));
     }
   }
 }

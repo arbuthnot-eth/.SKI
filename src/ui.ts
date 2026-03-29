@@ -8686,23 +8686,24 @@ function bindEvents() {
         <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
           <div class="ski-idle-ns-row">
-            <span class="wk-ns-status" id="ski-idle-status">${_nsStatusSvg(_idleVariant)}</span>
+            <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
             <div class="ski-idle-ns-input-wrap">
-              <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
-              <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled>SUIAMI</button>
+              <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63" title="Search SuiNS names">
+              <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="Sign identity">SUIAMI</button>
             </div>
-            <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}">\u2715</button>
-            <span class="wk-ns-dot-sui">.sui</span>
+            <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
+            <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
           </div>
+          <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
         </div>
         <div id="ski-idle-card" class="ski-idle-card"></div>
         <div class="ski-idle-thunder-row">
-          <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off">
-          <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button">\u26a1</button>
+          <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
+          <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
         </div>
         <div class="ski-idle-bottom-row">
-          <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
-          <button class="ski-idle-next" id="ski-idle-next" type="button" title="Next page">\u203a</button>
+          <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
+          <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
         </div>
       `;
 
@@ -8808,6 +8809,36 @@ function bindEvents() {
       });
 
       _updateIdleStatus();
+
+      // Diamond click → toggle target address row
+      _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        if (!addrRow) return;
+        if (!addrRow.hasAttribute('hidden')) {
+          addrRow.setAttribute('hidden', '');
+          return;
+        }
+        const ws = getState();
+        const addr = nsTargetAddress || nsNftOwner || ws.address || '';
+        if (!addr) return;
+        const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
+        const btcLine = app.btcAddress ? `<span class="ski-idle-addr-chain">btc ${app.btcAddress.slice(0, 8)}\u2026${app.btcAddress.slice(-4)}</span>` : '';
+        const solLine = app.solAddress ? `<span class="ski-idle-addr-chain">sol ${app.solAddress.slice(0, 6)}\u2026${app.solAddress.slice(-4)}</span>` : '';
+        const ethLine = app.ethAddress ? `<span class="ski-idle-addr-chain">eth ${app.ethAddress.slice(0, 6)}\u2026${app.ethAddress.slice(-4)}</span>` : '';
+        addrRow.innerHTML = `
+          <span class="ski-idle-addr-text" title="${addr}" style="cursor:pointer">sui ${short}</span>
+          ${btcLine}${solLine}${ethLine}
+        `;
+        addrRow.removeAttribute('hidden');
+        addrRow.querySelectorAll('.ski-idle-addr-text, .ski-idle-addr-chain').forEach(el => {
+          el.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const full = (el as HTMLElement).title || addr;
+            navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
+          });
+        });
+      });
 
       // Next page → t2000 page
       _idleOverlay.querySelector('#ski-idle-next')?.addEventListener('click', (e) => {

@@ -2991,7 +2991,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: calc(100% - 24px);
+  width: calc(100% - 14px);
   position: absolute;
   top: 22%;
   left: 12px;
@@ -3027,7 +3027,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 60px 5px 12px;
+  padding: 5px 60px 5px 22px;
   box-sizing: border-box;
   backdrop-filter: blur(4px);
 }

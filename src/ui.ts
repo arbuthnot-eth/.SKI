@@ -8632,13 +8632,17 @@ function bindEvents() {
     if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
     _idleTimer = setTimeout(() => {
       if (!app.skiMenuOpen) return;
-      _idleOverlay = document.createElement('a');
+      _idleOverlay = document.createElement('div');
       _idleOverlay.className = 'ski-idle-overlay';
-      (_idleOverlay as HTMLAnchorElement).href = 'https://x.com/brando_sui/status/2038116096675344614';
-      (_idleOverlay as HTMLAnchorElement).target = '_blank';
-      (_idleOverlay as HTMLAnchorElement).rel = 'noopener';
-      _idleOverlay.innerHTML = '<img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">';
-      _idleOverlay.addEventListener('click', (e) => { e.stopPropagation(); });
+      _idleOverlay.innerHTML = `
+        <a href="https://x.com/brando_sui/status/2038116096675344614" target="_blank" rel="noopener" class="ski-idle-media">
+          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+        </a>
+        <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
+      `;
+      _idleOverlay.addEventListener('click', (e) => {
+        if (!(e.target as HTMLElement).closest('a')) { _idleOverlay?.remove(); _idleOverlay = null; _resetIdle(); }
+      });
       els.skiMenu?.appendChild(_idleOverlay);
     }, IDLE_MS);
   };

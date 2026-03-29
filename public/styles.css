@@ -2975,16 +2975,17 @@ body {
 }
 .ski-idle-media {
   display: flex;
-  flex: 1;
+  width: 100%;
   min-height: 0;
+  flex: 1;
   align-items: center;
   justify-content: center;
 }
 .ski-idle-img {
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: auto;
   border-radius: 12px;
-  object-fit: contain;
+  object-fit: cover;
 }
 .ski-idle-follow {
   display: block;

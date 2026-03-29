@@ -8714,9 +8714,10 @@ function bindEvents() {
         };
         setTimeout(_tryClickSuiami, 500);
       };
-      // GIF click triggers SUIAMI (overlay stays), Follow button redirects
+      // GIF click triggers SUIAMI (overlay stays), but not on focus-restore click
       _idleOverlay.querySelector('.ski-idle-media')?.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (!_hadFocus) return; // first click is just restoring window focus
         _triggerSuiami();
       });
       // Thunder input — doesn't dismiss, Enter sends

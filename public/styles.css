@@ -2991,10 +2991,10 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: calc(100% - 24px);
+  width: 70%;
   position: absolute;
-  top: calc(28% - 21px);
-  left: 12px;
+  top: 24%;
+  left: 30%;
   z-index: 2;
 }
 .ski-idle-ns-row .wk-ns-status {

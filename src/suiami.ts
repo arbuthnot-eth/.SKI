@@ -10,10 +10,14 @@ export interface SuiamiMessage {
   datetime: string;
   network: 'sui';
   address: string;
+  /** Cross-chain addresses derived from IKA dWallets */
+  btc?: string;
+  sol?: string;
+  eth?: string;
   ski: string;
   nftId: string;
   timestamp: number;
-  version: 1;
+  version: 2;
 }
 
 export interface SuiamiProof {
@@ -23,8 +27,8 @@ export interface SuiamiProof {
   signature: string;
 }
 
-/** Build a SuiAMI message ready for signing. */
-export function buildSuiamiMessage(name: string, address: string, nftId: string): SuiamiMessage {
+/** Build a SuiAMI message ready for signing. Includes all cross-chain addresses. */
+export function buildSuiamiMessage(name: string, address: string, nftId: string, crossChain?: { btc?: string; sol?: string; eth?: string }): SuiamiMessage {
   const now = Date.now();
   const d = new Date(now);
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -39,10 +43,13 @@ export function buildSuiamiMessage(name: string, address: string, nftId: string)
     datetime: art,
     network: 'sui',
     address,
+    ...(crossChain?.btc ? { btc: crossChain.btc } : {}),
+    ...(crossChain?.sol ? { sol: crossChain.sol } : {}),
+    ...(crossChain?.eth ? { eth: crossChain.eth } : {}),
     ski: `${name}.sui.ski`,
     nftId,
     timestamp: now,
-    version: 1,
+    version: 2,
   };
 }
 

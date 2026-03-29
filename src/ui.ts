@@ -6514,7 +6514,11 @@ function renderSkiMenu() {
         if (!nftId) { showToast(`No SuiNS NFT found for ${bare}.sui`); return; }
 
         // Build and sign
-        const message = buildSuiamiMessage(bare, ws2.address, nftId);
+        const message = buildSuiamiMessage(bare, ws2.address, nftId, {
+          btc: app.btcAddress || undefined,
+          sol: app.solAddress || undefined,
+          eth: app.ethAddress || undefined,
+        });
         const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
         const { bytes, signature } = await signPersonalMessage(msgBytes);
         const proof = createSuiamiProof(message, bytes, signature);
@@ -8671,10 +8675,19 @@ function bindEvents() {
       `;
       const _dismissIdle = () => {
         _idleOverlay?.remove(); _idleOverlay = null; _resetIdle();
-        if (!app.skiMenuOpen && getState().address) {
-          app.skiMenuOpen = true;
-          try { localStorage.setItem('ski:lift', '1'); } catch {}
-          render();
+        if (getState().address) {
+          if (!app.skiMenuOpen) {
+            app.skiMenuOpen = true;
+            try { localStorage.setItem('ski:lift', '1'); } catch {}
+            render();
+          }
+          // Trigger SUIAMI — sign identity with all chain addresses
+          setTimeout(() => {
+            const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+            if (sendBtn && (sendBtn.textContent === 'SUIAMI' || sendBtn.classList.contains('wk-send-btn--suiami-active') || sendBtn.classList.contains('wk-send-btn--suiami-green'))) {
+              sendBtn.click();
+            }
+          }, 300);
         }
       };
       // GIF click dismisses, only Follow button redirects

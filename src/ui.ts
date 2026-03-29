@@ -8832,7 +8832,7 @@ function bindEvents() {
         const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
         const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
         const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
-        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#627eea" stroke="white" stroke-width="3"/><text x="20" y="21" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="20" font-weight="700" fill="white">\u039E</text></svg></span>`;
+        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#627eea"/><g transform="translate(10,4) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
 
         const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
         const btcLine = app.btcAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${app.btcAddress}">${btcIcon} ${app.btcAddress.slice(0, 8)}\u2026${app.btcAddress.slice(-4)}</span>` : '';

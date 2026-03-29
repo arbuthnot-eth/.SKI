@@ -8675,36 +8675,46 @@ function bindEvents() {
         </div>
         <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow">Follow @brando_sui</a>
       `;
-      const _dismissIdle = () => {
-        _idleOverlay?.remove(); _idleOverlay = null; _resetIdle();
-        if (getState().address) {
-          if (!app.skiMenuOpen) {
-            app.skiMenuOpen = true;
-            try { localStorage.setItem('ski:lift', '1'); } catch {}
-            render();
-          }
-          // Trigger SUIAMI — sign identity with all chain addresses
-          // Wait for render to complete and DOM to settle, then click SUIAMI
-          const _tryClickSuiami = (attempts = 0) => {
-            if (attempts > 10) return;
-            const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-            if (btn && btn.textContent?.includes('SUIAMI')) {
-              btn.disabled = false; // enable if it was the default disabled state
-              btn.click();
-            } else {
-              setTimeout(() => _tryClickSuiami(attempts + 1), 200);
-            }
-          };
-          setTimeout(_tryClickSuiami, 500);
-        }
+      const _dismissIdle = (keepOverlay = false) => {
+        if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
+        _resetIdle();
       };
-      // GIF click dismisses, only Follow button redirects
+      const _triggerSuiami = () => {
+        if (!getState().address) { _dismissIdle(); return; }
+        if (!app.skiMenuOpen) {
+          app.skiMenuOpen = true;
+          try { localStorage.setItem('ski:lift', '1'); } catch {}
+          render();
+        }
+        // Keep GIF visible — listen for SUIAMI completion to dismiss
+        const _onSuiamiDone = () => {
+          window.removeEventListener('suiami:signed', _onSuiamiDone);
+          _dismissIdle();
+        };
+        window.addEventListener('suiami:signed', _onSuiamiDone);
+        // Also dismiss after 30s timeout if signing is rejected/cancelled
+        setTimeout(() => { window.removeEventListener('suiami:signed', _onSuiamiDone); _dismissIdle(); }, 30_000);
+
+        // Click SUIAMI button once menu renders
+        const _tryClickSuiami = (attempts = 0) => {
+          if (attempts > 10) { _dismissIdle(); return; }
+          const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+          if (btn && btn.textContent?.includes('SUIAMI')) {
+            btn.disabled = false;
+            btn.click();
+          } else {
+            setTimeout(() => _tryClickSuiami(attempts + 1), 200);
+          }
+        };
+        setTimeout(_tryClickSuiami, 500);
+      };
+      // GIF click triggers SUIAMI (overlay stays), Follow button redirects
       _idleOverlay.querySelector('.ski-idle-media')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        _dismissIdle();
+        _triggerSuiami();
       });
       _idleOverlay.addEventListener('click', (e) => {
-        if (!(e.target as HTMLElement).closest('a')) _dismissIdle();
+        if (!(e.target as HTMLElement).closest('a') && !(e.target as HTMLElement).closest('.ski-idle-media')) _dismissIdle();
       });
       document.body.appendChild(_idleOverlay);
     }, IDLE_MS);

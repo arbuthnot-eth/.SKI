@@ -8,13 +8,14 @@
 export interface SuiamiMessage {
   suiami: string;
   datetime: string;
-  network: 'sui';
-  address: string;
-  /** Cross-chain addresses derived from IKA dWallets */
+  /** Truncated addresses — quick glance at the top of the signing popup */
+  chains: string;
+  ski: string;
+  /** Full addresses — verifiable at the bottom */
+  sui: string;
   btc?: string;
   sol?: string;
   eth?: string;
-  ski: string;
   nftId: string;
   timestamp: number;
   version: 2;
@@ -38,15 +39,22 @@ export function buildSuiamiMessage(name: string, address: string, nftId: string,
   }).formatToParts(d);
   const p = (t: string) => parts.find(x => x.type === t)?.value ?? '';
   const art = `${p('hour')}:${p('minute')} ${p('day')}/${parseInt(p('month'), 10)}/${p('year')}`;
+  // Build truncated summary for the top of the signing popup
+  const trunc = (addr: string, pre = 6, suf = 4) => `${addr.slice(0, pre)}…${addr.slice(-suf)}`;
+  const chainParts: string[] = [`sui:${trunc(address)}`];
+  if (crossChain?.btc) chainParts.push(`btc:${trunc(crossChain.btc, 8, 4)}`);
+  if (crossChain?.sol) chainParts.push(`sol:${trunc(crossChain.sol)}`);
+  if (crossChain?.eth) chainParts.push(`eth:${trunc(crossChain.eth)}`);
+
   return {
     suiami: `I am ${name}`,
     datetime: art,
-    network: 'sui',
-    address,
+    chains: chainParts.join(' · '),
+    ski: `${name}.sui.ski`,
+    sui: address,
     ...(crossChain?.btc ? { btc: crossChain.btc } : {}),
     ...(crossChain?.sol ? { sol: crossChain.sol } : {}),
     ...(crossChain?.eth ? { eth: crossChain.eth } : {}),
-    ski: `${name}.sui.ski`,
     nftId,
     timestamp: now,
     version: 2,

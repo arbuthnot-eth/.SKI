@@ -704,7 +704,7 @@ app.post('/api/suiami/verify', async (c) => {
     const signature = body.slice(dotIdx + 1);
     const message = JSON.parse(atob(msgB64));
 
-    if (!message.suiami || !message.address || !message.nftId) {
+    if (!message.suiami || !(message.sui || message.address) || !message.nftId) {
       return c.json({ valid: false, error: 'Missing required fields' }, 400);
     }
 
@@ -732,7 +732,7 @@ app.post('/api/suiami/verify', async (c) => {
       const ownerAddr = owner?.AddressOwner ?? '';
       // Normalize both addresses for comparison (strip 0x, lowercase, pad to 64)
       const norm = (a: string) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
-      ownershipVerified = norm(ownerAddr) === norm(message.address);
+      ownershipVerified = norm(ownerAddr) === norm(message.sui || message.address);
 
       // 2. Check the NFT's domain_name field matches the claimed name
       const fields = objData?.data?.content?.fields as Record<string, unknown> | undefined;
@@ -757,7 +757,7 @@ app.post('/api/suiami/verify', async (c) => {
       onChainError,
       suiami: message.suiami,
       ski: message.ski,
-      address: message.address,
+      address: message.sui || message.address,
       nftId: message.nftId,
       timestamp: message.timestamp,
       signature,

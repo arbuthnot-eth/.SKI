@@ -8671,18 +8671,20 @@ function bindEvents() {
       _idleOverlay.style.top = `${top}px`;
       _idleOverlay.style.width = `${width}px`;
       _idleOverlay.style.height = `${height}px`;
-      // Build card + NS input for the idle overlay
+      // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
-      const _idleVariant = nsAvail === 'owned' ? 'blue-square' : nsAvail === 'taken' ? 'yellow-circle' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
+      const _idleVariant: SkiDotVariant = nsAvail === 'owned' ? 'blue-square' : nsAvail === 'taken' ? 'yellow-circle' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
       const _idleInputVal = nsLabel.trim();
 
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
           <div class="ski-idle-ns-row">
-            <span class="wk-ns-status">${_nsStatusSvg(_idleVariant)}</span>
+            <span class="wk-ns-status" id="ski-idle-status">${_nsStatusSvg(_idleVariant)}</span>
             <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
+            <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}">\u2715</button>
             <span class="wk-ns-dot-sui">.sui</span>
+            <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled>SUIAMI</button>
           </div>
         </div>
         <div id="ski-idle-card" class="ski-idle-card"></div>
@@ -8710,17 +8712,91 @@ function bindEvents() {
         }
       }
 
-      // NS input on idle — syncs to main nsLabel
+      // NS input on idle — full SKI menu behavior
       const _idleNsInput = _idleOverlay.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+      const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
+      const _idleClearBtn = _idleOverlay.querySelector('#ski-idle-clear') as HTMLButtonElement | null;
+      const _idleActionBtn = _idleOverlay.querySelector('#ski-idle-action') as HTMLButtonElement | null;
+      let _idleDebounce: ReturnType<typeof setTimeout> | null = null;
+
+      const _updateIdleStatus = () => {
+        if (!_idleStatusEl || !_idleActionBtn) return;
+        const variant: SkiDotVariant = nsAvail === 'owned' ? 'blue-square'
+          : nsAvail === 'taken' ? 'yellow-circle'
+          : nsAvail === 'available' ? 'green-circle'
+          : nsAvail === 'grace' ? 'red-hexagon'
+          : 'black-diamond';
+        _idleStatusEl.innerHTML = _nsStatusSvg(variant);
+
+        const label = nsLabel.trim();
+        const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        if (!label) {
+          _idleActionBtn.textContent = 'SUIAMI';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+          _idleActionBtn.disabled = !app.suinsName;
+        } else if (nsAvail === 'available') {
+          _idleActionBtn.textContent = 'MINT';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--mint';
+          _idleActionBtn.disabled = false;
+        } else if (nsAvail === 'taken' && !isOwned) {
+          _idleActionBtn.textContent = 'Thunder';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
+          _idleActionBtn.disabled = false;
+        } else if (isOwned) {
+          _idleActionBtn.textContent = 'SUIAMI';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
+          _idleActionBtn.disabled = false;
+        } else {
+          _idleActionBtn.textContent = 'SUIAMI';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+          _idleActionBtn.disabled = true;
+        }
+      };
+
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
-      _idleNsInput?.addEventListener('input', (e) => {
-        const val = (_idleNsInput.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
-        _idleNsInput.value = val;
+      _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('input', () => {
+        const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+        _idleNsInput!.value = val;
         nsLabel = val;
+        if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
         const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
         if (mainInput) mainInput.value = val;
+        // Reset status while fetching
+        nsAvail = null;
+        _updateIdleStatus();
+        // Debounce fetch
+        if (_idleDebounce) clearTimeout(_idleDebounce);
+        if (val.length >= 3 && isValidNsLabel(val)) {
+          _idleDebounce = setTimeout(() => {
+            fetchAndShowNsPrice(val).then(_updateIdleStatus);
+          }, 400);
+        }
       });
-      _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
+
+      // Clear button
+      _idleClearBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (_idleNsInput) _idleNsInput.value = '';
+        nsLabel = '';
+        nsAvail = null;
+        if (_idleClearBtn) _idleClearBtn.style.display = 'none';
+        _updateIdleStatus();
+        _idleNsInput?.focus();
+      });
+
+      // Action button — mirrors main send button behavior
+      _idleActionBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _dismissIdle();
+        // Let the main menu handle the action
+        setTimeout(() => {
+          const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+          if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
+        }, 500);
+      });
+
+      _updateIdleStatus();
       const _dismissIdle = (keepOverlay = false) => {
         if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
         _resetIdle();

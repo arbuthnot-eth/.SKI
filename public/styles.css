@@ -2990,12 +2990,12 @@ body {
   display: flex;
   width: 100%;
   position: relative;
-  margin-top: -4px;
+  margin-top: -10px;
 }
 .ski-idle-thunder-input {
   width: 100%;
-  background: rgba(255, 184, 0, 0.06);
-  border: 1px solid rgba(255, 184, 0, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
   outline: none;
   color: #FFB800;
@@ -3005,9 +3005,10 @@ body {
   padding: 8px 40px 8px 12px;
   box-sizing: border-box;
   text-align: right;
+  backdrop-filter: blur(4px);
 }
 .ski-idle-thunder-input::placeholder { color: rgba(255, 184, 0, 0.4); direction: rtl; }
-.ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(10, 10, 20, 0.95); text-align: left; }
+.ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(255, 255, 255, 0.12); text-align: left; }
 .ski-idle-thunder-input:focus::placeholder { color: transparent; }
 .ski-idle-thunder-send {
   position: absolute;

@@ -1,7 +1,7 @@
 /**
  * t2000 — Client for deploying and managing IKA terminator agents.
  *
- * Space pirate army. Destroys bridges and wormholes.
+ * Space pirate ship. Destroys bridges and wormholes.
  * Each t2000 signs natively on every chain via IKA dWallet.
  */
 
@@ -9,9 +9,8 @@ import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { gqlClient } from '../rpc.js';
 
-// These get updated after mainnet deploy
 let T2000_PACKAGE = '0x3e708a6e1dfd6f96b54e0145613d505e508577df4a80aa5523caf380abba5e33';
-let ARMORY_ID = '0xc78197ce97f89833e5da857cc4da41e7d71163c259128350c8c145a1ecfc67e5';
+let SHIP_ID = '0xc78197ce97f89833e5da857cc4da41e7d71163c259128350c8c145a1ecfc67e5'; // on-chain: Armory
 
 /** Available missions — each maps to a TreasuryAgents strategy */
 export const MISSIONS = {
@@ -47,7 +46,7 @@ export async function buildDeployT2000Tx(
     module: 't2000',
     function: 'deploy',
     arguments: [
-      tx.object(ARMORY_ID),
+      tx.object(SHIP_ID),
       tx.pure.vector('u8', Array.from(new TextEncoder().encode(designation))),
       tx.pure.vector('u8', Array.from(new TextEncoder().encode(MISSIONS[mission].description))),
       tx.pure.address(normalizeSuiAddress(dwalletId)),
@@ -89,20 +88,20 @@ export async function buildReportMissionTx(
 }
 
 /** Set package and armory IDs after deploy */
-export function setT2000Config(packageId: string, armoryId: string) {
+export function setT2000Config(packageId: string, shipId: string) {
   T2000_PACKAGE = packageId;
-  ARMORY_ID = armoryId;
+  SHIP_ID = shipId;
 }
 
 /** Query armory stats via GraphQL */
-export async function getArmoryStats(): Promise<{
+export async function getShipStats(): Promise<{
   count: number;
   totalCollected: string;
   deployCost: string;
 } | null> {
   try {
     const result = await gqlClient.query({
-      query: `query { object(address: "${ARMORY_ID}") { asMoveObject { contents { json } } } }`,
+      query: `query { object(address: "${SHIP_ID}") { asMoveObject { contents { json } } } }`,
     });
     const json = (result.data as any)?.object?.asMoveObject?.contents?.json;
     if (!json) return null;

@@ -8623,7 +8623,7 @@ function bindEvents() {
   // Idle screensaver — show SKI pixel art over menu after 2 min idle
   let _idleTimer: ReturnType<typeof setTimeout> | null = null;
   let _idleOverlay: HTMLElement | null = null;
-  const IDLE_MS = 120_000; // 2 minutes
+  const IDLE_MS = 15_000; // 15 seconds
 
   const _resetIdle = () => {
     if (_idleTimer) clearTimeout(_idleTimer);

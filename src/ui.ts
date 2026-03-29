@@ -8856,9 +8856,8 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
-          // Fetch fresh SUI balance via RPC (don't rely on cached app.sui)
-          const { grpcClient: _gc } = await import('../rpc.js');
-          const _bals = await _gc.core.listBalances({ owner: ws.address }).catch(() => null);
+          // Fetch fresh SUI balance via gRPC (don't rely on cached app.sui)
+          const _bals = await grpcClient.core.listBalances({ owner: ws.address }).catch(() => null);
           let suiBalMist = 0n;
           if (_bals?.balances) {
             for (const b of _bals.balances) {
@@ -8923,7 +8922,14 @@ function bindEvents() {
             ],
           });
 
-          const bytes = await tx.build({ client: (await import('../rpc.js')).gqlClient as never }) as Uint8Array & { tx?: unknown };
+          let bytes: Uint8Array & { tx?: unknown };
+          try {
+            bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
+          } catch {
+            const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+            const _gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+            bytes = await tx.build({ client: _gql as never }) as Uint8Array & { tx?: unknown };
+          }
           bytes.tx = tx;
           await signAndExecuteTransaction(bytes);
           showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);

@@ -1,0 +1,239 @@
+# Thunder Storm
+
+> IKA as the engine. Thunder Storm as the brain. iUSD as the money. Privacy as the moat.
+
+---
+
+## Stack
+
+| Layer | What | Status |
+|-------|------|--------|
+| **IKA dWallets** | 2PC-MPC multi-chain custody (BTC/ETH/SOL/SUI) | Live — DKG complete, ed25519 + secp256k1 |
+| **Thunder Storm** | Encrypted signals between SuiNS identities | Live — v6, card-centric UX, conversation threading |
+| **iUSD** | Yield-bearing stable backed by hard assets + equities + energy | Spec complete, implementation Week 1 |
+| **Shade** | Privacy-preserving SuiNS grace-period sniping | Live — commitment-reveal, Seal encryption |
+| **SKI** | Wallet + identity shell (.sui.ski) | Live — WaaP, Phantom, Backpack |
+
+---
+
+## iUSD Reserve
+
+### Senior Tranche — 60% (peg floor)
+
+| Asset | Chain | Custody | Yield | Weight |
+|-------|-------|---------|-------|--------|
+| USDC | Sui + Solana | Native | Kamino/NAVI 4-5% | 20% |
+| BUIDL | Ethereum | IKA secp256k1 | T-bills 4.5% | 20% |
+| VBILL | Solana | IKA ed25519 | T-bills 4.5% | 5% |
+| Staked SUI | Sui | Native | PoS 3.5% | 8% |
+| Staked SOL | Solana | IKA ed25519 | PoS 7% | 7% |
+
+### Junior Tranche — 40% (growth engine, absorbs losses first)
+
+| Asset | Chain | Custody | Yield | Weight |
+|-------|-------|---------|-------|--------|
+| XAUM gold | Sui | Native | 8-15% | 8% |
+| PAXG gold | Ethereum | IKA secp256k1 | 8-15% | 4% |
+| XAGM silver | Ethereum | IKA secp256k1 | 8-15% | 4% |
+| TSLAx | Solana | IKA ed25519 | 20-40% | 5% |
+| NVDAx | Solana | IKA ed25519 | 20-40% | 5% |
+| SPYx | Solana | IKA ed25519 | 10-15% | 4% |
+| BTC | Bitcoin | IKA secp256k1 | Appreciation | 6% |
+| WTI crude perp | Hyperliquid | IKA secp256k1 | Contango carry | 2% |
+| LITRO crude | Arbitrum | IKA secp256k1 | Physical oil (2027) | 2% |
+
+### Loss Waterfall
+
+```
+Junior absorbs first → Senior absorbs second → iUSD holder last
+```
+
+### Target Yield: 8-12% APY
+
+Blended reserve yield ~9.3% + protocol revenue ~1-3% on top.
+
+---
+
+## Revenue
+
+Assumes Moonshot grant ($500K), 10K users growing 3x/year, AI+crypto supercycle.
+
+### User Growth
+
+| | Y1 | Y2 | Y3 |
+|---|---|---|---|
+| **Users** | 10,000 | 30,000 | 100,000 |
+| **Signals/user/day** | 5 | 8 | 12 |
+| **Signals/day** | 50,000 | 240,000 | 1,200,000 |
+| **Names registered via SKI** | 25,000 | 90,000 | 350,000 |
+| **Shade orders** | 2,000 | 8,000 | 30,000 |
+| **Avg swap volume/user/mo** | $200 | $350 | $500 |
+
+### Revenue
+
+| Source | Mechanism | Y1 | Y2 | Y3 |
+|--------|-----------|-----|-----|-----|
+| Moonshot grant | Sui DeFi Moonshots | $500k | — | — |
+| Registration 5% | 25k names × $15 avg × 5% | $18.7k | $67.5k | $262k |
+| Shade 10% escrow | 2k orders × $50 avg × 10% | $10k | $40k | $150k |
+| Shade markets 3% | Counter-bets on 50% of orders | $3k | $12k | $45k |
+| Thunder fees | 50k signals/day × $0.009 × 365 | $164k | $788k | $3.94M |
+| Swap spread 0.1% | 10k users × $200/mo × 12 × 0.1% | $24k | $126k | $600k |
+| Treasury appreciation | 20% on growing AUM | $144k | $445k | $1.83M |
+| Lending yield | 5% on deployed USDC/stables | $36k | $111k | $456k |
+| Superteam recycling | Restaked iUSD rewards compounding | — | $50k | $250k |
+| **Total** | | **$900k** | **$1.64M** | **$7.53M** |
+
+### Thunder Fee Breakdown (the engine)
+
+At $0.009 iUSD per signal, denominated in the stable:
+
+| | Signals/day | Daily fees | Annual fees |
+|---|---|---|---|
+| Y1 (10k users × 5/day) | 50,000 | $450 | $164k |
+| Y2 (30k users × 8/day) | 240,000 | $2,160 | $788k |
+| Y3 (100k users × 12/day) | 1,200,000 | $10,800 | $3.94M |
+
+Thunder fees alone cover the entire yield obligation by Year 2.
+
+### Supportable iUSD Supply
+
+| Year | Revenue | AUM (cumulative) | at 8% APY | at 12% APY |
+|------|---------|-------------------|-----------|------------|
+| 1 | $900k | $900k | $11.2M | $7.5M |
+| 2 | $1.64M | $2.54M | $31.7M | $21.1M |
+| 3 | $7.53M | $10.1M | $126M | $84M |
+
+### Treasury AUM Growth
+
+| Year | Inflows | Appreciation (20%) | Cumulative AUM |
+|------|---------|-------------------|----------------|
+| 1 | $900k | $180k | $1.08M |
+| 2 | $1.64M | $544k | $3.26M |
+| 3 | $7.53M | $2.16M | $12.9M |
+
+### Per-User Economics
+
+| | Y1 | Y2 | Y3 |
+|---|---|---|---|
+| Revenue per user | $90 | $55 | $75 |
+| iUSD yield per user (at 8%) | $89 | $84 | $101 |
+| Thunder fees paid per user | $16.4 | $26.3 | $39.4 |
+| Net yield after fees | $73 | $58 | $62 |
+| Effective APY on $1k deposit | 7.3% | 5.8% | 6.2% |
+
+Users pay ~$16-39/year in Thunder fees and earn ~$58-73/year in iUSD yield. Net positive. The protocol pays you more than you spend on messaging.
+
+---
+
+## Lending
+
+| Protocol | Chain | TVL | xStocks Collateral | Priority |
+|----------|-------|-----|-------------------|----------|
+| Kamino | Solana | $3.5B | YES | Primary — TSLAx/NVDAx as collateral |
+| NAVI | Sui | $252M | No | Month 3-5 — iUSD listing |
+| Scallop | Sui | ~$130-580M | No | Month 6 — after NAVI track record |
+
+---
+
+## Superteam Distribution
+
+37 country subnames on `superteam.sui`. iUSD rewards by Thunder Storm activity.
+
+### Existing Chapters
+
+in, de, tr, vn, mx, ae, ng, br, sg, au, nl, my, kz, ie, uk, usa, can, pol, ukr, indo, geo, japan, korea, blkn, phl, france, es
+
+### LatAm Expansion
+
+ar (Argentina), sv (El Salvador), ve (Venezuela), co (Colombia), cl (Chile), uy (Uruguay), cu (Cuba), pa (Panama)
+
+### Other
+
+gl (Greenland), ir (Iran)
+
+---
+
+## Privacy (dabble)
+
+- **Seal encryption** on Thunder Storm signals (live today)
+- **Viewing keys** for compliance (selective disclosure)
+- **IKA dWallets** reach Umbra/encrypt.xyz on Solana
+- **Private signals earn higher iUSD rewards** (anti-spam, higher quality)
+- Full privacy roadmap: encrypt.sui (Q2) → private.sui (Q3) → umbra.sui (Q4)
+
+---
+
+## Compliance
+
+- **GENIUS Act**: Senior tranche (USDC + T-bills = 45%) meets HQLA. Junior disclosed as yield collateral.
+- **MiCA**: Auditor viewing key. Not a CASP.
+- **InfiniFi reference**: Rob Montgomery's tranching model (siUSD/liUSD) validated at $115M TVL.
+
+---
+
+## Targets
+
+- **Sui Moonshot**: Apply now. Up to $500K. Rolling admission. Novel primitive.
+- **Kaszek & Anthropic Buenos Aires**: April 14. Built entirely with Claude Code.
+- **Superteam**: ar.superteam.sui = Argentina's application into the community.
+
+---
+
+## Implementation
+
+### Phase 1: Revenue + iUSD Foundation
+- [ ] Thunder v2: add $0.009 iUSD protocol fee to signal()
+- [ ] Shade v2: add 10% treasury cut to execute()
+- [ ] Treasury multisig setup
+- [ ] iUSD Move module (TreasuryCap, CollateralRecord, tranching, mint/burn)
+- [ ] SKI menu: add Treasury page (flip between ⚙️ Settings ↔ 💰 Treasury ↔ ⚡ Thunder)
+
+### Phase 2: AI Treasury + Lending
+- [ ] TreasuryAgents DO (flash loan arb, liquidation bot, yield rotator, rebalancer)
+- [ ] NAVI flash loan integration (0% fee arb scanner)
+- [ ] NAVI/Scallop yield rotation logic
+- [ ] Pyth oracle for iUSD NAV
+- [ ] NAVI governance proposal submitted
+
+### Phase 3: Cross-Chain Collateral + Kamino
+- [ ] Solana xStocks custody via IKA ed25519 (TSLAx, NVDAx, SPYx)
+- [ ] Kamino integration (deposit xStocks as collateral, borrow USDC)
+- [ ] Hyperliquid WTI perp position via IKA secp256k1
+- [ ] TreasuryAgents: Solana MEV via Jito bundles
+- [ ] SKI menu: Treasury page shows live AUM, yield, allocation breakdown
+
+### Phase 4: Shade Markets + Superteam
+- [ ] Shade prediction markets (counter-bets, UmbraMarket contract)
+- [ ] Superteam subnames (37 countries)
+- [ ] Country-based Thunder Storm iUSD rewards
+- [ ] TreasuryAgents: liquidation monitor for NAVI + Scallop
+
+### Phase 5: Polish + Hackathon
+- [ ] Security audit engagement
+- [ ] Demo flow: SKI → Thunder → iUSD → Treasury → Superteam
+- [ ] Apply Sui Moonshot (if not already accepted)
+- [ ] Buenos Aires hackathon submission
+
+### SKI Menu Pages (slider panels)
+
+```
+[Lockin] [⚙️] [💰] [⚡] [Deactivate]
+          │     │     │
+          │     │     └── Thunder: conversation, signals, Storm stats
+          │     └──────── Treasury: AUM, allocation, yield, reserve health
+          └────────────── Settings: network, preferences, dWallet status
+```
+
+Three panels the user flips through. Same slider pattern as the existing Settings panel.
+
+---
+
+## Specs
+
+- [iUSD Reserve Spec](superpowers/specs/2026-03-28-iusd-reserve-spec.md)
+- [IKA BAM Bridge Spec](superpowers/specs/2026-03-28-ika-bam-bridge-spec.md)
+- [Thunder Card-Centric UX](superpowers/specs/2026-03-28-thunder-card-centric-ux.md)
+- [Thunder Design](superpowers/specs/2026-03-28-thunder-design.md)
+- [Storm Concept](superpowers/specs/2026-03-28-storm-concept.md)
+- [Walrus Storm Research](superpowers/specs/2026-03-28-walrus-storm-research.md)

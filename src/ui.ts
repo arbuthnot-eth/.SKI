@@ -6469,14 +6469,16 @@ function renderSkiMenu() {
       return;
     }
 
-    // SuiAMI mode: only when button is actually showing SUIAMI (not SWAP/SEND)
+    // SuiAMI mode: if the button literally says SUIAMI, it's a SUIAMI click
+    const _btnEl = document.getElementById('wk-send-btn');
+    const _btnText = _btnEl?.textContent?.trim() ?? '';
     const isSelfTarget = sec?.classList.contains('wk-dd-ns-section--self-target') ?? false;
     const isOwned = sec?.classList.contains('wk-dd-ns-section--owned') ?? false;
     const suiamiName = nsLabel.trim().length > 0 ? nsLabel.trim() : (app.suinsName ?? '');
     const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
     const isSwapOrSend = coinChipsOpen && !inEqualsOut; // swap takes priority
     const isSendMode = coinChipsOpen && inEqualsOut && nsLabel.trim().length > 0 && !isSelfTarget && !isOwned; // sending to other
-    const suiamiClick = !isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName));
+    const suiamiClick = _btnText === 'SUIAMI' || (!isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName)));
     if (suiamiClick) {
       const ws2 = getState();
       if (!ws2.address) return;
@@ -8682,12 +8684,18 @@ function bindEvents() {
             render();
           }
           // Trigger SUIAMI — sign identity with all chain addresses
-          setTimeout(() => {
-            const sendBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-            if (sendBtn && (sendBtn.textContent === 'SUIAMI' || sendBtn.classList.contains('wk-send-btn--suiami-active') || sendBtn.classList.contains('wk-send-btn--suiami-green'))) {
-              sendBtn.click();
+          // Wait for render to complete and DOM to settle, then click SUIAMI
+          const _tryClickSuiami = (attempts = 0) => {
+            if (attempts > 10) return;
+            const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+            if (btn && btn.textContent?.includes('SUIAMI')) {
+              btn.disabled = false; // enable if it was the default disabled state
+              btn.click();
+            } else {
+              setTimeout(() => _tryClickSuiami(attempts + 1), 200);
             }
-          }, 300);
+          };
+          setTimeout(_tryClickSuiami, 500);
         }
       };
       // GIF click dismisses, only Follow button redirects

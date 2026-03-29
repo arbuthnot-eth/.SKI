@@ -8671,16 +8671,56 @@ function bindEvents() {
       _idleOverlay.style.top = `${top}px`;
       _idleOverlay.style.width = `${width}px`;
       _idleOverlay.style.height = `${height}px`;
+      // Build card + NS input for the idle overlay
+      const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
+      const _idleVariant = nsAvail === 'owned' ? 'blue-square' : nsAvail === 'taken' ? 'yellow-circle' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
+      const _idleInputVal = nsLabel.trim();
+
       _idleOverlay.innerHTML = `
+        <div class="ski-idle-ns-row">
+          <span class="wk-ns-status">${_nsStatusSvg(_idleVariant)}</span>
+          <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63">
+          <span class="wk-ns-dot-sui">.sui</span>
+        </div>
         <div class="ski-idle-media">
           <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
         </div>
+        <div id="ski-idle-card" class="ski-idle-card"></div>
         <div class="ski-idle-thunder-row">
           <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off">
           <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button">\u26a1</button>
         </div>
         <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
       `;
+
+      // Populate card if we have a domain
+      if (_idleCardDomain) {
+        const cardSlot = _idleOverlay.querySelector('#ski-idle-card');
+        if (cardSlot) {
+          const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === _idleCardDomain.toLowerCase());
+          let expiryText = '';
+          if (ownedEntry?.expirationMs) {
+            const daysLeft = Math.max(0, Math.ceil((ownedEntry.expirationMs - Date.now()) / 86_400_000));
+            expiryText = `${daysLeft}d`;
+          }
+          const unquestedCount = _thunderCounts[_idleCardDomain.toLowerCase()] ?? 0;
+          const totalCount = _thunderLocalCounts[_idleCardDomain.toLowerCase()] ?? 0;
+          const badgeHtml = (totalCount > 0 ? `\u26c8\ufe0f${totalCount} ` : '') + (unquestedCount > 0 ? `\u26a1${unquestedCount}` : '');
+          cardSlot.innerHTML = `<span class="ski-idle-card-name">${esc(_idleCardDomain)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${expiryText ? ` <span class="ski-idle-card-expiry">${expiryText}</span>` : ''}`;
+        }
+      }
+
+      // NS input on idle — syncs to main nsLabel
+      const _idleNsInput = _idleOverlay.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+      _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('input', (e) => {
+        const val = (_idleNsInput.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+        _idleNsInput.value = val;
+        nsLabel = val;
+        const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (mainInput) mainInput.value = val;
+      });
+      _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
       const _dismissIdle = (keepOverlay = false) => {
         if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; }
         _resetIdle();

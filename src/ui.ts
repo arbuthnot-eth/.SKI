@@ -4636,9 +4636,9 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white outline with subtle fill visible on dark backgrounds
+  // black-diamond: true black fill, white outline — forced even in dark mode
   const dPath = `M${half},${pad} L${s - pad},${half} L${half},${s - pad} L${pad},${half}Z`;
-  return `<svg ${base}><path d="${dPath}" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.6)" stroke-width="${sw}"/></svg>`;
+  return `<svg ${base} style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><path d="${dPath}" fill="#000000" stroke="rgba(255,255,255,0.6)" stroke-width="${sw}"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {

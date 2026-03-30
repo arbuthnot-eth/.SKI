@@ -136,6 +136,29 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    if ((url.pathname.endsWith('/quest-bounty') || url.searchParams.has('quest-bounty')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { commitment: string; amount: number; accepted: string[]; recipient: string };
+        // Store the bounty — discrete, no domain visible
+        const bounties = (this.state as any).quest_bounties ?? [];
+        const bounty = {
+          id: crypto.randomUUID(),
+          commitment: body.commitment,
+          amount: body.amount,
+          accepted: body.accepted,
+          recipient: body.recipient,
+          status: 'open',
+          created: Date.now(),
+        };
+        bounties.push(bounty);
+        this.setState({ ...this.state, quest_bounties: bounties } as any);
+        console.log(`[TreasuryAgents] Quest bounty posted: $${body.amount}, commitment: ${body.commitment.slice(0, 16)}...`);
+        return new Response(JSON.stringify({ id: bounty.id, status: 'open' }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if (url.pathname.endsWith('/t2000s') || url.searchParams.has('t2000s')) {
       return new Response(JSON.stringify({ agents: this.state.t2000s ?? [] }), {
         headers: { 'content-type': 'application/json' },

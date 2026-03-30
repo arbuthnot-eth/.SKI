@@ -949,6 +949,33 @@ app.get('/api/thunder/chronicom', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// Quest bounty — discrete offer, no domain visible, just amount + accepted coins
+app.post('/api/treasury/quest-bounty', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      commitment: string;
+      amount: number;
+      accepted: string[];
+      recipient: string;
+    };
+    if (!body.commitment || !body.amount || !body.recipient) {
+      return c.json({ error: 'Missing params' }, 400);
+    }
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?quest-bounty', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text || 'Unknown error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 export default app;
 
 // Export Durable Object classes for Wrangler binding

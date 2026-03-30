@@ -9450,7 +9450,7 @@ function bindEvents() {
       });
 
       // Action button — handle directly from overlay, don't dismiss
-      _idleActionBtn?.addEventListener('click', (e) => {
+      _idleActionBtn?.addEventListener('click', async (e) => {
         e.stopPropagation();
         const label = nsLabel.trim();
         const btnText = _idleActionBtn!.textContent || '';
@@ -9472,6 +9472,51 @@ function bindEvents() {
             const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
             if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
           }, 500);
+        } else if (btnText === 'Quest') {
+          // Post a discrete bounty — amount + accepted coins, no domain visible
+          e.stopPropagation();
+          if (!label) return;
+          const ws = getState();
+          if (!ws.address) { showToast('Connect wallet first'); return; }
+          _idleActionBtn!.disabled = true;
+          _idleActionBtn!.textContent = '\u2026';
+          try {
+            // Commitment: hash(domain || address) — hides the name
+            const commitment = await crypto.subtle.digest(
+              'SHA-256',
+              new TextEncoder().encode(`${label}.sui:${ws.address}`),
+            );
+            const commitHex = Array.from(new Uint8Array(commitment))
+              .map(b => b.toString(16).padStart(2, '0')).join('');
+            // Post bounty to TreasuryAgents
+            const mintCost = nsPriceUsd ?? 7.50;
+            const res = await fetch('/api/treasury/quest-bounty', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                commitment: commitHex,
+                amount: mintCost,
+                accepted: ['SOL', 'USDC', 'SUI', 'ETH', 'BTC'],
+                recipient: ws.address,
+              }),
+            });
+            if (res.ok) {
+              showToast(`\u26a1 Quest posted — $${mintCost.toFixed(2)} bounty for Chronicoms`);
+              _idleActionBtn!.textContent = 'Quested';
+              _idleActionBtn!.className = 'ski-idle-ns-action ski-idle-ns-action--quest-bounty';
+              _idleActionBtn!.disabled = true;
+            } else {
+              const err = await res.json().catch(() => ({ error: 'Failed' })) as { error?: string };
+              showToast(err.error || 'Quest failed');
+              _idleActionBtn!.textContent = 'Quest';
+              _idleActionBtn!.disabled = false;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Quest failed';
+            if (!msg.toLowerCase().includes('reject')) showToast(msg);
+            _idleActionBtn!.textContent = 'Quest';
+            _idleActionBtn!.disabled = false;
+          }
         } else if (btnText === 'Storm' || btnText === 'Thunder') {
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
           if (convoEl && !convoEl.hasAttribute('hidden')) {

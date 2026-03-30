@@ -3179,7 +3179,7 @@ export function mountDotButton(el: HTMLElement): () => void {
 
 let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
-let nsLabel = ''; // always empty on hard refresh — card defaults to most-thundered
+let nsLabel = (() => { try { return localStorage.getItem('ski:ns-label') || ''; } catch { return ''; } })();
 let nsPriceUsd: number | null = null;
 let nsPriceFetchFor = '';
 let nsPriceDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -3434,7 +3434,7 @@ async function _renderConversation(counterparty: string, force = false) {
       await _refreshThunderLocalCounts();
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
-      // Schedule sweep for this ragtag (auto-cleanup after 7 days idle)
+      // Schedule sweep for this storm (auto-cleanup after 7 days idle)
       Promise.all([import('./client/shade.js'), import('./client/thunder.js')]).then(([{ scheduleThunderSweep }, { nameHash }]) => {
         const hash = nameHash(cardDomain);
         const hex = Array.from(hash).map((b: number) => b.toString(16).padStart(2, '0')).join('');
@@ -3692,6 +3692,7 @@ function _persistAddrSectionOpen() {
 // Legacy alias — kept in sync with addrSectionOpen
 let balSectionOpen = addrSectionOpen;
 let skiSettingsOpen = false;
+let skiTreasuryOpen = false;
 function _saveRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; if (g) localStorage.setItem('ski:roster-scroll', String(g.scrollLeft)); } catch {} }
 function _restoreRosterScroll() { try { const g = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null; const v = localStorage.getItem('ski:roster-scroll'); if (g && v) g.scrollLeft = Number(v); } catch {} }
 let _shadeCountdownTimer: ReturnType<typeof setInterval> | null = null; // live ticking countdown
@@ -4635,9 +4636,9 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: white outline with subtle fill visible on dark backgrounds
+  // black-diamond: true black fill, white outline — forced even in dark mode
   const dPath = `M${half},${pad} L${s - pad},${half} L${half},${s - pad} L${pad},${half}Z`;
-  return `<svg ${base}><path d="${dPath}" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.6)" stroke-width="${sw}"/></svg>`;
+  return `<svg ${base} style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><path d="${dPath}" fill="#000000" stroke="#ffffff" stroke-width="${sw}"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -5216,6 +5217,104 @@ function menuCopyAddress(e: Event) {
   copyAddress();
 }
 
+function _treasuryPanelHtml(): string {
+  const solPrice = getTokenPrice('SOL') ?? 82;
+  const solUsd = app.solBalance > 0 ? (app.solBalance * solPrice).toFixed(2) : '0.00';
+  const totalRevenue = app.usd != null ? (app.usd * 0.05).toFixed(2) : '0.00'; // 5% of portfolio as proxy
+
+  return `
+    <div class="wk-settings-header">
+      <button class="wk-settings-back" id="wk-treasury-back" type="button">\u2190</button>
+      <span class="wk-settings-title">Treasury</span>
+    </div>
+    <div class="wk-treasury-body">
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Reserve Health</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Senior (peg floor)</span>
+          <span class="wk-treasury-val wk-treasury-val--green">60%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Junior (growth)</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">40%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Collateral Ratio</span>
+          <span class="wk-treasury-val">150%+</span>
+        </div>
+      </div>
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Yield Sources</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">NAVI Lending</span>
+          <span class="wk-treasury-val">SUI ~3.5%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Kamino (Solana)</span>
+          <span class="wk-treasury-val">xStocks collateral</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Scallop</span>
+          <span class="wk-treasury-val">USDC ~4.5%</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">DeepBook Maker</span>
+          <span class="wk-treasury-val">Rebates</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Full Sail LP</span>
+          <span class="wk-treasury-val">oSAIL + fees</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Aftermath afSUI</span>
+          <span class="wk-treasury-val">Staking + farms</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Flash Arb (NAVI)</span>
+          <span class="wk-treasury-val">0% fee arb</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">USD1 (WL Markets)</span>
+          <span class="wk-treasury-val">T-bills + lending</span>
+        </div>
+      </div>
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Cross-Chain (IKA dWallet)</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">SOL Balance</span>
+          <span class="wk-treasury-val">${app.solBalance > 0 ? app.solBalance.toFixed(4) : '—'} SOL ($${solUsd})</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Chains</span>
+          <span class="wk-treasury-val">Sui · Sol · ETH · BTC · Base</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Assets</span>
+          <span class="wk-treasury-val">20 across 6 chains</span>
+        </div>
+      </div>
+      <div class="wk-treasury-section">
+        <div class="wk-treasury-label">Revenue Streams</div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Thunder $0.009/signal</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Registration 5%</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Shade 10% escrow</span>
+          <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">Swap spread 0.1%</span>
+          <span class="wk-treasury-val">pending</span>
+        </div>
+      </div>
+    </div>`;
+}
+
 function _skiSettingsHtml(): string {
   const ws = getState();
   const addrShort2 = ws.address ? `${ws.address.slice(0, 6)}\u2026${ws.address.slice(-4)}` : '\u2014';
@@ -5254,10 +5353,8 @@ function _skiSettingsHtml(): string {
 }
 
 function menuLockin() {
-  app.skiMenuOpen = false;
-  try { localStorage.setItem('ski:lift', '0'); } catch {}
-  render();
-  openModal();
+  // Show the idle overlay immediately instead of opening the modal
+  window.dispatchEvent(new CustomEvent('ski:show-idle'));
 }
 
 function menuDisconnect() {
@@ -5359,9 +5456,14 @@ function renderSkiMenu() {
   const balValHtml = balView === 'usd'
     ? `<span class="wk-popout-bal-val wk-popout-bal-val--usd">${fmtMenuBalHtml(app.usd)}</span>`
     : `<span class="wk-popout-bal-val wk-popout-bal-val--sui">${fmtMenuBalHtml(getTotalSui())}</span>`;
+  const _qrRight = (() => { try { return localStorage.getItem('ski:qr-right') === '1'; } catch { return false; } })();
   const balToggleHtml = `<div class="wk-popout-balance">
         <span class="wk-popout-bal-display">${dotSvg}${balValHtml}</span><span id="wk-ns-price-chip" class="wk-ns-price-chip">${_nsPriceHtml()}</span>
-        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI" style="margin-left:auto">
+        <label class="ski-layout-toggle wk-qr-side-toggle" title="QR position">
+          <input type="checkbox" id="wk-qr-side-toggle"${_qrRight ? ' checked' : ''}>
+          <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
+        </label>
+        <label class="ski-layout-toggle wk-popout-bal-toggle" title="Toggle USD / SUI">
           <input type="checkbox" id="wk-bal-toggle"${balView === 'usd' ? ' checked' : ''}>
           <span class="ski-layout-track"><span class="ski-layout-thumb"></span></span>
         </label>
@@ -5602,6 +5704,7 @@ function renderSkiMenu() {
             <div class="wk-popout-actions">
               <button class="wk-dd-item wk-dd-ski" id="wk-dd-switch">Lockin</button>
               <button class="wk-dd-item wk-dd-settings" id="wk-dd-settings" title="Settings">\u2699</button>
+              <button class="wk-dd-item wk-dd-treasury-btn" id="wk-dd-treasury-btn" title="Treasury">\ud83c\udfdb\ufe0f</button>
               <button class="wk-dd-item disconnect" id="wk-dd-disconnect">Deactivate</button>
             </div>
             ${nameBadgeHtml}
@@ -5621,7 +5724,7 @@ function renderSkiMenu() {
               </div>
             </div>
             ${balToggleHtml}
-            <div id="wk-coins-collapse" class="wk-qr-collapse-wrap${coinChipsOpen ? '' : ' wk-qr-collapse--hidden'}">
+            <div id="wk-coins-collapse" class="wk-qr-collapse-wrap${coinChipsOpen ? '' : ' wk-qr-collapse--hidden'}${_qrRight ? ' wk-qr-collapse--right' : ''}">
               <div class="wk-qr-content-left">
                 <div class="wk-qr-content-qr" id="wk-addr-qr" title="${esc(displayAddr)}" data-qr-addr="${esc(displayAddr)}"></div>
               </div>
@@ -5635,8 +5738,10 @@ function renderSkiMenu() {
                   </div>
                 </div>
                 <div class="wk-send-row-below">
-                  <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
-                  <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
+                  <div class="wk-send-quick-stack">
+                    <button id="wk-send-all" class="wk-send-all wk-send-all--${balView}" type="button" title="Use full balance">All</button>
+                    <button id="wk-send-min" class="wk-send-all wk-send-all--${balView}" type="button" title="Set 0.01">0.01</button>
+                  </div>
                   <div id="wk-swap-select" class="wk-swap-select"></div>
                 </div>
               </div>
@@ -5646,6 +5751,9 @@ function renderSkiMenu() {
           </div>
           <div class="wk-dd-panel wk-dd-panel--settings">
             ${settingsHtml}
+          </div>
+          <div class="wk-dd-panel wk-dd-panel--treasury">
+            ${_treasuryPanelHtml()}
           </div>
         </div>
       </div>`;
@@ -5729,6 +5837,12 @@ function renderSkiMenu() {
     if (msgInput) { msgInput.value = ''; msgInput.focus(); }
   });
   document.getElementById('wk-dd-disconnect')?.addEventListener('click', menuDisconnect);
+  document.getElementById('wk-qr-side-toggle')?.addEventListener('change', (e) => {
+    const checked = (e.target as HTMLInputElement).checked;
+    try { localStorage.setItem('ski:qr-right', checked ? '1' : '0'); } catch {}
+    const collapse = document.getElementById('wk-coins-collapse');
+    if (collapse) collapse.classList.toggle('wk-qr-collapse--right', checked);
+  });
   document.getElementById('wk-bal-toggle')?.addEventListener('change', menuToggleBalance);
   _renderNetworkSelect();
   document.getElementById('wk-network-select')?.addEventListener('click', (e) => {
@@ -5946,6 +6060,19 @@ function renderSkiMenu() {
   document.getElementById('wk-settings-back')?.addEventListener('click', () => {
     skiSettingsOpen = false;
     document.querySelector('.wk-dd-slider')?.classList.remove('wk-dd-slider--settings');
+  });
+
+  // Treasury slide-in
+  document.getElementById('wk-dd-treasury-btn')?.addEventListener('click', () => {
+    skiTreasuryOpen = true;
+    skiSettingsOpen = false;
+    const slider = document.querySelector('.wk-dd-slider');
+    slider?.classList.remove('wk-dd-slider--settings');
+    slider?.classList.add('wk-dd-slider--treasury');
+  });
+  document.getElementById('wk-treasury-back')?.addEventListener('click', () => {
+    skiTreasuryOpen = false;
+    document.querySelector('.wk-dd-slider')?.classList.remove('wk-dd-slider--treasury');
   });
 
   // Toggle send button between send/swap mode and SuiAMI mode
@@ -6340,14 +6467,16 @@ function renderSkiMenu() {
       return;
     }
 
-    // SuiAMI mode: only when button is actually showing SUIAMI (not SWAP/SEND)
+    // SuiAMI mode: if the button literally says SUIAMI, it's a SUIAMI click
+    const _btnEl = document.getElementById('wk-send-btn');
+    const _btnText = _btnEl?.textContent?.trim() ?? '';
     const isSelfTarget = sec?.classList.contains('wk-dd-ns-section--self-target') ?? false;
     const isOwned = sec?.classList.contains('wk-dd-ns-section--owned') ?? false;
     const suiamiName = nsLabel.trim().length > 0 ? nsLabel.trim() : (app.suinsName ?? '');
     const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
     const isSwapOrSend = coinChipsOpen && !inEqualsOut; // swap takes priority
     const isSendMode = coinChipsOpen && inEqualsOut && nsLabel.trim().length > 0 && !isSelfTarget && !isOwned; // sending to other
-    const suiamiClick = !isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName));
+    const suiamiClick = _btnText === 'SUIAMI' || (!isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName)));
     if (suiamiClick) {
       const ws2 = getState();
       if (!ws2.address) return;
@@ -6385,7 +6514,11 @@ function renderSkiMenu() {
         if (!nftId) { showToast(`No SuiNS NFT found for ${bare}.sui`); return; }
 
         // Build and sign
-        const message = buildSuiamiMessage(bare, ws2.address, nftId);
+        const message = buildSuiamiMessage(bare, ws2.address, nftId, {
+          btc: app.btcAddress || undefined,
+          sol: app.solAddress || undefined,
+          eth: app.ethAddress || undefined,
+        }, app.usd ?? undefined);
         const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
         const { bytes, signature } = await signPersonalMessage(msgBytes);
         const proof = createSuiamiProof(message, bytes, signature);
@@ -6911,13 +7044,12 @@ function renderSkiMenu() {
       if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
       const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
       const _logName = senderName || ws.address;
-      await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       let _txOk = false;
       try {
         await signAndExecuteTransaction(txBytes);
         _txOk = true;
+        await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       } catch (txErr) {
-        _removeLastThunderLocal(_logName).catch(() => {});
         throw txErr;
       }
       if (_txOk) {
@@ -8216,7 +8348,7 @@ function renderSkiMenu() {
       const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      // Fresh on-chain scan — list all ragtags on Storm via gRPC
+      // Fresh on-chain scan — list all storms on Storm via gRPC
       const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
       const freshCounts = await getThunderCountsBatch(nftNames);
       // Merge fresh counts into _thunderCounts
@@ -8430,9 +8562,12 @@ function render() {
 
 // ─── Global event bindings ───────────────────────────────────────────
 
+let _idleOverlay: HTMLElement | null = null;
+
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; try { localStorage.removeItem('ski:idle-open'); } catch {} return; }
     if (modalOpen) { closeModal(); return; }
     if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); }
     openModal();
@@ -8446,18 +8581,53 @@ function bindEvents() {
       openModal();
       return;
     }
-    // Connected: only toggle SKI menu — close modal first if open
     if (modalOpen) closeModal();
-    if (app.skiMenuOpen) { app.skiMenuOpen = false; try { localStorage.setItem('ski:lift', '0'); } catch {} render(); return; }
-    app.skiMenuOpen = true;
-    try { localStorage.setItem('ski:lift', '1'); } catch {}
-    render();
+
+    // Three-state cycle: menu → overlay → menu(collapsed) → overlay → ...
+    if (_idleOverlay) {
+      // Overlay open → close it, open SKI menu collapsed
+      _idleOverlay.remove(); _idleOverlay = null;
+      try { localStorage.removeItem('ski:idle-open'); } catch {}
+      // Collapse all sections
+      addrSectionOpen = false; _persistAddrSectionOpen();
+      coinChipsOpen = false; _persistCoinChipsOpen();
+      nsRosterOpen = false; _persistRosterOpen();
+      _thunderConvoOpen = false;
+      _thunderConvoTarget = '';
+      _nftPopoverPinned = false;
+      try { localStorage.setItem('ski:thunder-card-open', '0'); } catch {}
+      try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
+      app.skiMenuOpen = true;
+      try { localStorage.setItem('ski:lift', '1'); } catch {}
+      render();
+    } else if (app.skiMenuOpen) {
+      // Menu open → close it, open overlay
+      app.skiMenuOpen = false;
+      try { localStorage.setItem('ski:lift', '0'); } catch {}
+      render();
+      _showIdleOverlay();
+    } else {
+      // Nothing open → open SKI menu
+      app.skiMenuOpen = true;
+      try { localStorage.setItem('ski:lift', '1'); } catch {}
+      render();
+    }
   });
 
   els.skiBtn?.addEventListener('keydown', (e) => {
     const key = (e as KeyboardEvent).key;
     if (key === 'Enter' || key === ' ' || key === 'ArrowDown') {
       e.preventDefault();
+      if (getState().address) {
+        if (!_idleOverlay) {
+          _showIdleOverlay();
+          setTimeout(() => {
+            const ti = document.getElementById('ski-idle-thunder') as HTMLInputElement | null;
+            if (ti) ti.focus();
+          }, 100);
+        }
+        return;
+      }
       if (modalOpen) { closeModal(); return; }
       openModal(true);
     }
@@ -8503,6 +8673,751 @@ function bindEvents() {
   document.addEventListener('visibilitychange', () => {
     if (getState().address && document.visibilityState === 'visible') refreshPortfolio(true);
   });
+
+  // Idle screensaver — show SKI pixel art over menu
+  let _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const IDLE_MS = 15_000; // 15 seconds
+
+  const _showIdleOverlay = () => {
+      if (!app.skiMenuOpen && !getState().address) return;
+      if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+      // Ensure menu is open
+      if (!app.skiMenuOpen && getState().address) {
+        app.skiMenuOpen = true;
+        try { localStorage.setItem('ski:lift', '1'); } catch {}
+        render();
+      }
+      // Position overlay to span from first to last visible header button
+      const headerBtns = Array.from(document.querySelectorAll('.ski-header > *')).filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (!headerBtns.length) return;
+      let minL = Infinity, maxR = -Infinity, maxB = -Infinity;
+      for (const btn of headerBtns) {
+        const r = btn.getBoundingClientRect();
+        if (r.left < minL) minL = r.left;
+        if (r.right > maxR) maxR = r.right;
+        if (r.bottom > maxB) maxB = r.bottom;
+      }
+      const headerRect = { left: minL, right: maxR, bottom: maxB, width: maxR - minL };
+
+      _idleOverlay = document.createElement('div');
+      _idleOverlay.className = 'ski-idle-overlay';
+      const _headerEl = document.querySelector('.ski-header') as HTMLElement;
+      const headerBox = _headerEl?.getBoundingClientRect();
+      const width = headerRect.width;
+      const rightOffset = headerBox ? headerBox.right - headerRect.right : 0;
+      _idleOverlay.style.position = 'absolute';
+      _idleOverlay.style.right = `${rightOffset}px`;
+      _idleOverlay.style.left = 'auto';
+      _idleOverlay.style.top = '100%';
+      _idleOverlay.style.marginTop = '0';
+      _idleOverlay.style.width = `${width}px`;
+      // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
+      const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
+      const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
+      const _idleInputVal = nsLabel.trim();
+
+      _idleOverlay.innerHTML = `
+        <div class="ski-idle-media">
+          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+          <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
+          <div class="ski-idle-ns-row">
+            <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
+            <div class="ski-idle-ns-input-wrap">
+              <input class="ski-idle-ns-input" id="ski-idle-ns" type="text" value="${esc(_idleInputVal)}" placeholder="name" spellcheck="false" autocomplete="off" maxlength="63" title="Search SuiNS names">
+              <button class="ski-idle-ns-clear" id="ski-idle-clear" type="button" style="${_idleInputVal ? '' : 'display:none'}" title="Clear">\u2715</button>
+              <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
+            </div>
+            <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
+          </div>
+          <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
+          <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
+          <div class="ski-idle-thunder-row">
+            <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
+            <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
+          </div>
+        </div>
+        <div id="ski-idle-card" class="ski-idle-card"></div>
+        <div class="ski-idle-bottom-row">
+          <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
+          <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
+        </div>
+      `;
+
+      // Populate card if we have a domain
+      if (_idleCardDomain) {
+        const cardSlot = _idleOverlay.querySelector('#ski-idle-card');
+        if (cardSlot) {
+          const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === _idleCardDomain.toLowerCase());
+          let expiryText = '';
+          if (ownedEntry?.expirationMs) {
+            const daysLeft = Math.max(0, Math.ceil((ownedEntry.expirationMs - Date.now()) / 86_400_000));
+            expiryText = `${daysLeft}d`;
+          }
+          const unquestedCount = _thunderCounts[_idleCardDomain.toLowerCase()] ?? 0;
+          const totalCount = _thunderLocalCounts[_idleCardDomain.toLowerCase()] ?? 0;
+          const badgeHtml = (totalCount > 0 ? `\u26c8\ufe0f${totalCount} ` : '') + (unquestedCount > 0 ? `\u26a1${unquestedCount}` : '');
+          cardSlot.innerHTML = `<span class="ski-idle-card-name">${esc(_idleCardDomain)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${expiryText ? ` <span class="ski-idle-card-expiry">${expiryText}</span>` : ''}`;
+        }
+      }
+
+      // NS input on idle — full SKI menu behavior
+      const _idleNsInput = _idleOverlay.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+      const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
+      const _idleClearBtn = _idleOverlay.querySelector('#ski-idle-clear') as HTMLButtonElement | null;
+      const _idleActionBtn = _idleOverlay.querySelector('#ski-idle-action') as HTMLButtonElement | null;
+      let _idleDebounce: ReturnType<typeof setTimeout> | null = null;
+
+      const _updateIdleStatus = () => {
+        if (!_idleStatusEl || !_idleActionBtn) return;
+        const variant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square'
+          : nsAvail === 'available' ? 'green-circle'
+          : nsAvail === 'grace' ? 'red-hexagon'
+          : 'black-diamond';
+        _idleStatusEl.innerHTML = _nsStatusSvg(variant);
+
+        const label = nsLabel.trim();
+        const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        const _iamName = label || app.suinsName?.replace(/\.sui$/, '') || 'you';
+        if (!label) {
+          _idleActionBtn.textContent = 'SUIAMI';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
+          _idleActionBtn.disabled = !app.suinsName;
+        } else if (nsAvail === 'available') {
+          _idleActionBtn.textContent = 'MINT';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--mint';
+          _idleActionBtn.title = `Mint ${label}.sui`;
+          _idleActionBtn.disabled = false;
+        } else if (nsAvail === 'taken' && !isOwned) {
+          _idleActionBtn.textContent = 'Thunder';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
+          _idleActionBtn.title = `Thunder \u2014 encrypt a signal to ${label}.sui`;
+          _idleActionBtn.disabled = false;
+        } else if (isOwned) {
+          _idleActionBtn.textContent = 'SUIAMI';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
+          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
+          _idleActionBtn.disabled = false;
+        } else {
+          _idleActionBtn.textContent = 'SUIAMI';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
+          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
+          _idleActionBtn.disabled = true;
+        }
+      };
+
+      // Pause GIF while typing, resume on blur
+      const _gifImg = _idleOverlay.querySelector('.ski-idle-img') as HTMLImageElement | null;
+      const _pauseGif = () => { if (_gifImg) _gifImg.style.animationPlayState = 'paused'; };
+      const _resumeGif = () => { if (_gifImg) _gifImg.style.animationPlayState = ''; };
+      const _freezeGif = () => {
+        if (!_gifImg) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = _gifImg.naturalWidth || _gifImg.width;
+        canvas.height = _gifImg.naturalHeight || _gifImg.height;
+        const ctx2d = canvas.getContext('2d');
+        if (ctx2d) {
+          ctx2d.drawImage(_gifImg, 0, 0);
+          _gifImg.dataset.gifSrc = _gifImg.src;
+          _gifImg.src = canvas.toDataURL();
+        }
+        _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.add('ski-idle-thunder-convo--frozen');
+      };
+      const _unfreezeGif = () => {
+        if (!_gifImg || !_gifImg.dataset.gifSrc) return;
+        _gifImg.src = _gifImg.dataset.gifSrc;
+        delete _gifImg.dataset.gifSrc;
+        _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.remove('ski-idle-thunder-convo--frozen');
+      };
+
+      _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('focus', _freezeGif);
+      _idleNsInput?.addEventListener('blur', _unfreezeGif);
+
+      const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+      _idleThunderInputEl?.addEventListener('focus', _freezeGif);
+      _idleThunderInputEl?.addEventListener('blur', _unfreezeGif);
+      _idleNsInput?.addEventListener('input', () => {
+        const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+        _idleNsInput!.value = val;
+        nsLabel = val;
+        if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
+        const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (mainInput) mainInput.value = val;
+        // Reset status while fetching
+        nsAvail = null;
+        _updateIdleStatus();
+        // Debounce fetch
+        if (_idleDebounce) clearTimeout(_idleDebounce);
+        if (val.length >= 3 && isValidNsLabel(val)) {
+          _idleDebounce = setTimeout(() => {
+            fetchAndShowNsPrice(val).then(_updateIdleStatus);
+          }, 400);
+        }
+      });
+
+      // Clear button
+      _idleClearBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (_idleNsInput) _idleNsInput.value = '';
+        nsLabel = '';
+        nsAvail = null;
+        if (_idleClearBtn) _idleClearBtn.style.display = 'none';
+        _updateIdleStatus();
+        _idleNsInput?.focus();
+      });
+
+      // Action button — handle directly from overlay, don't dismiss
+      _idleActionBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const label = nsLabel.trim();
+        const btnText = _idleActionBtn!.textContent || '';
+        if (btnText === 'SUIAMI') {
+          const name = label || (app.suinsName?.replace(/\.sui$/, '') || '');
+          if (!name) return;
+          window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
+        } else if (btnText === 'MINT') {
+          // Open menu for mint flow
+          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
+          setTimeout(() => {
+            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
+          }, 500);
+        } else if (btnText === 'Storm' || btnText === 'Thunder') {
+          const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (convoEl && !convoEl.hasAttribute('hidden')) {
+            convoEl.setAttribute('hidden', '');
+            _unfreezeGif();
+          } else if (label) {
+            _freezeGif();
+            _expandIdleConvo(label);
+            const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+            if (thunderInput) {
+              if (!thunderInput.value.includes(`@${label}`)) thunderInput.value = `@${label} `;
+              thunderInput.focus();
+            }
+          }
+        }
+      });
+
+      _updateIdleStatus();
+      // Trigger resolution if name was restored from localStorage
+      if (nsLabel.trim().length >= 3 && isValidNsLabel(nsLabel.trim()) && !nsAvail) {
+        fetchAndShowNsPrice(nsLabel.trim()).then(_updateIdleStatus);
+      }
+
+      // iUSD coin click → swap 95% of wallet to iUSD
+      _idleOverlay.querySelector('#ski-idle-iusd')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.style.opacity = '0.4';
+        try {
+          // Fetch fresh SUI balance via gRPC (don't rely on cached app.sui)
+          const _bals = await grpcClient.core.listBalances({ owner: ws.address }).catch(() => null);
+          let suiBalMist = 0n;
+          if (_bals?.balances) {
+            for (const b of _bals.balances) {
+              if (b.coinType?.includes('::sui::SUI') || b.coinType?.includes('0x2::sui::SUI')) {
+                suiBalMist = BigInt(b.totalBalance ?? '0');
+              }
+            }
+          }
+          if (suiBalMist === 0n) {
+            // Fallback to app.sui
+            suiBalMist = BigInt(Math.floor((app.sui || 0) * 1e9));
+          }
+          const swapAmount = Number(suiBalMist * 95n / 100n); // 95%
+          if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
+
+          // Compute collateral + mint amounts
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const walletAddr = normalizeSuiAddress(ws.address);
+          const suiPrice = suiPriceCache?.price ?? 3;
+          const collateralValueMist = BigInt(swapAmount);
+          const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6);
+          const mintAmount = BigInt(Math.floor(usdValue / 1.5));
+          if (mintAmount <= 0n) { showToast('Amount too small'); return; }
+
+          // Step 1: Keeper attests collateral (server-side, oracle-gated)
+          showToast('\ud83c\udf0d Attesting collateral...');
+          const attestRes = await fetch('/api/iusd/attest', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ collateralValueMist: String(collateralValueMist) }),
+          });
+          const attestResult = await attestRes.json() as { digest?: string; error?: string };
+          if (!attestRes.ok || attestResult.error) throw new Error(attestResult.error || 'Attest failed');
+
+          // Step 2: WaaP wallet signs mint (wallet owns the TreasuryCap)
+          showToast('\ud83c\udf0d Minting iUSD...');
+          const { Transaction } = await import('@mysten/sui/transactions');
+          const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
+          const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
+          const TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
+          const mintTx = new Transaction();
+          mintTx.setSender(walletAddr);
+          mintTx.moveCall({
+            package: IUSD_PKG,
+            module: 'iusd',
+            function: 'mint_and_transfer',
+            arguments: [
+              mintTx.object(TREASURY_CAP),
+              mintTx.object(TREASURY),
+              mintTx.pure.u64(mintAmount),
+              mintTx.pure.address(walletAddr),
+            ],
+          });
+          const mintBytes = await mintTx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
+          mintBytes.tx = mintTx;
+          await signAndExecuteTransaction(mintBytes);
+
+          showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
+          refreshPortfolio(true);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Mint failed';
+          if (msg.includes('abort code: 0') || msg.includes('NotAuthorized')) {
+            showToast('Setting up treasury auth...');
+            try {
+              const { Transaction } = await import('@mysten/sui/transactions');
+              const { normalizeSuiAddress: norm } = await import('@mysten/sui/utils');
+              const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
+              const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
+              const KEEPER = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+              const sender = norm(ws.address);
+
+              const tx1 = new Transaction();
+              tx1.setSender(sender);
+              tx1.moveCall({ target: `${IUSD_PKG}::iusd::set_oracle`, arguments: [tx1.object(TREASURY), tx1.pure.address(KEEPER)] });
+              const b1 = await tx1.build({ client: grpcClient as never });
+              await signAndExecuteTransaction(Object.assign(b1, { tx: tx1 }));
+              showToast('Oracle set');
+
+              const tx2 = new Transaction();
+              tx2.setSender(sender);
+              tx2.moveCall({ target: `${IUSD_PKG}::iusd::set_minter`, arguments: [tx2.object(TREASURY), tx2.pure.address(KEEPER)] });
+              const b2 = await tx2.build({ client: grpcClient as never });
+              await signAndExecuteTransaction(Object.assign(b2, { tx: tx2 }));
+              showToast('Minter set — retrying mint...');
+
+              const res2 = await fetch('/api/iusd/mint', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ recipient: norm(ws.address), collateralValueMist: String(collateralValueMist), mintAmount: String(mintAmount) }),
+              });
+              const result2 = await res2.json() as { minted?: string; error?: string };
+              if (!res2.ok || result2.error) throw new Error(result2.error || 'Retry failed');
+              showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
+              refreshPortfolio(true);
+            } catch (setupErr) {
+              const setupMsg = setupErr instanceof Error ? setupErr.message : 'Setup failed';
+              if (!setupMsg.toLowerCase().includes('reject')) showToast(setupMsg);
+            }
+          } else {
+            if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          }
+        } finally {
+          btn.style.opacity = '';
+        }
+      });
+
+      // Diamond click → toggle target address row
+      _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        if (!addrRow) return;
+        if (!addrRow.hasAttribute('hidden')) {
+          addrRow.setAttribute('hidden', '');
+          _unfreezeGif();
+          return;
+        }
+        const ws = getState();
+        const addr = nsTargetAddress || nsNftOwner || ws.address || '';
+        if (!addr) return;
+        const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
+        const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
+        const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
+        const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
+        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#627eea"/><g transform="translate(10,4) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
+
+        const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
+        const btcLine = app.btcAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${app.btcAddress}">${btcIcon} ${app.btcAddress.slice(0, 8)}\u2026${app.btcAddress.slice(-4)}</span>` : '';
+        const solLine = app.solAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${app.solAddress}">${solIcon} ${app.solAddress.slice(0, 6)}\u2026${app.solAddress.slice(-4)}</span>` : '';
+        const ethLine = app.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${app.ethAddress}">${ethIcon} ${app.ethAddress.slice(0, 6)}\u2026${app.ethAddress.slice(-4)}</span>` : '';
+        addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
+        addrRow.removeAttribute('hidden');
+        _freezeGif();
+        addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
+          el.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const full = (el as HTMLElement).title || addr;
+            navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
+          });
+        });
+      });
+
+      // Next page → t2000 page
+      _idleOverlay.querySelector('#ski-idle-next')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!_idleOverlay) return;
+        const t2000s = (self as any).__skiT2000s ?? [];
+        const agentCount = t2000s.length;
+        // Replace overlay content with t2000 page
+        const mediaEl = _idleOverlay.querySelector('.ski-idle-media');
+        const bottomRow = _idleOverlay.querySelector('.ski-idle-bottom-row');
+        const thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row');
+        const cardEl = _idleOverlay.querySelector('.ski-idle-card');
+        if (mediaEl) mediaEl.innerHTML = `
+          <div class="ski-idle-t2000">
+            <div class="ski-idle-t2000-header">\ud83e\udd16 t2000 Ship</div>
+            <div class="ski-idle-t2000-stat">
+              <span>Agents deployed</span>
+              <span>${agentCount}</span>
+            </div>
+            <div class="ski-idle-t2000-stat">
+              <span>Deploy cost</span>
+              <span>$4.50 iUSD</span>
+            </div>
+            <div class="ski-idle-t2000-missions">
+              <div class="ski-idle-t2000-mission" data-mission="arb">\u26a1 arb</div>
+              <div class="ski-idle-t2000-mission" data-mission="sweep">\ud83e\uddf9 sweep</div>
+              <div class="ski-idle-t2000-mission" data-mission="farm">\ud83c\udf3e farm</div>
+              <div class="ski-idle-t2000-mission" data-mission="watch">\ud83d\udc41 watch</div>
+              <div class="ski-idle-t2000-mission" data-mission="route">\ud83d\udcca route</div>
+              <div class="ski-idle-t2000-mission" data-mission="snipe">\ud83c\udfaf snipe</div>
+              <div class="ski-idle-t2000-mission" data-mission="storm">\u26c8\ufe0f storm</div>
+            </div>
+            <div class="ski-idle-t2000-motto">destroys bridges and wormholes</div>
+          </div>
+        `;
+        // Swap next arrow to back arrow
+        if (bottomRow) {
+          const nextBtn = bottomRow.querySelector('#ski-idle-next');
+          if (nextBtn) {
+            nextBtn.textContent = '\u2039';
+            nextBtn.setAttribute('title', 'Back');
+            (nextBtn as HTMLElement).id = 'ski-idle-back';
+            nextBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              // Rebuild the overlay
+              _idleOverlay?.remove(); _idleOverlay = null;
+              _showIdleOverlay();
+            });
+          }
+        }
+      });
+
+      const _dismissIdle = (keepOverlay = false) => {
+        if (!keepOverlay) { _idleOverlay?.remove(); _idleOverlay = null; try { localStorage.removeItem('ski:idle-open'); } catch {} }
+        _resetIdle();
+      };
+      const _triggerSuiami = () => {
+        if (!getState().address) { _dismissIdle(); return; }
+        if (!app.skiMenuOpen) {
+          app.skiMenuOpen = true;
+          try { localStorage.setItem('ski:lift', '1'); } catch {}
+          render();
+        }
+        // Keep GIF visible — listen for SUIAMI completion to dismiss
+        const _onSuiamiDone = () => {
+          window.removeEventListener('suiami:signed', _onSuiamiDone);
+          _dismissIdle();
+        };
+        window.addEventListener('suiami:signed', _onSuiamiDone);
+        // Also dismiss after 30s timeout if signing is rejected/cancelled
+        setTimeout(() => { window.removeEventListener('suiami:signed', _onSuiamiDone); _dismissIdle(); }, 30_000);
+
+        // Click SUIAMI button once menu renders
+        const _tryClickSuiami = (attempts = 0) => {
+          if (attempts > 10) { _dismissIdle(); return; }
+          const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+          if (btn && btn.textContent?.includes('SUIAMI')) {
+            btn.disabled = false;
+            btn.click();
+          } else {
+            setTimeout(() => _tryClickSuiami(attempts + 1), 200);
+          }
+        };
+        setTimeout(_tryClickSuiami, 500);
+      };
+      // GIF click triggers SUIAMI (overlay stays), but not on iUSD button or focus-restore
+      _idleOverlay.querySelector('.ski-idle-media')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if ((e.target as HTMLElement).closest('#ski-idle-iusd')) return; // handled by iUSD button
+        if (!_hadFocus) return; // first click is just restoring window focus
+        _triggerSuiami();
+      });
+      // Thunder input — doesn't dismiss, Enter sends
+      const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+      const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send');
+      const _sendIdleThunder = async () => {
+        const raw = _idleThunderInput?.value.trim() || '';
+        if (!raw) return;
+        const ws = getState();
+        if (!ws.address) return;
+        try {
+          // Extract @mentions as recipients
+          const mentions = [...raw.matchAll(/@([a-z0-9-]{3,63})/gi)].map(m => m[1].toLowerCase());
+          const msgText = raw.replace(/@[a-z0-9-]{3,63}/gi, '').trim() || raw;
+
+          // Determine recipients: @mentions if present, else default
+          let recipients: string[];
+          if (mentions.length > 0) {
+            recipients = [...new Set(mentions)];
+          } else {
+            const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+            const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
+            const fallback = top?.[0] || topLocal?.[0] || '';
+            if (!fallback) { showToast('No recipient — use @name'); return; }
+            recipients = [fallback];
+          }
+
+          const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
+          const senderName = app.suinsName || '';
+          const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLElement | null;
+          const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
+
+          // Show loading spinner on send button — hover reveals cancel
+          let _cancelled = false;
+          if (sendBtn) {
+            sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
+            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--loading';
+            sendBtn.title = 'Cancel';
+            const _onCancel = (ev: Event) => { ev.stopPropagation(); _cancelled = true; sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; sendBtn.removeEventListener('click', _onCancel); };
+            sendBtn.addEventListener('click', _onCancel);
+          }
+
+          try {
+            for (const recip of recipients) {
+              if (_cancelled) break;
+              const nftId = await lookupRecipientNftId(recip);
+              if (!nftId) { showToast(`Cannot find ${recip}.sui`); continue; }
+              if (_cancelled) break;
+              const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText);
+              if (_cancelled) break;
+              await signAndExecuteTransaction(txBytes);
+              await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out');
+              _addThunderContact(recip);
+            }
+            // Success: show bubble, clear input, resume GIF
+            if (_idleThunderInput) _idleThunderInput.value = '';
+            _unfreezeGif();
+            const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+            const bubble = document.createElement('div');
+            bubble.className = 'ski-idle-bubble ski-idle-bubble--out';
+            bubble.textContent = msgText;
+            if (convoEl) { convoEl.appendChild(bubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
+            const names = recipients.map(r => `${r}.sui`).join(', ');
+            showToast(`\u26a1 Signal sent to ${names}`);
+            _expandIdleConvo(recipients[0]);
+          } catch (txErr) {
+            const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
+            if (!txMsg.toLowerCase().includes('reject')) {
+              // Show failed bubble with retry
+              const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+              const failBubble = document.createElement('div');
+              failBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--failed';
+              failBubble.textContent = msgText;
+              failBubble.title = txMsg;
+              failBubble.style.cursor = 'pointer';
+              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
+              failBubble.addEventListener('click', () => {
+                failBubble.remove();
+                if (_idleThunderInput) _idleThunderInput.value = raw;
+                _sendIdleThunder();
+              }, { once: true });
+              showToast(txMsg);
+            }
+          } finally {
+            if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; }
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Signal failed';
+          if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
+        }
+      };
+      const _expandIdleConvo = async (counterparty: string) => {
+        const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (!convoEl) return;
+        const entries = await _getConversation(counterparty);
+        if (!entries.length) { convoEl.setAttribute('hidden', ''); return; }
+        const bubbles = entries.slice(-20).map(e => {
+          const isOut = e.dir === 'out' || (!e.dir && !e.from);
+          let msgText = e.msg;
+          if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
+          const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+          return `<div class="ski-idle-bubble ${cls}">${esc(msgText)}</div>`;
+        }).join('');
+        convoEl.innerHTML = bubbles;
+        convoEl.removeAttribute('hidden');
+        convoEl.scrollTop = convoEl.scrollHeight;
+      };
+      // @ autocomplete for thunder input
+      let _atDropdown: HTMLElement | null = null;
+      let _atSelectedIdx = 0;
+      const _getAtCandidates = (): { contacts: string[]; owned: string[] } => {
+        const ownedSet = new Set<string>();
+        for (const d of nsOwnedDomains) {
+          const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+          if (bare) ownedSet.add(bare);
+        }
+        if (app.suinsName) ownedSet.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
+
+        const contactSet = new Set<string>();
+        for (const n of Object.keys(_thunderLocalCounts)) {
+          const bare = n.toLowerCase();
+          if (!ownedSet.has(bare)) contactSet.add(bare);
+        }
+        for (const n of Object.keys(_thunderCounts)) {
+          const bare = n.toLowerCase();
+          if (!ownedSet.has(bare)) contactSet.add(bare);
+        }
+
+        return {
+          contacts: [...contactSet].sort(),
+          owned: [...ownedSet].sort(),
+        };
+      };
+      const _showAtDropdown = (filter: string) => {
+        _dismissAtDropdown();
+        const { contacts, owned } = _getAtCandidates();
+        const f = filter.toLowerCase();
+        const filteredContacts = contacts.filter(n => n.startsWith(f)).slice(0, 6);
+        const filteredOwned = owned.filter(n => n.startsWith(f)).slice(0, 4);
+        if (!filteredContacts.length && !filteredOwned.length) return;
+        _atDropdown = document.createElement('div');
+        _atDropdown.className = 'ski-idle-at-dropdown';
+        _atSelectedIdx = 0;
+
+        const leftHtml = filteredContacts.map(n =>
+          `<div class="ski-idle-at-option ski-idle-at-option--contact" data-name="${n}">@${n}</div>`
+        ).join('');
+        const rightHtml = filteredOwned.map(n =>
+          `<div class="ski-idle-at-option ski-idle-at-option--owned" data-name="${n}">@${n}</div>`
+        ).join('');
+
+        _atDropdown.innerHTML = `<div class="ski-idle-at-cols">`
+          + `<div class="ski-idle-at-col ski-idle-at-col--left">${leftHtml || '<div class="ski-idle-at-empty">no contacts</div>'}</div>`
+          + `<div class="ski-idle-at-col ski-idle-at-col--right">${rightHtml || '<div class="ski-idle-at-empty">no names</div>'}</div>`
+          + `</div>`;
+
+        // Mark first option active
+        const allOpts = _atDropdown.querySelectorAll('.ski-idle-at-option');
+        if (allOpts[0]) allOpts[0].classList.add('ski-idle-at-option--active');
+
+        _atDropdown.querySelectorAll('.ski-idle-at-option').forEach(el => {
+          el.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            _insertAtName((el as HTMLElement).dataset.name || '');
+          });
+        });
+        const thunderRow = _idleOverlay?.querySelector('.ski-idle-thunder-row');
+        if (thunderRow) thunderRow.appendChild(_atDropdown);
+      };
+      const _dismissAtDropdown = () => { _atDropdown?.remove(); _atDropdown = null; };
+      const _insertAtName = (name: string) => {
+        if (!_idleThunderInput) return;
+        const val = _idleThunderInput.value;
+        const cursor = _idleThunderInput.selectionStart ?? val.length;
+        const before = val.slice(0, cursor);
+        const atIdx = before.lastIndexOf('@');
+        if (atIdx === -1) return;
+        const after = val.slice(cursor);
+        _idleThunderInput.value = before.slice(0, atIdx) + '@' + name + ' ' + after;
+        _idleThunderInput.selectionStart = _idleThunderInput.selectionEnd = atIdx + name.length + 2;
+        _dismissAtDropdown();
+        _idleThunderInput.focus();
+        // Populate the NS name input with the tagged name
+        const idleNsInput = _idleOverlay?.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+        if (idleNsInput) { idleNsInput.value = name; nsLabel = name; }
+        const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (mainNsInput) mainNsInput.value = name;
+        // Freeze GIF and expand conversation history for tagged name
+        _freezeGif();
+        _expandIdleConvo(name);
+      };
+
+      _idleThunderInput?.addEventListener('click', (e) => e.stopPropagation());
+      _idleThunderInput?.addEventListener('input', () => {
+        const val = _idleThunderInput!.value;
+        const cursor = _idleThunderInput!.selectionStart ?? val.length;
+        const before = val.slice(0, cursor);
+        const atIdx = before.lastIndexOf('@');
+        if (atIdx !== -1 && !before.slice(atIdx).includes(' ')) {
+          const partial = before.slice(atIdx + 1);
+          _showAtDropdown(partial);
+        } else {
+          _dismissAtDropdown();
+        }
+        // Sync last completed @tag to NS name input + resolve
+        const tags = [...val.matchAll(/@([a-z0-9-]{3,63})/gi)].map(m => m[1].toLowerCase());
+        if (tags.length > 0) {
+          const latest = tags[tags.length - 1];
+          const idleNsInput = _idleOverlay?.querySelector('#ski-idle-ns') as HTMLInputElement | null;
+          if (idleNsInput && idleNsInput.value !== latest) {
+            idleNsInput.value = latest;
+            nsLabel = latest;
+            const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+            if (clearBtn) clearBtn.style.display = latest ? '' : 'none';
+            nsAvail = null;
+            _updateIdleStatus();
+            if (latest.length >= 3 && isValidNsLabel(latest)) {
+              fetchAndShowNsPrice(latest).then(_updateIdleStatus);
+            }
+          }
+          const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+          if (mainNsInput && mainNsInput.value !== latest) mainNsInput.value = latest;
+        }
+      });
+      _idleThunderInput?.addEventListener('blur', () => setTimeout(_dismissAtDropdown, 150));
+      _idleThunderInput?.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (_atDropdown) {
+          const opts = _atDropdown.querySelectorAll('.ski-idle-at-option');
+          if (e.key === 'ArrowDown') { e.preventDefault(); _atSelectedIdx = Math.min(_atSelectedIdx + 1, opts.length - 1); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); _atSelectedIdx = Math.max(_atSelectedIdx - 1, 0); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
+          else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') _sendIdleThunder(); return; }
+          else if (e.key === 'Escape') { _dismissAtDropdown(); return; }
+        }
+        if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
+      });
+      _idleThunderSend?.addEventListener('click', (e) => { e.stopPropagation(); _sendIdleThunder(); });
+      // Nothing in the overlay dismisses it — only successful action or header button
+      _idleOverlay.addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+      const headerEl = document.querySelector('.ski-header') as HTMLElement;
+      (headerEl || document.body).appendChild(_idleOverlay);
+      try { localStorage.setItem('ski:idle-open', '1'); } catch {}
+  };
+
+  const _resetIdle = () => {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    if (_idleOverlay) return;
+    _idleTimer = setTimeout(_showIdleOverlay, IDLE_MS);
+  };
+
+  // Listen for manual trigger (Lockin button)
+  window.addEventListener('ski:show-idle', () => {
+    if (_idleOverlay) { _idleOverlay.remove(); _idleOverlay = null; }
+    _showIdleOverlay();
+  });
+
+  ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
+    document.addEventListener(evt, _resetIdle, { passive: true });
+  });
+  // Restore overlay immediately if it was open before refresh
+  if (localStorage.getItem('ski:idle-open') === '1' && getState().address) {
+    _showIdleOverlay();
+  } else {
+    _resetIdle();
+  }
 }
 
 // ─── Init ────────────────────────────────────────────────────────────
@@ -8585,6 +9500,11 @@ export function initUI() {
       window.dispatchEvent(new CustomEvent('ski:wallet-connected', {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
+
+      // Restore idle overlay if it was open before refresh
+      if (!_idleOverlay && localStorage.getItem('ski:idle-open') === '1') {
+        window.dispatchEvent(new Event('ski:show-idle'));
+      }
     }
 
     if (ws.status === 'disconnected') {

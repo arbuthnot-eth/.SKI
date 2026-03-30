@@ -704,7 +704,7 @@ app.post('/api/suiami/verify', async (c) => {
     const signature = body.slice(dotIdx + 1);
     const message = JSON.parse(atob(msgB64));
 
-    if (!message.suiami || !message.address || !message.nftId) {
+    if (!message.suiami || !(message.sui || message.address) || !message.nftId) {
       return c.json({ valid: false, error: 'Missing required fields' }, 400);
     }
 
@@ -732,7 +732,7 @@ app.post('/api/suiami/verify', async (c) => {
       const ownerAddr = owner?.AddressOwner ?? '';
       // Normalize both addresses for comparison (strip 0x, lowercase, pad to 64)
       const norm = (a: string) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
-      ownershipVerified = norm(ownerAddr) === norm(message.address);
+      ownershipVerified = norm(ownerAddr) === norm(message.sui || message.address);
 
       // 2. Check the NFT's domain_name field matches the claimed name
       const fields = objData?.data?.content?.fields as Record<string, unknown> | undefined;
@@ -757,13 +757,59 @@ app.post('/api/suiami/verify', async (c) => {
       onChainError,
       suiami: message.suiami,
       ski: message.ski,
-      address: message.address,
+      address: message.sui || message.address,
       nftId: message.nftId,
       timestamp: message.timestamp,
       signature,
     });
   } catch (err) {
     return c.json({ valid: false, error: 'Parse error' }, 400);
+  }
+});
+
+// ── iUSD attest collateral (keeper signs, oracle-gated) ───────────
+app.post('/api/iusd/attest', async (c) => {
+  try {
+    const body = await c.req.json() as { collateralValueMist: string };
+    if (!body.collateralValueMist) return c.json({ error: 'Missing collateralValueMist' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?attest-collateral', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text || 'Unknown DO error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── iUSD mint (routed to TreasuryAgents DO) ───────────────────────
+app.post('/api/iusd/mint', async (c) => {
+  try {
+    const body = await c.req.json() as { recipient: string; collateralValueMist: string; mintAmount: string };
+    if (!body.recipient || !body.collateralValueMist || !body.mintAmount) {
+      return c.json({ error: 'Missing params' }, 400);
+    }
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?mint-iusd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try {
+      const result = JSON.parse(text);
+      return c.json(result, res.status as any);
+    } catch {
+      return c.json({ error: text || 'Unknown DO error' }, 500);
+    }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
   }
 });
 
@@ -774,3 +820,4 @@ export { SessionAgent } from './agents/session.js';
 export { SponsorAgent } from './agents/sponsor.js';
 export { SplashDeviceAgent } from './agents/splash.js';
 export { ShadeExecutorAgent } from './agents/shade-executor.js';
+export { TreasuryAgents } from './agents/treasury-agents.js';

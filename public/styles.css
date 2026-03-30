@@ -25,7 +25,7 @@ body {
     radial-gradient(55% 45% at 10% 100%, rgba(14, 165, 233, 0.08), transparent 70%),
     var(--bg);
   min-height: 100dvh;
-  padding: 24px;
+  padding: 60px 24px 24px;
 }
 
 .page {
@@ -60,13 +60,19 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
-  padding: 16px;
+  padding: 2px 8px;
   gap: 8px;
-  position: relative;
-  z-index: 10;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10001;
+  transform-origin: top right;
+  scale: clamp(0.65, calc(100vw / 520), 1);
 }
 
 .ski-tools-toggle {
+  display: none;
   order: -1;
   margin-right: auto;
   padding: 6px 10px;
@@ -870,6 +876,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: order 0.15s;
+}
+/* QR right-justified — swap column order */
+.wk-qr-collapse--right .wk-qr-content-left {
+  order: 2;
+}
+.wk-qr-collapse--right .wk-qr-content-main {
+  order: 1;
+}
+
+/* QR side toggle */
+.wk-qr-side-toggle {
+  flex-shrink: 0;
 }
 .wk-qr-content-left .wk-popout-name-badge {
   margin: 0;
@@ -1284,6 +1303,12 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.wk-send-quick-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
 }
 /* Amount input wrapper for inline clear button */
 .wk-send-amount-wrap {
@@ -2810,6 +2835,88 @@ body {
   pointer-events: auto;
 }
 
+/* Treasury panel */
+.wk-dd-panel--treasury {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  opacity: 0;
+  transform: translateX(24px);
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.wk-dd-slider--treasury .wk-dd-panel--main {
+  opacity: 0;
+  transform: translateX(-24px);
+  pointer-events: none;
+  position: absolute;
+  top: 0; left: 0; right: 0;
+}
+.wk-dd-slider--treasury .wk-dd-panel--treasury {
+  position: relative;
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* Treasury button */
+.wk-dd-treasury-btn {
+  flex: 0 0 auto !important;
+  width: 36px;
+  padding: 6px !important;
+  font-size: 1rem;
+  line-height: 1;
+  text-align: center;
+  border-color: rgba(34, 197, 94, 0.2);
+  background: rgba(34, 197, 94, 0.06);
+  color: rgba(34, 197, 94, 0.7);
+  transition: color 0.15s, border-color 0.15s;
+}
+.wk-dd-treasury-btn:hover {
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+/* Treasury body */
+.wk-treasury-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+.wk-treasury-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.wk-treasury-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  margin-bottom: 2px;
+}
+.wk-treasury-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+}
+.wk-treasury-key {
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 500;
+}
+.wk-treasury-val {
+  color: rgba(255, 255, 255, 0.8);
+  font-weight: 600;
+}
+.wk-treasury-val--green { color: #4ade80; }
+.wk-treasury-val--yellow { color: #FFB800; }
+
+/* ─── Settings panel ──────────────────────────────────────────────── */
+
 
 /* Settings gear button */
 .wk-dd-settings {
@@ -2850,6 +2957,498 @@ body {
 .wk-dd-thunder-bar:hover {
   color: #FFB800;
   background: rgba(255, 184, 0, 0.08);
+}
+
+/* Idle screensaver overlay */
+.ski-idle-overlay {
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 2px 12px 12px;
+  background: rgba(0, 0, 0, 0.95);
+  border-radius: 12px;
+  cursor: pointer;
+  animation: ski-idle-fade 0.5s ease-in;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  overflow: visible;
+  transform-origin: top right;
+  overflow: visible;
+}
+@keyframes ski-idle-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ski-idle-media {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.ski-idle-img {
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  object-fit: cover;
+}
+.ski-idle-iusd-btn {
+  all: unset;
+  cursor: pointer;
+  position: absolute;
+  top: 8%;
+  left: 8%;
+  z-index: 3;
+  width: 22%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: transparent;
+}
+.ski-idle-iusd-btn:hover {
+  background: rgba(255, 184, 0, 0.08);
+  box-shadow: 0 0 16px rgba(255, 184, 0, 0.3);
+}
+.ski-idle-iusd-icon {
+  display: none;
+}
+.ski-idle-ns-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - 32px);
+  position: absolute;
+  top: 27%;
+  left: 12px;
+  z-index: 2;
+}
+.ski-idle-ns-row .wk-ns-status {
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+.ski-idle-ns-row .wk-ns-dot-sui {
+  color: rgba(255,255,255,0.6);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  flex-shrink: 0;
+}
+.ski-idle-ns-input-wrap .wk-ns-dot-sui {
+  position: absolute;
+  right: 6px;
+  pointer-events: none;
+  z-index: 1;
+}
+.ski-idle-ns-input-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.ski-idle-ns-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  outline: none;
+  color: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 5px 30px 5px 10px;
+  box-sizing: border-box;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-align: left;
+}
+.ski-idle-ns-input:focus { border-color: rgba(96, 165, 250, 0.5); background: rgba(255, 255, 255, 0.06); }
+.ski-idle-ns-input::placeholder { color: rgba(255, 255, 255, 0.3); }
+.ski-idle-ns-clear {
+  all: unset;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.65rem;
+  margin-left: -42px;
+  margin-right: 4px;
+  z-index: 1;
+}
+.ski-idle-ns-clear:hover { color: #fff; }
+.ski-idle-ns-action {
+  all: unset;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 3px 4px;
+  border-radius: 6px;
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-ns-action:disabled { opacity: 0.5; cursor: default; }
+.ski-idle-ns-action--suiami {
+  background: rgba(90, 115, 145, 0.45);
+  border: 1px solid rgba(110, 140, 170, 0.5);
+  color: #a0b8d0;
+}
+.ski-idle-ns-action--suiami-active {
+  background: linear-gradient(135deg, rgba(126, 34, 206, 0.3), rgba(168, 85, 247, 0.25));
+  border: 1px solid rgba(168, 85, 247, 0.5);
+  color: #c4b5fd;
+}
+.ski-idle-ns-action--mint {
+  background: linear-gradient(135deg, rgba(22, 101, 52, 0.4), rgba(34, 197, 94, 0.3));
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+.ski-idle-ns-action--thunder {
+  background: rgba(255, 184, 0, 0.15);
+  border: 1px solid rgba(255, 184, 0, 0.4);
+  color: #FFB800;
+}
+.ski-idle-addr-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 0;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.65rem;
+  z-index: 2;
+  position: absolute;
+  top: calc(22% + 28px);
+  left: 0;
+}
+.ski-idle-addr-row[hidden] { display: none; }
+.ski-idle-addr-icon {
+  width: 24px;
+  height: 24px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.ski-idle-addr-icon--inline { display: inline-flex; }
+.ski-idle-addr-icon--inline svg { width: 24px; height: 24px; }
+.ski-idle-addr-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.7rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-addr-line:hover { background: rgba(255, 255, 255, 0.06); }
+.ski-idle-addr-line--sui {
+  color: #4da2ff;
+  border-color: rgba(77, 162, 255, 0.35);
+}
+.ski-idle-addr-line--sui:hover { border-color: rgba(77, 162, 255, 0.7); }
+.ski-idle-addr-line--btc {
+  color: #f7931a;
+  border-color: rgba(247, 147, 26, 0.35);
+}
+.ski-idle-addr-line--btc:hover { border-color: rgba(247, 147, 26, 0.7); }
+.ski-idle-addr-line--sol {
+  color: #c084fc;
+  border-color: rgba(192, 132, 252, 0.35);
+}
+.ski-idle-addr-line--sol:hover { border-color: rgba(192, 132, 252, 0.7); }
+.ski-idle-addr-line--eth {
+  color: #818cf8;
+  border-color: rgba(129, 140, 248, 0.35);
+}
+.ski-idle-addr-line--eth:hover { border-color: rgba(129, 140, 248, 0.7); }
+.ski-idle-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  margin-top: -6px;
+}
+.ski-idle-card:empty { display: none; }
+.ski-idle-card-name { font-weight: 700; color: #fff; }
+.ski-idle-card-badges { color: #FFB800; font-weight: 600; }
+.ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
+.ski-idle-thunder-convo {
+  position: absolute;
+  bottom: 32px;
+  left: 0;
+  right: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  z-index: 2;
+}
+.ski-idle-thunder-convo[hidden] { display: none; }
+.ski-idle-bubble {
+  padding: 6px 12px;
+  margin: 2px 0;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  max-width: 80%;
+  word-break: break-word;
+}
+.ski-idle-bubble--out {
+  align-self: flex-end;
+  background: rgba(15, 15, 20, 0.55);
+  border: 1px solid rgba(255, 184, 0, 0.35);
+  color: #FFB800;
+}
+.ski-idle-bubble--in {
+  align-self: flex-start;
+  background: rgba(77, 162, 255, 0.15);
+  border: 1px solid rgba(77, 162, 255, 0.3);
+  color: #93c5fd;
+}
+.ski-idle-bubble--failed {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+.ski-idle-bubble--sending {
+  opacity: 0.5;
+}
+.ski-idle-thunder-row {
+  display: flex;
+  width: 100%;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.ski-idle-thunder-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  outline: none;
+  color: #FFB800;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 8px 40px 8px 12px;
+  box-sizing: border-box;
+  text-align: right;
+  backdrop-filter: blur(4px);
+}
+.ski-idle-thunder-input::placeholder { color: rgba(255, 184, 0, 0.4); direction: rtl; }
+.ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(255, 255, 255, 0.12); text-align: left; }
+.ski-idle-thunder-input:focus::placeholder { color: transparent; }
+.ski-idle-thunder-send {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 184, 0, 0.15);
+  border: 1px solid rgba(255, 184, 0, 0.4);
+  border-radius: 6px;
+  color: #FFB800;
+  font-size: 0.85rem;
+  padding: 4px 7px;
+  cursor: pointer;
+  line-height: 1;
+}
+.ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.3); }
+.ski-idle-thunder-send--loading { pointer-events: auto !important; }
+.ski-idle-thunder-send--loading:hover {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.6);
+}
+.ski-idle-thunder-send--loading:hover .ski-idle-thunder-spinner {
+  display: none;
+}
+.ski-idle-thunder-send--loading:hover::after {
+  content: '\2715';
+  color: #f87171;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+.ski-idle-thunder-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 184, 0, 0.3);
+  border-top-color: #FFB800;
+  border-radius: 50%;
+  animation: ski-spin 0.6s linear infinite;
+}
+@keyframes ski-spin { to { transform: rotate(360deg); } }
+.ski-idle-at-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: rgba(10, 10, 20, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 184, 0, 0.3);
+  border-radius: 8px 8px 0 0;
+  padding: 4px 0;
+  z-index: 10;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.ski-idle-at-cols {
+  display: flex;
+  gap: 1px;
+}
+.ski-idle-at-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ski-idle-at-col--left { border-right: 1px solid rgba(255, 255, 255, 0.08); }
+.ski-idle-at-option {
+  padding: 6px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ski-idle-at-option--contact { color: #60a5fa; }
+.ski-idle-at-option--owned { color: #FFB800; text-align: right; }
+.ski-idle-at-option:hover, .ski-idle-at-option--active {
+  background: rgba(255, 255, 255, 0.08);
+}
+.ski-idle-at-empty {
+  padding: 6px 10px;
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.2);
+  font-style: italic;
+}
+.ski-idle-follow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 20px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #fff;
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-follow:hover {
+  background: #1a1a1a;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.ski-idle-bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+}
+.ski-idle-next {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-size: 1.4rem;
+  font-weight: 300;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.ski-idle-next:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+/* t2000 page on idle overlay */
+.ski-idle-t2000 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 16px;
+  width: 100%;
+  text-align: center;
+}
+.ski-idle-t2000-header {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 1px;
+}
+.ski-idle-t2000-stat {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 600;
+}
+.ski-idle-t2000-stat span:last-child { color: #fff; }
+.ski-idle-t2000-missions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+.ski-idle-t2000-mission {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ski-idle-t2000-mission:hover {
+  background: rgba(255, 184, 0, 0.15);
+  border-color: rgba(255, 184, 0, 0.4);
+  color: #FFB800;
+}
+.ski-idle-t2000-motto {
+  font-size: 0.6rem;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.25);
+  letter-spacing: 0.5px;
 }
 
 /* ─── Settings panel ──────────────────────────────────────────────── */

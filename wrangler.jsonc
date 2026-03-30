@@ -35,6 +35,10 @@
       {
         "name": "ShadeExecutorAgent",
         "class_name": "ShadeExecutorAgent"
+      },
+      {
+        "name": "TreasuryAgents",
+        "class_name": "TreasuryAgents"
       }
     ]
   },
@@ -55,6 +59,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["ShadeExecutorAgent"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["TreasuryAgents"]
     }
   ]
 }

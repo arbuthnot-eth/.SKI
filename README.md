@@ -89,18 +89,52 @@ Each legend row shows the key shape, SuiNS name badge, truncated hex address (ri
 A dropdown menu beneath the SKI button (mutually exclusive with the modal). Contains:
 
 - SuiNS name management — register new `.sui` names, set default, view owned names with renewal dates
+- Marketplace purchase — buy listed names from Tradeport or on-chain kiosks directly from the name input
 - Shade orders — privacy-preserving grace-period domain sniping with commitment-reveal
+- Thunder — encrypt signals to any SuiNS identity
+- Coin chips — swap between SUI, USDC, NS, and other tokens via DeepBook/Cetus
+- SUIAMI — SUI-Authenticated Message Identity proofs
 - Disconnect button
 - Manage Keys — opens the modal from the menu
+
+## Idle overlay
+
+After 15 seconds of inactivity (or by cycling the SKI button), the menu collapses into a compact overlay with pixel art, a name search input, and a Thunder messaging row. The overlay closes the SKI menu behind it for a clean presentation.
+
+The overlay name input mirrors the full menu's behavior:
+- **Available names** → MINT button
+- **Tradeport/kiosk listings** → TRADE button with price
+- **Taken names** → Thunder button to send an encrypt signal
+- **Owned names** → SUIAMI button to prove identity
 
 ## SuiNS integration
 
 Full SuiNS lifecycle from the SKI menu:
 
 - **Register** — search and register `.sui` names with instant tier pricing, pay with SUI, USDC, or NS tokens
+- **Marketplace purchase** — names listed on Tradeport or in on-chain kiosks show a TRADE button with USD price; single-PTB purchase with optional token swap
 - **Set default** — change your primary SuiNS name (updates the SKI button and profile instantly)
 - **Target address** — view and copy the address a name points to, with color-coded status (purple = self, green = available, orange = kiosk-listed)
 - **Owned names** — scrollable chip grid showing all names owned by the connected wallet, with grace-period expiry warnings and renewal cost estimates
+
+## Thunder
+
+Encrypt signals between SuiNS identities. On-chain encrypted messaging powered by [Seal](https://docs.mystenlabs.com/seal) threshold encryption (2-of-3 key servers) with ciphertext stored on [Walrus](https://walrus.xyz).
+
+- **Signal** — encrypt and send a message to any `.sui` name; only the NFT owner can decrypt
+- **Quest** — claim and decrypt your signals, NFT-gated via Seal policies
+- **Strike** — relay signals server-side for WaaP wallets that can't run Seal in-browser
+- **@tags** — mention other SuiNS names in signals with autocomplete from your roster
+
+Thunder surfaces throughout the UI: as the default action when viewing someone else's taken name (no amount), in the idle overlay's messaging row, and via the quick-thunder button in the menu.
+
+**Move contract (v4):** `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581`
+
+## SUIAMI
+
+SUI-Authenticated Message Identity — cryptographic proof that a SuiNS name belongs to you. Sign a structured message with your wallet to generate a verifiable identity proof, validated server-side via `/api/suiami/verify`.
+
+Used for sender authentication in Thunder signals and as a standalone identity primitive.
 
 ---
 
@@ -253,7 +287,7 @@ npx wrangler login
 bun run build && npx wrangler deploy
 ```
 
-The worker hosts four Durable Objects:
+The worker hosts five Durable Objects:
 
 | Binding | Purpose |
 |---|---|
@@ -261,6 +295,7 @@ The worker hosts four Durable Objects:
 | `SponsorAgent` | Manages Splash sponsor state |
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
+| `TreasuryAgents` | Treasury management agents |
 
 API routes served by the worker:
 
@@ -269,6 +304,8 @@ API routes served by the worker:
 | `/agents/*` | WebSocket upgrade for Durable Object agents |
 | `/api/health` | Health check |
 | `/api/shade/*` | Shade order management (poke, status, schedule) |
+| `/api/suiami/verify` | SUIAMI identity proof verification |
+| `/api/thunder/strike-relay` | Server-side Thunder signal relay for WaaP wallets |
 | `/api/tradeport/listing/:label` | TradePort listing proxy |
 
 ## IKA dWallet Integration

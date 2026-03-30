@@ -8968,7 +8968,13 @@ function bindEvents() {
       };
 
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
-      _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if ((e as KeyboardEvent).key === 'Enter' && _idleActionBtn && !_idleActionBtn.disabled) {
+          e.preventDefault();
+          _idleActionBtn.click();
+        }
+      });
       _idleNsInput?.addEventListener('focus', _freezeGif);
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
 

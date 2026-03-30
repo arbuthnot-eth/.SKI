@@ -3266,8 +3266,8 @@ body {
   border-radius: 6px;
 }
 .ski-idle-card:empty { display: none; }
-.ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; text-decoration: none; }
-.ski-idle-card-name:hover { text-decoration: underline; opacity: 0.85; }
+.ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; }
+.ski-idle-card-name:hover { opacity: 0.85; }
 .ski-idle-card-bal {
   display: inline-flex;
   align-items: baseline;
@@ -3299,17 +3299,15 @@ body {
 }
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {
-  position: absolute;
-  bottom: 56px;
-  left: 0;
-  right: 0;
-  max-height: 40%;
+  position: relative;
+  max-height: 40vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 6px 8px;
+  padding: 6px 8px 4px;
   z-index: 2;
+  margin-top: 4px;
 }
 .ski-idle-thunder-convo[hidden] { display: none; }
 .ski-idle-convo-title {
@@ -3318,13 +3316,18 @@ body {
   font-weight: 700;
   color: #FFB800;
   padding: 4px 8px;
-  background: rgba(10, 10, 15, 0.8);
+  background: rgba(10, 10, 15, 0.9);
+  backdrop-filter: blur(4px);
   border-radius: 6px;
   align-self: center;
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 3;
 }
+.ski-idle-convo-title a { color: inherit; text-decoration: none; }
+.ski-idle-convo-title a:hover { text-decoration: underline; }
+.ski-idle-convo-name { color: #4da2ff; }
+.ski-idle-convo-tld { color: #FFB800; }
 .ski-idle-bubble {
   padding: 8px 12px;
   margin: 1px 0;
@@ -3390,8 +3393,23 @@ a.ski-idle-bubble-name:hover {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
+.ski-idle-thunder-at {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #4da2ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 0 6px 0 8px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+.ski-idle-thunder-at:hover { opacity: 1; }
 .ski-idle-thunder-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
@@ -3400,13 +3418,13 @@ a.ski-idle-bubble-name:hover {
   font-family: inherit;
   font-size: 0.8rem;
   font-weight: 600;
-  padding: 8px 40px 8px 12px;
+  padding: 8px 40px 8px 10px;
   box-sizing: border-box;
   text-align: right;
   backdrop-filter: blur(4px);
 }
 .ski-idle-thunder-input::placeholder { color: rgba(255, 184, 0, 0.4); direction: rtl; }
-.ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(255, 255, 255, 0.12); text-align: left; }
+.ski-idle-thunder-input:not(:placeholder-shown), .ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(255, 255, 255, 0.12); text-align: left; }
 .ski-idle-thunder-input:focus::placeholder { color: transparent; }
 .ski-idle-thunder-send {
   position: absolute;
@@ -3542,6 +3560,132 @@ a.ski-idle-bubble-name:hover {
   background: #1a1a1a;
   border-color: rgba(255, 255, 255, 0.4);
 }
+/* Quest Prism — Solana Pay QR overlay */
+.ski-quest-qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.ski-quest-qr-card {
+  background: rgba(10, 10, 15, 0.95);
+  border: 2px solid #FFB800;
+  border-radius: 16px;
+  padding: 24px;
+  text-align: center;
+  max-width: 320px;
+  width: 90%;
+  position: relative;
+  box-shadow: 0 0 40px rgba(255, 184, 0, 0.2);
+}
+.ski-quest-qr-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #FFB800;
+  margin-bottom: 4px;
+}
+.ski-quest-qr-subtitle {
+  font-size: 0.75rem;
+  color: rgba(255, 184, 0, 0.6);
+  margin-bottom: 16px;
+}
+.ski-quest-qr-img {
+  border-radius: 12px;
+  background: #FFB800;
+  padding: 12px;
+  display: block;
+  margin: 0 auto 12px;
+}
+.ski-quest-qr-amount {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 4px;
+}
+.ski-quest-qr-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  color: rgba(255, 184, 0, 0.5);
+}
+.ski-quest-qr-addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 12px;
+}
+.ski-quest-qr-status {
+  font-size: 0.8rem;
+  color: #FFB800;
+  animation: pulse 2s infinite;
+}
+.ski-quest-qr-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+.ski-quest-qr-close:hover { color: #fff; }
+
+/* Inline SOL QR on idle overlay — floats above the card */
+.ski-idle-sol-qr {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -55%);
+  z-index: 10;
+  pointer-events: auto;
+}
+.ski-idle-sol-qr[hidden] { display: none; }
+.ski-idle-sol-qr-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  background: rgba(10, 10, 15, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(77, 162, 255, 0.3);
+  border-radius: 14px;
+  padding: 10px 14px 8px;
+}
+.ski-idle-sol-qr-img {
+  border-radius: 10px;
+  display: block;
+  opacity: 0.9;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.ski-idle-sol-qr-img:hover { opacity: 1; transform: scale(1.03); }
+.ski-idle-sol-qr-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.ski-idle-sol-qr-route {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: rgba(77, 162, 255, 0.5);
+  letter-spacing: 0.04em;
+}
+.ski-idle-sol-qr-amt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.8);
+}
+
 .ski-idle-bottom-row {
   display: flex;
   align-items: center;

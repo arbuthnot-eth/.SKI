@@ -92,6 +92,24 @@ interface Env {
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function toBase58(bytes: Uint8Array): string {
+  const digits = [0];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let j = 0; j < digits.length; j++) {
+      carry += digits[j] << 8;
+      digits[j] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) { digits.push(carry % 58); carry = (carry / 58) | 0; }
+  }
+  let str = '';
+  for (const b of bytes) { if (b === 0) str += '1'; else break; }
+  for (let i = digits.length - 1; i >= 0; i--) str += BASE58_ALPHABET[digits[i]];
+  return str;
+}
+
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i++) {
@@ -136,10 +154,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Quest Prism — client sends commitment + amount only, no domain ever leaves the client.
+    // Ultron sends NS tokens to recipient. Client registers the name locally.
     if ((url.pathname.endsWith('/quest-bounty') || url.searchParams.has('quest-bounty')) && request.method === 'POST') {
       try {
-        const body = await request.json() as { commitment: string; amount: number; accepted: string[]; recipient: string };
-        // Store the bounty — discrete, no domain visible
+        const body = await request.json() as {
+          commitment: string; amount: number; accepted: string[]; recipient: string;
+          preSignedTx?: string; preSignedSig?: string;
+        };
         const bounties = (this.state as any).quest_bounties ?? [];
         const bounty = {
           id: crypto.randomUUID(),
@@ -147,16 +169,208 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           amount: body.amount,
           accepted: body.accepted,
           recipient: body.recipient,
-          status: 'open',
+          preSignedTx: body.preSignedTx || undefined,
+          preSignedSig: body.preSignedSig || undefined,
+          status: 'open' as string,
           created: Date.now(),
+          digest: undefined as string | undefined,
+          filledAt: undefined as number | undefined,
+          error: undefined as string | undefined,
         };
         bounties.push(bounty);
         this.setState({ ...this.state, quest_bounties: bounties } as any);
-        console.log(`[TreasuryAgents] Quest bounty posted: $${body.amount}, commitment: ${body.commitment.slice(0, 16)}...`);
+        console.log(`[TreasuryAgents] Quest Prism posted: $${body.amount}, commitment: ${body.commitment.slice(0, 12)}…`);
+
+        // Ultron acts as first Hunter — attempt immediate fill (send NS tokens)
+        this.fillQuestBounty(bounty.id).catch(err => {
+          console.error(`[TreasuryAgents] Auto-fill failed for ${bounty.id}:`, err);
+        });
+
         return new Response(JSON.stringify({ id: bounty.id, status: 'open' }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
       }
+    }
+
+    // Quest bounties — verifiable: commitment + amount + status. No domain, no recipient exposed.
+    if ((url.pathname.endsWith('/quest-bounties') || url.searchParams.has('quest-bounties')) && request.method === 'GET') {
+      const recipient = url.searchParams.get('recipient') || '';
+      const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+      const filtered = recipient
+        ? bounties.filter(b => b.recipient === recipient)
+        : bounties.filter(b => b.status === 'open');
+      const redacted = filtered.map(b => ({
+        id: b.id,
+        commitment: b.commitment,
+        amount: b.amount,
+        accepted: b.accepted,
+        status: b.status,
+        created: b.created,
+        filledAt: b.filledAt,
+        digest: b.digest,
+        error: b.status === 'error' ? b.error : undefined,
+      }));
+      return new Response(JSON.stringify({ bounties: redacted }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // Quest fill — manually trigger fill for a specific bounty
+    if ((url.pathname.endsWith('/quest-fill') || url.searchParams.has('quest-fill')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { bountyId: string };
+        const result = await this.fillQuestBounty(body.bountyId);
+        return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Poke — instant hook. Call after sending funds to ultron. Fires all open quests + SOL watcher immediately.
+    if (url.pathname.endsWith('/poke') || url.searchParams.has('poke')) {
+      const results: Array<{ id: string; status: string; error?: string }> = [];
+      // Watch SOL deposits first (may match new deposits)
+      await this._watchSolDeposits();
+      // Then try filling all open quests
+      const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+      const open = bounties.filter(b => b.status === 'open');
+      for (const b of open) {
+        try {
+          const r = await this.fillQuestBounty(b.id);
+          results.push({ id: b.id, status: r.status, error: r.error });
+        } catch (err) {
+          results.push({ id: b.id, status: 'error', error: String(err) });
+        }
+      }
+      return new Response(JSON.stringify({ poked: true, results }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // Deposit addresses — derive cross-chain addresses from ultron's ed25519 key
+    if ((url.pathname.endsWith('/rumble') || url.searchParams.has('rumble')) && request.method === 'GET') {
+      if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const suiAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const pubBytes = keypair.getPublicKey().toRawBytes();
+      const solAddr = toBase58(pubBytes);
+      return new Response(JSON.stringify({
+        sui: suiAddr,
+        sol: solAddr,
+        btc: null, eth: null, // IKA dWallets after Rumble
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // Deposit intent — register a Sui address, get a steganographic tag + exact SOL amount.
+    // Sub-cent lamports encode the tag so the watcher knows which Sui address to credit.
+    if ((url.pathname.endsWith('/deposit-intent') || url.searchParams.has('deposit-intent')) && request.method === 'POST') {
+      try {
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
+        const body = await request.json() as { suiAddress: string; amountUsd: number };
+        if (!body.suiAddress || !body.amountUsd) throw new Error('Missing suiAddress or amountUsd');
+
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+
+        // Derive a 4-digit tag from the Sui address (deterministic, reproducible)
+        const addrBytes = new TextEncoder().encode(body.suiAddress);
+        const hashBuf = await crypto.subtle.digest('SHA-256', addrBytes);
+        const hashArr = new Uint8Array(hashBuf);
+        // 6-digit tag from address hash — encodes SUIAMI identity in sub-cent precision
+        const tag = ((hashArr[0] << 16) | (hashArr[1] << 8) | hashArr[2]) % 1000000; // 000000-999999
+
+        // Get SOL price from Sibyl
+        let solPrice: number | null = null;
+        try {
+          // Pyth SOL/USD feed
+          const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d', { signal: AbortSignal.timeout(5000) });
+          const d = await r.json() as { parsed?: Array<{ price?: { price?: string; expo?: number } }> };
+          const p = d.parsed?.[0]?.price;
+          if (p?.price) solPrice = Number(p.price) * Math.pow(10, Number(p.expo ?? 0));
+        } catch {}
+        if (!solPrice) {
+          try {
+            const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { signal: AbortSignal.timeout(5000) });
+            const d = await r.json() as { price?: string };
+            if (d.price) solPrice = parseFloat(d.price);
+          } catch {}
+        }
+        if (!solPrice) throw new Error('Sibyl could not determine SOL price');
+
+        // Calculate exact lamport amount with tag encoded in sub-cent digits
+        const solAmount = body.amountUsd / solPrice;
+        const baseLamports = Math.floor(solAmount * 1e9);
+        // Zero out last 4 digits, replace with tag
+        // Embed 6-digit tag in sub-cent lamports. Any amount works — tag is in the last 6 digits.
+        const taggedLamports = Math.floor(baseLamports / 1000000) * 1000000 + tag;
+
+        // Store the intent
+        const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+        // Deduplicate — update if same address
+        const existing = intents.findIndex(i => i.suiAddress === body.suiAddress);
+        const intent = {
+          suiAddress: body.suiAddress,
+          tag,
+          amountUsd: body.amountUsd,
+          lamports: taggedLamports,
+          solAmount: taggedLamports / 1e9,
+          created: Date.now(),
+          status: 'pending',
+        };
+        if (existing >= 0) intents[existing] = intent;
+        else intents.push(intent);
+        this.setState({ ...this.state, deposit_intents: intents } as any);
+
+        const tagStr = String(tag).padStart(6, '0');
+
+        // iUSD tagged amount (9 decimals): $7.77 + 6-digit tag in sub-cent = 7.770006296 iUSD
+        const iusdBase = Math.floor(body.amountUsd * 100); // cents
+        const iusdTaggedRaw = BigInt(iusdBase) * 10_000_000n + BigInt(tag); // 9 decimals: cents(7 digits) + tag(6 digits shifted)
+        const iusdTaggedStr = `${body.amountUsd.toFixed(2)}${tagStr}`;
+
+        // USDC tagged amount (6 decimals): 10.006296 USDC — tag in sub-cent
+        const usdcTagged = (Math.floor(body.amountUsd * 1e6) / 1e6 + tag / 1e6).toFixed(6);
+
+        // Prism URI — opens sui.ski, auto-builds USDC transfer with tagged amount
+        const prismUri = `https://sui.ski/?prism=usdc:${usdcTagged}`;
+
+        // Solana Pay URI (secondary — for SOL deposits)
+        const solPayAmount = (taggedLamports / 1e9).toFixed(9);
+        const solanaPayUri = `solana:${solAddr}?amount=${solPayAmount}&label=${encodeURIComponent('.SKI Quest')}&message=${encodeURIComponent(`iUSD:${iusdTaggedStr}`)}`;
+
+        return new Response(JSON.stringify({
+          // Primary: Sui Prism (USDC on Sui)
+          prismUri,
+          qr: `https://api.qrserver.com/v1/create-qr-code/?size=256x256&color=ffffff&bgcolor=4da2ff&data=${encodeURIComponent(prismUri)}`,
+          usdcAmount: usdcTagged,
+          iusdAmount: iusdTaggedStr,
+          tag,
+          tagHex: tagStr,
+          amountUsd: body.amountUsd,
+          // Secondary: Solana Pay (SOL deposits)
+          solAddress: solAddr,
+          solanaPayUri,
+          solQr: `https://api.qrserver.com/v1/create-qr-code/?size=256x256&color=ffffff&bgcolor=9945FF&data=${encodeURIComponent(solanaPayUri)}`,
+          lamports: taggedLamports,
+          solAmount: taggedLamports / 1e9,
+          solPrice,
+          memo: `Send ${usdcTagged} USDC to ultron or ${solPayAmount} SOL`,
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Check deposit status — poll for matched deposits
+    if ((url.pathname.endsWith('/deposit-status') || url.searchParams.has('deposit-status')) && request.method === 'GET') {
+      const suiAddr = url.searchParams.get('suiAddress') || '';
+      const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+      const mine = intents.find(i => i.suiAddress === suiAddr);
+      if (!mine) return new Response(JSON.stringify({ status: 'not_found' }), { headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({
+        status: mine.status,
+        tag: mine.tag,
+        lamports: mine.lamports,
+        solAmount: mine.solAmount,
+        matchedTx: mine.matchedTx,
+        creditDigest: mine.creditDigest,
+      }), { headers: { 'content-type': 'application/json' } });
     }
 
     // Migrate: sweep ALL tokens from ultron to a new keeper address
@@ -445,9 +659,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     });
 
     try {
-      // Every tick: scan for arb + run t2000 missions
+      // Every tick: scan for arb + run t2000 missions + retry open Quests + watch SOL deposits
       await this._scanArb();
       await this._runT2000Missions();
+      await this._retryOpenQuests();
+      await this._watchSolDeposits();
 
       // Every 15 min: check yield rotation
       const FIFTEEN_MIN = 15 * 60 * 1000;
@@ -1256,6 +1472,357 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       console.error('[TreasuryAgents] mintIusd error:', errStr);
       return { error: errStr };
     }
+  }
+
+  // ─── Quest Fill — Hunter registers name for recipient, then strikes ──
+
+  /** Fill a Quest Prism — swap SUI→USDC→NS, send NS tokens to recipient.
+   *  Domain never touches the server. Client registers locally with the NS it receives. */
+  async fillQuestBounty(bountyId: string): Promise<{ status: string; digest?: string; strikeDigest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { status: 'error', error: 'No ultron key' };
+
+    const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+    const idx = bounties.findIndex(b => b.id === bountyId);
+    if (idx === -1) return { status: 'error', error: 'Bounty not found' };
+    const bounty = bounties[idx];
+    if (bounty.status !== 'open') return { status: bounty.status, digest: bounty.digest };
+
+    const recipient = bounty.recipient;
+    if (!recipient) return { status: 'error', error: 'Missing recipient' };
+
+    // Mark in-progress
+    bounties[idx] = { ...bounty, status: 'filling' };
+    this.setState({ ...this.state, quest_bounties: bounties } as any);
+
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      // Check ultron's balances to pick best route
+      const balGql = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: `{ address(address: "${ultronAddr}") { balances { nodes { coinType { repr } totalBalance } } } }` }),
+      });
+      const balData = await balGql.json() as any;
+      const bals: Record<string, bigint> = {};
+      for (const n of (balData?.data?.address?.balances?.nodes ?? [])) {
+        bals[n.coinType.repr] = BigInt(n.totalBalance);
+      }
+      const suiBal = bals[SUI_TYPE] ?? 0n;
+      const usdcBal = bals[USDC_TYPE] ?? 0n;
+
+      // Sibyl oracle
+      const suiPrice = await this._fetchSuiPrice();
+      if (!suiPrice) throw new Error('Sibyl could not determine SUI price');
+      const fundingUsd = Math.min(bounty.amount || 7.50, 9.50);
+
+      // Pick route: USDC-direct (if enough), SUI→USDC (if enough SUI), or fail with helpful msg
+      const usdcNeeded = BigInt(Math.ceil(fundingUsd * 1e6)); // USDC has 6 decimals
+      const suiNeeded = BigInt(Math.ceil((fundingUsd / suiPrice) * 1e9));
+      const minSuiForGas = 50_000_000n; // 0.05 SUI for gas
+
+      const hasUsdc = usdcBal >= usdcNeeded;
+      const hasSui = suiBal >= suiNeeded + minSuiForGas;
+
+      // Also check IKA — can swap via Cetus aggregator for extra SUI
+      const ikaBal = bals['0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA'] ?? 0n;
+
+      if (!hasUsdc && !hasSui) {
+        // Last resort: attest SOL collateral + mint iUSD as credit, tell the user what's needed
+        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const suiUsd = Number(suiBal) / 1e9 * suiPrice;
+        const usdcUsd = Number(usdcBal) / 1e6;
+        const ikaUsd = Number(ikaBal) / 1e9 * 0.003;
+        const totalUsd = suiUsd + usdcUsd + ikaUsd;
+        const shortfall = fundingUsd - totalUsd;
+
+        throw new Error(
+          `Cache has $${totalUsd.toFixed(2)}, need $${fundingUsd.toFixed(2)} (short $${shortfall.toFixed(2)}). ` +
+          `Send ${Math.ceil(shortfall / suiPrice * 1.1)} SUI or ${Math.ceil(shortfall)} USDC to ${ultronAddr.slice(0, 10)}… — ` +
+          `t2000s earn iUSD credit for fronting USDC`
+        );
+      }
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      let nsCoin: any;
+      const changeCoins: any[] = [];
+
+      if (hasUsdc) {
+        // Route: USDC → NS directly (cheapest, no SUI→USDC swap needed)
+        console.log(`[TreasuryAgents] Quest fill: USDC-direct route ($${(Number(usdcBal) / 1e6).toFixed(2)} USDC available)`);
+        // Race all RPCs for coin objects
+        const coinData = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string }> }>(
+          'suix_getCoins', [ultronAddr, USDC_TYPE],
+        );
+        const usdcCoinRefs = (coinData?.data ?? []).map(c => ({
+          objectId: c.coinObjectId, version: String(c.version), digest: c.digest,
+        }));
+        if (usdcCoinRefs.length === 0) throw new Error('No USDC coins found');
+
+        const usdcCoin = tx.objectRef(usdcCoinRefs[0]);
+        if (usdcCoinRefs.length > 1) tx.mergeCoins(usdcCoin, usdcCoinRefs.slice(1).map((r: any) => tx.objectRef(r)));
+        const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(usdcNeeded)]);
+
+        const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+        const [nsOut, usdcSwapChange, deepChange] = tx.moveCall({
+          target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+          typeArguments: [TreasuryAgents.NS_TYPE, TreasuryAgents.USDC_TYPE],
+          arguments: [
+            tx.sharedObjectRef({ objectId: TreasuryAgents.DB_NS_USDC_POOL, initialSharedVersion: TreasuryAgents.DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+            usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+          ],
+        });
+        nsCoin = nsOut;
+        changeCoins.push(usdcCoin, usdcSwapChange, deepChange);
+      } else {
+        // Route: SUI → USDC → NS
+        console.log(`[TreasuryAgents] Quest fill: SUI route (${(Number(suiBal) / 1e9).toFixed(2)} SUI available)`);
+        const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiNeeded)]);
+        const [zeroDEEP1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+        const [suiChange, usdcOut, deepChange1] = tx.moveCall({
+          target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+          typeArguments: [SUI_TYPE, TreasuryAgents.USDC_TYPE],
+          arguments: [
+            tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: 389750322, mutable: true }),
+            suiPayment, zeroDEEP1, tx.pure.u64(0), tx.object.clock(),
+          ],
+        });
+        const [zeroDEEP2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+        const [nsOut, usdcChange, deepChange2] = tx.moveCall({
+          target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+          typeArguments: [TreasuryAgents.NS_TYPE, TreasuryAgents.USDC_TYPE],
+          arguments: [
+            tx.sharedObjectRef({ objectId: TreasuryAgents.DB_NS_USDC_POOL, initialSharedVersion: TreasuryAgents.DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+            usdcOut, zeroDEEP2, tx.pure.u64(0), tx.object.clock(),
+          ],
+        });
+        nsCoin = nsOut;
+        changeCoins.push(suiChange, usdcChange, deepChange1, deepChange2);
+      }
+
+      // Send NS tokens to recipient — domain never leaves client
+      tx.transferObjects([nsCoin], tx.pure.address(normalizeSuiAddress(recipient)));
+      if (changeCoins.length > 0) tx.transferObjects(changeCoins, tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] Quest filled: NS sent to ${recipient.slice(0, 10)}…, digest: ${digest}`);
+
+      // Mark bounty as filled
+      const updated = [...((this.state as any).quest_bounties ?? [])] as Array<Record<string, any>>;
+      const uIdx = updated.findIndex(b => b.id === bountyId);
+      if (uIdx !== -1) {
+        updated[uIdx] = { ...updated[uIdx], status: 'filled', digest, filledAt: Date.now() };
+        this.setState({ ...this.state, quest_bounties: updated } as any);
+      }
+
+      // Submit pre-signed registration tx if available — auto-registers the name
+      let regDigest: string | undefined;
+      if (bounty.preSignedTx && bounty.preSignedSig) {
+        try {
+          const txBytes = Uint8Array.from(atob(bounty.preSignedTx), c => c.charCodeAt(0));
+          regDigest = await this._submitTx(txBytes, bounty.preSignedSig);
+          console.log(`[TreasuryAgents] Auto-registered name for ${recipient.slice(0, 10)}…: ${regDigest}`);
+        } catch (regErr) {
+          console.error(`[TreasuryAgents] Pre-signed registration failed (user registers manually):`, regErr);
+        }
+      }
+
+      return { status: 'filled', digest, regDigest };
+    } catch (err) {
+      const errStr = err instanceof Error ? err.message : String(err);
+      console.error(`[TreasuryAgents] Quest fill error:`, errStr);
+
+      // Mark bounty as failed (can retry)
+      const updated = [...((this.state as any).quest_bounties ?? [])] as Array<Record<string, any>>;
+      const uIdx = updated.findIndex(b => b.id === bountyId);
+      if (uIdx !== -1) {
+        updated[uIdx] = { ...updated[uIdx], status: 'open', error: errStr };
+        this.setState({ ...this.state, quest_bounties: updated } as any);
+      }
+
+      return { status: 'error', error: errStr };
+    }
+  }
+
+  /** Watch ultron's Solana address for incoming deposits, match sub-cent tags to Sui addresses */
+  private async _watchSolDeposits(): Promise<void> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
+    const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+    const pending = intents.filter(i => i.status === 'pending');
+    if (pending.length === 0) return;
+
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+
+    // Fetch recent Solana transactions to ultron's address
+    const SOL_RPCS = [
+      'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+      'https://api.mainnet-beta.solana.com',
+    ];
+
+    let signatures: Array<{ signature: string; slot: number; blockTime: number }> = [];
+    for (const rpc of SOL_RPCS) {
+      try {
+        const r = await fetch(rpc, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1,
+            method: 'getSignaturesForAddress',
+            params: [solAddr, { limit: 20 }],
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const d = await r.json() as any;
+        if (d.result?.length) { signatures = d.result; break; }
+      } catch { /* try next */ }
+    }
+
+    if (signatures.length === 0) return;
+
+    // Check last processed signature to avoid re-processing
+    const lastProcessed = (this.state as any).last_sol_sig as string | undefined;
+    const newSigs = lastProcessed
+      ? signatures.filter(s => s.signature !== lastProcessed).slice(0, 10)
+      : signatures.slice(0, 5);
+
+    if (newSigs.length === 0) return;
+
+    for (const sig of newSigs) {
+      try {
+        // Get transaction details
+        let txData: any = null;
+        for (const rpc of SOL_RPCS) {
+          try {
+            const r = await fetch(rpc, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0', id: 1,
+                method: 'getTransaction',
+                params: [sig.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }],
+              }),
+              signal: AbortSignal.timeout(8000),
+            });
+            const d = await r.json() as any;
+            if (d.result) { txData = d.result; break; }
+          } catch { /* try next */ }
+        }
+        if (!txData) continue;
+
+        // Find SOL transfer to ultron's address
+        const instructions = txData.transaction?.message?.instructions ?? [];
+        for (const ix of instructions) {
+          if (ix.parsed?.type === 'transfer' && ix.parsed?.info?.destination === solAddr) {
+            const lamports = ix.parsed.info.lamports;
+            if (!lamports || lamports < 1000000) continue; // ignore dust (< 0.001 SOL)
+
+            // Extract tag from sub-cent digits (last 4 digits of lamport amount)
+            // Extract 6-digit SUIAMI tag from sub-cent lamports
+            const tag = lamports % 1000000;
+
+            // Match to a pending intent
+            const match = pending.find(p => p.tag === tag);
+            if (match) {
+              console.log(`[TreasuryAgents] SOL deposit matched! ${lamports} lamports, tag: ${tag}, → ${match.suiAddress.slice(0, 10)}…`);
+
+              // BAM Event: Burn(lock) on Solana → Attest via Sibyl → Mint iUSD on Sui
+              // SOL stays on Solana as collateral. Sibyl attests. iUSD minted. NS swapped.
+
+              // 1. Calculate SOL value in MIST (for collateral attestation)
+              const solPrice = await this._fetchSolPrice();
+              const solValue = (lamports / 1e9) * (solPrice || 83);
+              const collateralMist = BigInt(Math.floor(solValue / (solPrice || 83) * (solPrice || 83) * 1e9));
+
+              // 2. Attest SOL collateral on-chain via Sibyl's Timestream
+              try {
+                const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
+                console.log(`[TreasuryAgents] BAM Attest: SOL collateral $${solValue.toFixed(2)}, digest: ${attestResult.digest || 'failed'}`);
+              } catch (e) {
+                console.error(`[TreasuryAgents] BAM Attest failed:`, e);
+              }
+
+              // Mark intent as matched + attested
+              const allIntents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+              const idx = allIntents.findIndex(i => i.suiAddress === match.suiAddress);
+              if (idx >= 0) {
+                allIntents[idx] = { ...allIntents[idx], status: 'matched', matchedTx: sig.signature, matchedLamports: lamports, attestedUsd: solValue };
+                this.setState({ ...this.state, deposit_intents: allIntents } as any);
+              }
+
+              // 3. Fill Quest — ultron uses SUI/USDC backed by the attested SOL collateral
+              const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+              const openBounty = bounties.find(b => b.recipient === match.suiAddress && b.status === 'open');
+              if (openBounty) {
+                console.log(`[TreasuryAgents] BAM Mint: filling Quest ${openBounty.id} backed by SOL collateral`);
+                await this.fillQuestBounty(openBounty.id);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[TreasuryAgents] SOL tx parse error:`, err);
+      }
+    }
+
+    // Update last processed signature
+    this.setState({ ...this.state, last_sol_sig: signatures[0]?.signature } as any);
+  }
+
+  /** Retry open Quest bounties every tick — ultron keeps hunting until filled */
+  private async _retryOpenQuests(): Promise<void> {
+    const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+    const open = bounties.filter(b => b.status === 'open');
+    if (open.length === 0) return;
+    // Only retry bounties older than 30s (avoid double-filling during initial attempt)
+    const now = Date.now();
+    for (const b of open) {
+      if (now - b.created < 30_000) continue;
+      try {
+        await this.fillQuestBounty(b.id);
+      } catch (err) {
+        console.error(`[TreasuryAgents] Quest retry failed for ${b.id}:`, err);
+      }
+    }
+  }
+
+  /** Sibyl price oracle — sources truth from Pyth Hermes (Sibyl's upstream), falls back to Binance */
+  private async _fetchSuiPrice(): Promise<number | null> {
+    // Primary: Pyth Hermes (Sibyl's data source) — SUI/USD feed
+    try {
+      const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744', { signal: AbortSignal.timeout(5000) });
+      const d = await r.json() as { parsed?: Array<{ price?: { price?: string; expo?: number } }> };
+      const p = d.parsed?.[0]?.price;
+      if (p?.price) return Number(p.price) * Math.pow(10, Number(p.expo ?? 0));
+    } catch { /* fallback */ }
+    // Fallback: Binance spot
+    try {
+      const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SUIUSDT', { signal: AbortSignal.timeout(5000) });
+      const d = await r.json() as { price?: string };
+      if (d.price) return parseFloat(d.price);
+    } catch { /* exhausted */ }
+    return null;
+  }
+
+  /** Sibyl SOL/USD oracle — Pyth Hermes → Binance fallback */
+  private async _fetchSolPrice(): Promise<number | null> {
+    try {
+      const r = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d', { signal: AbortSignal.timeout(5000) });
+      const d = await r.json() as { parsed?: Array<{ price?: { price?: string; expo?: number } }> };
+      const p = d.parsed?.[0]?.price;
+      if (p?.price) return Number(p.price) * Math.pow(10, Number(p.expo ?? 0));
+    } catch {}
+    try {
+      const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT', { signal: AbortSignal.timeout(5000) });
+      const d = await r.json() as { price?: string };
+      if (d.price) return parseFloat(d.price);
+    } catch {}
+    return null;
   }
 
   // ─── iUSD Purchase Route (ultron acquires NS for user) ──────────────

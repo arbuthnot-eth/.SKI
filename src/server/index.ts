@@ -865,7 +865,7 @@ app.post('/api/thunder/set-fee', async (c) => {
 });
 
 // ── Swap SUI→DEEP (acquire DEEP for pool creation) ──────────────
-app.post('/api/treasury/swap-sui-for-deep', async (c) => {
+app.post('/api/cache/swap-sui-for-deep', async (c) => {
   try {
     const body = await c.req.json() as { amountMist?: string };
     const id = c.env.TreasuryAgents.idFromName('treasury');
@@ -883,7 +883,7 @@ app.post('/api/treasury/swap-sui-for-deep', async (c) => {
 });
 
 // ── Rumble — server-side IKA dWallet check/provision for ultron.sui ──
-app.post('/api/treasury/rumble', async (c) => {
+app.post('/api/cache/rumble', async (c) => {
   try {
     const id = c.env.TreasuryAgents.idFromName('treasury');
     const stub = c.env.TreasuryAgents.get(id);
@@ -900,7 +900,7 @@ app.post('/api/treasury/rumble', async (c) => {
 });
 
 // ── Create iUSD/USDC DeepBook pool ──────────────────────────────
-app.post('/api/treasury/create-iusd-pool', async (c) => {
+app.post('/api/cache/create-iusd-pool', async (c) => {
   try {
     const id = c.env.TreasuryAgents.idFromName('treasury');
     const stub = c.env.TreasuryAgents.get(id);
@@ -917,7 +917,7 @@ app.post('/api/treasury/create-iusd-pool', async (c) => {
 });
 
 // ── Acquire NS for user (iUSD route via TreasuryAgents) ───────────
-app.post('/api/treasury/acquire-ns', async (c) => {
+app.post('/api/cache/acquire-ns', async (c) => {
   try {
     const body = await c.req.json() as any;
     const id = c.env.TreasuryAgents.idFromName('treasury');
@@ -950,7 +950,7 @@ app.get('/api/thunder/chronicom', async (c) => {
 });
 
 // Migrate ultron: sweep all assets to new keeper + update ultron.sui target address
-app.post('/api/treasury/migrate', async (c) => {
+app.post('/api/cache/migrate', async (c) => {
   try {
     const body = await c.req.json() as { newKeeper: string };
     if (!body.newKeeper) return c.json({ error: 'newKeeper required' }, 400);
@@ -969,8 +969,8 @@ app.post('/api/treasury/migrate', async (c) => {
   }
 });
 
-// Quest bounty — discrete offer, no domain visible, just amount + accepted coins
-app.post('/api/treasury/quest-bounty', async (c) => {
+// Quest bounty — post a Quest for Chronicoms to fill (register name for user)
+app.post('/api/cache/quest-bounty', async (c) => {
   try {
     const body = await c.req.json() as {
       commitment: string;
@@ -991,6 +991,113 @@ app.post('/api/treasury/quest-bounty', async (c) => {
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); }
     catch { return c.json({ error: text || 'Unknown error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Quest bounties — list bounties (optionally filter by recipient)
+app.get('/api/cache/quest-bounties', async (c) => {
+  try {
+    const recipient = c.req.query('recipient') || '';
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request(`https://treasury-do/?quest-bounties&recipient=${encodeURIComponent(recipient)}`, {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Quest fill — manually trigger fill for a bounty
+app.post('/api/cache/quest-fill', async (c) => {
+  try {
+    const body = await c.req.json() as { bountyId: string };
+    if (!body.bountyId) return c.json({ error: 'bountyId required' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?quest-fill', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Poke — instant hook after sending funds. Fires SOL watcher + fills all open quests.
+app.all('/api/cache/poke', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?poke', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Deposit intent — get steganographic SOL amount with tag for routing
+app.post('/api/cache/deposit-intent', async (c) => {
+  try {
+    const body = await c.req.json() as { suiAddress: string; amountUsd: number };
+    if (!body.suiAddress || !body.amountUsd) return c.json({ error: 'Missing params' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?deposit-intent', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Deposit status — check if SOL deposit was matched
+app.get('/api/cache/deposit-status', async (c) => {
+  try {
+    const suiAddress = c.req.query('suiAddress') || '';
+    if (!suiAddress) return c.json({ error: 'suiAddress required' }, 400);
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request(`https://treasury-do/?deposit-status&suiAddress=${encodeURIComponent(suiAddress)}`, {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Deposit addresses — where to send SUI/SOL/USDC to fund the cache
+app.get('/api/cache/rumble', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?deposit-addresses', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

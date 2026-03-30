@@ -570,6 +570,19 @@ import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
   } catch {}
 })();
 
+// Handle ?prism= URL param — Prism intent QR code
+// Format: prism=usdc:10.006296 → send 10.006296 USDC to ultron, triggers quest fill
+(async () => {
+  const prismParam = new URLSearchParams(location.search).get('prism');
+  if (!prismParam) return;
+  // Store prism intent — the UI will pick it up when wallet connects
+  try { sessionStorage.setItem('ski:prism-intent', prismParam); } catch {}
+  // Clean URL
+  const url = new URL(location.href);
+  url.searchParams.delete('prism');
+  history.replaceState(null, '', url.pathname + url.search);
+})();
+
 // Restore the sponsor wallet silently after extensions have had time to register.
 // 3 s matches the autoReconnect timeout in wallet.ts.
 setTimeout(() => {

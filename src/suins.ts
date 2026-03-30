@@ -991,8 +991,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     );
 
     // Registration coin — use coinWithBalance so the SDK resolves a separate coin.
-    // Triple-drawing from tx.gas (Pyth fee + registration + gas) exhausts it.
-    const regMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.50 * 1e9));
+    // SUI payment uses full price (no NS discount). 10% buffer for slippage.
+    const regMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.10 * 1e9));
     const regCoin = coinWithBalance({ balance: regMist });
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
@@ -1229,22 +1229,30 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   } else if (pref === 'SUI') {
     paths = [suiPath, nsPath, usdcPath, rumblePath, comboPath];
   } else {
-    // Default: NS direct → USDC → Rumble (consolidate everything) → combo → SUI
-    paths = [nsPath, usdcPath, rumblePath, comboPath, suiPath];
+    // Smart default: try paths based on what the user actually has (biggest balance first)
+    const suiVal = suiPrice ? suiPrice * 20 : 0; // rough estimate
+    const usdcVal = Number(totalUsdc) / 1e6;
+    const nsVal = Number(totalNs) / 1e6 * 0.03;
+    if (nsVal >= discountedUsd * 0.9) paths = [nsPath, usdcPath, suiPath, rumblePath, comboPath];
+    else if (usdcVal >= discountedUsd * 0.9) paths = [usdcPath, nsPath, suiPath, rumblePath, comboPath];
+    else paths = [suiPath, usdcPath, nsPath, rumblePath, comboPath]; // SUI first when it's the dominant asset
   }
 
-  for (const { fn, canSponsor } of paths) {
+  const pathNames = paths.map(p => p === nsPath ? 'NS' : p === usdcPath ? 'USDC' : p === rumblePath ? 'Rumble' : p === comboPath ? 'Combo' : p === suiPath ? 'SUI' : '?');
+  for (let i = 0; i < paths.length; i++) {
+    const { fn, canSponsor } = paths[i];
     try {
       const result = await fn();
       if (result) {
+        console.log(`[SKI-NS] Path ${pathNames[i]} succeeded for ${domain}`);
         return {
           txBytes: result,
           sponsorAddress: canSponsor && sponsored ? sponsorInfo!.sponsorAddress : undefined,
         };
       }
+      console.log(`[SKI-NS] Path ${pathNames[i]} returned null (skipped)`);
     } catch (err) {
-      // Path failed — try next
-      console.warn(`[SKI-NS] Path failed:`, err);
+      console.warn(`[SKI-NS] Path ${pathNames[i]} failed:`, err instanceof Error ? err.message : err);
     }
   }
 

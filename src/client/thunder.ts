@@ -112,6 +112,7 @@ export async function buildThunderSendTx(
       tx.object(STORM_ID),
       tx.pure.vector('u8', Array.from(ns)),
       tx.pure.vector('u8', Array.from(ciphertext)),
+      tx.pure.vector('u8', Array.from(maskedKey)),
       tx.pure.vector('u8', Array.from(nonce)),
       feeCoin,
       tx.object('0x6'),

@@ -207,6 +207,32 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    if ((url.pathname.endsWith('/set-thunder-fee') || url.searchParams.has('set-thunder-fee')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.setThunderFee>[0];
+        const result = await this.setThunderFee(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    if ((url.pathname.endsWith('/acquire-ns') || url.searchParams.has('acquire-ns')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.acquireNsForUser>[0];
+        const result = await this.acquireNsForUser(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     return super.onRequest(request);
   }
 

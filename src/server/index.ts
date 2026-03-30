@@ -837,6 +837,42 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
+// ── Thunder admin (set fee via TreasuryAgents keeper) ──────────────
+app.post('/api/thunder/set-fee', async (c) => {
+  try {
+    const body = await c.req.json() as { feeMist: number };
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?set-thunder-fee', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Acquire NS for user (iUSD route via TreasuryAgents) ───────────
+app.post('/api/treasury/acquire-ns', async (c) => {
+  try {
+    const body = await c.req.json() as any;
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?acquire-ns', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 export default app;
 
 // Export Durable Object classes for Wrangler binding

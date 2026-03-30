@@ -8186,17 +8186,14 @@ function renderSkiMenu() {
         const signalId = Date.now() % 1000;
 
         if (btn) btn.textContent = 'iUSD';
-        const res = await fetch('/agents/treasury', {
+        const res = await fetch('/api/treasury/acquire-ns', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            method: 'acquireNsForUser',
-            params: {
-              recipient: ws2.address,
-              collateralValueMist: String(collateralMist),
-              domainPriceUsd: discountedPrice,
-              signalId,
-            },
+            recipient: ws2.address,
+            collateralValueMist: String(collateralMist),
+            domainPriceUsd: discountedPrice,
+            signalId,
           }),
         });
         const iusdRes = await res.json() as any;

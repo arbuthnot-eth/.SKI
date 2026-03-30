@@ -3887,7 +3887,7 @@ async function fetchAndShowNsPrice(label: string) {
     _patchNsPrice(); _patchNsStatus();
     return;
   }
-  if (label === nsPriceFetchFor && nsPriceUsd != null) return;
+  if (label === nsPriceFetchFor && (nsPriceUsd != null || nsAvail != null)) return;
   nsPriceFetchFor = label;
   if (nsAvail !== 'owned') { nsAvail = null; _patchNsStatus(); }
 
@@ -9055,9 +9055,12 @@ function bindEvents() {
       });
 
       _updateIdleStatus();
-      // Always fetch availability + Tradeport listing when overlay opens with a name
-      if (nsLabel.trim().length >= 3 && isValidNsLabel(nsLabel.trim())) {
-        fetchAndShowNsPrice(nsLabel.trim()).then(() => { _updateIdleStatus(); _updateIdleCard(nsLabel.trim()); });
+      // Always update card + fetch availability + Tradeport listing when overlay opens with a name
+      const _initLabel = nsLabel.trim();
+      if (_initLabel.length >= 3 && isValidNsLabel(_initLabel)) {
+        // Show card immediately from cached state
+        if (nsAvail) _updateIdleCard(_initLabel);
+        fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
       }
 
       // iUSD coin click → swap 95% of wallet to iUSD

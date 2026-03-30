@@ -686,9 +686,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   // ─── iUSD Mint (keeper-signed) ──────────────────────────────────────
 
-  private static readonly IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
-  private static readonly IUSD_TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
-  private static readonly IUSD_TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
+  private static readonly IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9'; // v2: 9 decimals
+  private static readonly IUSD_TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
+  private static readonly IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
 
   // ─── Thunder Strike Relay ─────────────────────────────────────────
 

@@ -33,7 +33,7 @@ const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195
 const SWAP_FEE_BPS = 10; // 0.1%
 
 // ─── iUSD constants ───────────────────────────────────────────────────
-const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515'; // TODO: update after 9-decimal upgrade
+const IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9'; // v2: 9 decimals
 const IUSD_TYPE = `${IUSD_PKG}::iusd::IUSD`;
 
 /**

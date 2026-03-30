@@ -1,10 +1,9 @@
 [package]
 name = "iusd"
 edition = "2024.beta"
-published-at = "0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515"
 
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
 
 [addresses]
-iusd = "0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515"
+iusd = "0x0"

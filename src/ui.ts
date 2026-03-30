@@ -8968,13 +8968,7 @@ function bindEvents() {
       };
 
       _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
-      _idleNsInput?.addEventListener('keydown', (e) => {
-        e.stopPropagation();
-        if ((e as KeyboardEvent).key === 'Enter' && _idleActionBtn && !_idleActionBtn.disabled) {
-          e.preventDefault();
-          _idleActionBtn.click();
-        }
-      });
+      _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
       _idleNsInput?.addEventListener('focus', _freezeGif);
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
 
@@ -9544,6 +9538,20 @@ function bindEvents() {
           _unfreezeGif();
         }
       });
+      // Global Enter key → trigger action button from anywhere while overlay is open
+      const _idleGlobalEnter = (e: Event) => {
+        if (!_idleOverlay) return; // overlay gone — no-op
+        const ke = e as KeyboardEvent;
+        if (ke.key !== 'Enter') return;
+        // Don't hijack Enter from the thunder input (that sends a signal)
+        if ((document.activeElement as HTMLElement)?.id === 'ski-idle-thunder') return;
+        if (_idleActionBtn && !_idleActionBtn.disabled) {
+          e.preventDefault();
+          _idleActionBtn.click();
+        }
+      };
+      document.addEventListener('keydown', _idleGlobalEnter);
+
       const headerEl = document.querySelector('.ski-header') as HTMLElement;
       (headerEl || document.body).appendChild(_idleOverlay);
 

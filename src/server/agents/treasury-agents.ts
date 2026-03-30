@@ -233,6 +233,31 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    if ((url.pathname.endsWith('/swap-sui-for-deep') || url.searchParams.has('swap-sui-for-deep')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.swapSuiForDeep>[0];
+        const result = await this.swapSuiForDeep(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    if ((url.pathname.endsWith('/create-iusd-pool') || url.searchParams.has('create-iusd-pool')) && request.method === 'POST') {
+      try {
+        const result = await this.createIusdUsdcPool();
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     return super.onRequest(request);
   }
 
@@ -1198,7 +1223,206 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  /** Create the iUSD/USDC DeepBook pool. Run once. */
+  // ─── DeepBook constants for pool creation ────────────────────────────
+  private static readonly DB_REGISTRY = '0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d';
+  private static readonly POOL_CREATION_FEE = 500_000_000n; // 500 DEEP (6 decimals)
+  private static readonly AGG_URL = 'https://aggregator.api.sui-prod.bluefin.io';
+  private static readonly AGG_SOURCES = 'deepbook_v3,bluefin,cetus,aftermath,flowx,flowx_v3,kriya,kriya_v3,turbos';
+
+  // Cetus router config (for SUI→DEEP swap via aggregator route)
+  private static readonly CETUS_PACKAGE = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
+  private static readonly CETUS_GLOBAL_CONFIG = '0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f';
+  private static readonly BF_PACKAGE = '0xc4049b2d1cc0ee2b19a3c49c3b57ba084533b9e4a5a524e16e1f9b489e'; // bluefin
+  private static readonly BF_GLOBAL_CONFIG = '0x0c7fc55fbbcbee2c20eb9dc3cd7a9c8f8fe0b3d7082d5485e54c29e76c656aca';
+  private static readonly BF_MIN_SQRT_PRICE = 4295048016n;
+  private static readonly BF_MAX_SQRT_PRICE = 79226673515401279992447579055n;
+
+  /**
+   * Swap SUI→DEEP via Bluefin aggregator. Acquires DEEP tokens needed for pool creation.
+   * Uses the aggregator to find the best route (may go SUI→USDC→DEEP or SUI→DEEP direct).
+   * Builds and executes a DeepBook or Cetus swap PTB server-side.
+   */
+  @callable()
+  async swapSuiForDeep(params?: { amountMist?: string }): Promise<{ digest?: string; deepAcquired?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      // Check current DEEP balance
+      const balRes = await transport.query({
+        query: `query { address(address: "${keeperAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
+      });
+      const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
+      let deepBal = 0n;
+      let suiBal = 0n;
+      for (const b of balances) {
+        const ct = b.coinType?.repr ?? '';
+        if (ct.includes('::deep::DEEP')) deepBal = BigInt(b.totalBalance ?? '0');
+        if (ct.includes('::sui::SUI')) suiBal = BigInt(b.totalBalance ?? '0');
+      }
+
+      if (deepBal >= TreasuryAgents.POOL_CREATION_FEE) {
+        return { error: `Already have ${deepBal} DEEP (need ${TreasuryAgents.POOL_CREATION_FEE}). No swap needed.` };
+      }
+
+      // Amount of SUI to swap — default 0.3 SUI (generous for ~500 DEEP)
+      const suiAmount = BigInt(params?.amountMist ?? '300000000');
+      const MIN_GAS_RESERVE = 100_000_000n; // keep 0.1 SUI for gas
+      if (suiBal < suiAmount + MIN_GAS_RESERVE) {
+        return { error: `Insufficient SUI: have ${suiBal}, need ${suiAmount + MIN_GAS_RESERVE} (swap + gas reserve)` };
+      }
+
+      // Query Bluefin aggregator for SUI→DEEP route
+      const aggParams = new URLSearchParams({
+        amount: String(suiAmount),
+        from: SUI_TYPE,
+        to: TreasuryAgents.DB_DEEP_TYPE,
+        sources: TreasuryAgents.AGG_SOURCES,
+      });
+      const quoteRes = await fetch(`${TreasuryAgents.AGG_URL}/v2/quote?${aggParams}`);
+      if (!quoteRes.ok) {
+        return { error: `Aggregator quote failed: ${quoteRes.status} ${await quoteRes.text()}` };
+      }
+
+      const quote = await quoteRes.json() as {
+        routes?: Array<{
+          amountOut: string;
+          hops: Array<{
+            poolId: string;
+            pool: { type: string; allTokens: Array<{ address: string }> };
+            tokenIn: string;
+            tokenOut: string;
+          }>;
+        }>;
+      };
+
+      if (!quote.routes?.length) {
+        return { error: 'No SUI→DEEP route found via aggregator' };
+      }
+
+      // Pick first route (aggregator returns best first)
+      const route = quote.routes[0];
+      console.log(`[TreasuryAgents] SUI→DEEP route: ${route.hops.length} hops, expected out: ${route.amountOut}`);
+
+      const tx = new Transaction();
+      tx.setSender(keeperAddr);
+
+      // Split SUI from gas for the swap
+      const [suiCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(suiAmount)]);
+
+      // Build PTB based on route hops
+      // For single-hop DeepBook routes, use swap_exact_base_for_quote directly
+      // For multi-hop or other DEX routes, chain the hops
+      let currentCoin = suiCoin;
+      let currentType = SUI_TYPE;
+
+      for (let i = 0; i < route.hops.length; i++) {
+        const hop = route.hops[i];
+        const dexType = hop.pool.type;
+        const [coinX, coinY] = hop.pool.allTokens.map(t => t.address);
+        const swapXtoY = hop.tokenIn === coinX;
+        const outType = hop.tokenOut;
+
+        if (dexType === 'deepbook_v3') {
+          // DeepBook v3 swap
+          const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+
+          if (swapXtoY) {
+            // swap_exact_base_for_quote (base=coinX → quote=coinY)
+            const [baseOut, quoteOut, deepOut] = tx.moveCall({
+              target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+              typeArguments: [coinX, coinY],
+              arguments: [
+                tx.sharedObjectRef({ objectId: hop.poolId, initialSharedVersion: 0, mutable: true }),
+                currentCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+              ],
+            });
+            // The output we want is quoteOut (coinY), transfer dust back
+            if (i === route.hops.length - 1) {
+              tx.transferObjects([baseOut, deepOut], tx.pure.address(keeperAddr));
+              currentCoin = quoteOut;
+            } else {
+              tx.transferObjects([baseOut, deepOut], tx.pure.address(keeperAddr));
+              currentCoin = quoteOut;
+            }
+          } else {
+            // swap_exact_quote_for_base (quote=coinY → base=coinX)
+            const [baseOut, quoteOut, deepOut] = tx.moveCall({
+              target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+              typeArguments: [coinX, coinY],
+              arguments: [
+                tx.sharedObjectRef({ objectId: hop.poolId, initialSharedVersion: 0, mutable: true }),
+                currentCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+              ],
+            });
+            if (i === route.hops.length - 1) {
+              tx.transferObjects([quoteOut, deepOut], tx.pure.address(keeperAddr));
+              currentCoin = baseOut;
+            } else {
+              tx.transferObjects([quoteOut, deepOut], tx.pure.address(keeperAddr));
+              currentCoin = baseOut;
+            }
+          }
+        } else if (dexType === 'cetus') {
+          // Cetus swap — takes Coin objects, returns (Coin<A>, Coin<B>)
+          const [zeroCoin] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [outType] });
+          const [coinValue] = tx.moveCall({ target: '0x2::coin::value', typeArguments: [currentType], arguments: [currentCoin] });
+          const [receiveA, receiveB] = tx.moveCall({
+            target: `${TreasuryAgents.CETUS_PACKAGE}::router::swap`,
+            typeArguments: [coinX, coinY],
+            arguments: [
+              tx.object(TreasuryAgents.CETUS_GLOBAL_CONFIG), tx.object(hop.poolId),
+              swapXtoY ? currentCoin : zeroCoin, swapXtoY ? zeroCoin : currentCoin,
+              tx.pure.bool(swapXtoY), tx.pure.bool(true), coinValue,
+              tx.pure.u128(swapXtoY ? TreasuryAgents.BF_MIN_SQRT_PRICE : TreasuryAgents.BF_MAX_SQRT_PRICE),
+              tx.pure.bool(false), tx.object('0x6'),
+            ],
+          });
+          // Output is receiveB if swapXtoY (we get coinY), receiveA if !swapXtoY (we get coinX)
+          if (swapXtoY) {
+            tx.transferObjects([receiveA], tx.pure.address(keeperAddr));
+            currentCoin = receiveB;
+          } else {
+            tx.transferObjects([receiveB], tx.pure.address(keeperAddr));
+            currentCoin = receiveA;
+          }
+        } else {
+          return { error: `Unsupported DEX type in route: ${dexType}. Only deepbook_v3 and cetus supported.` };
+        }
+
+        currentType = outType;
+      }
+
+      // Transfer final DEEP coins to keeper
+      tx.transferObjects([currentCoin], tx.pure.address(keeperAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, signature);
+      console.log(`[TreasuryAgents] SUI→DEEP swap executed: ${digest}, expected DEEP: ${route.amountOut}`);
+
+      return { digest, deepAcquired: route.amountOut };
+    } catch (err) {
+      const errStr = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] swapSuiForDeep error:', errStr);
+      return { error: errStr };
+    }
+  }
+
+  /**
+   * Create the iUSD/USDC DeepBook v3 pool. Run once.
+   *
+   * Requires 500 DEEP in keeper wallet (call swapSuiForDeep first if needed).
+   * Calls create_permissionless_pool<IUSD, USDC> with:
+   *   - Registry object
+   *   - tick_size: 1000 (0.001 USDC granularity — iUSD is 9 decimals, USDC is 6)
+   *   - lot_size: 1_000_000_000 (1.0 iUSD minimum lot)
+   *   - min_size: 1_000_000_000 (1.0 iUSD minimum order)
+   *   - creation_fee: Coin<DEEP> worth 500 DEEP
+   *   - clock
+   */
   @callable()
   async createIusdUsdcPool(): Promise<{ digest?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
@@ -1207,28 +1431,92 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
+      // Check DEEP balance
+      const balRes = await transport.query({
+        query: `query { address(address: "${keeperAddr}") { balances { nodes { coinType { repr } totalBalance } } } }`,
+      });
+      const balances = (balRes.data as any)?.address?.balances?.nodes ?? [];
+      let deepBal = 0n;
+      for (const b of balances) {
+        if ((b.coinType?.repr ?? '').includes('::deep::DEEP')) deepBal = BigInt(b.totalBalance ?? '0');
+      }
+
+      if (deepBal < TreasuryAgents.POOL_CREATION_FEE) {
+        return { error: `Insufficient DEEP: have ${deepBal}, need ${TreasuryAgents.POOL_CREATION_FEE}. Call swapSuiForDeep first.` };
+      }
+
+      // Fetch DEEP coin objects to build the fee payment
+      const deepCoinsRes = await transport.query({
+        query: `query {
+          address(address: "${keeperAddr}") {
+            coins(type: "${TreasuryAgents.DB_DEEP_TYPE}") {
+              nodes {
+                address
+                version
+                digest
+                contents { json }
+              }
+            }
+          }
+        }`,
+      });
+      const deepCoins = (deepCoinsRes.data as any)?.address?.coins?.nodes ?? [];
+      if (!deepCoins.length) {
+        return { error: 'No DEEP coin objects found despite balance check passing' };
+      }
+
       const tx = new Transaction();
       tx.setSender(keeperAddr);
+
+      // Build DEEP coin: merge all DEEP coins into one, then split exact fee
+      const deepRefs = deepCoins.map((c: any) => ({
+        objectId: c.address,
+        version: String(c.version),
+        digest: c.digest,
+      }));
+
+      const primaryDeep = tx.objectRef(deepRefs[0]);
+      if (deepRefs.length > 1) {
+        tx.mergeCoins(primaryDeep, deepRefs.slice(1).map((r: any) => tx.objectRef(r)));
+      }
+
+      // Split exactly 500 DEEP for the creation fee
+      const [feeCoin] = tx.splitCoins(primaryDeep, [tx.pure.u64(TreasuryAgents.POOL_CREATION_FEE)]);
+
+      // Create the permissionless pool
       tx.moveCall({
         package: TreasuryAgents.DB_PACKAGE,
         module: 'pool',
         function: 'create_permissionless_pool',
         typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
         arguments: [
-          tx.pure.u64(1000),            // tick_size (0.001 granularity)
-          tx.pure.u64(1_000_000_000),   // lot_size (1.0 iUSD at 9 decimals)
-          tx.pure.u64(1_000_000_000),   // min_size
-          tx.object('0x6'),              // clock
+          tx.sharedObjectRef({
+            objectId: TreasuryAgents.DB_REGISTRY,
+            initialSharedVersion: 0,
+            mutable: true,
+          }),
+          tx.pure.u64(1000),              // tick_size (0.001 USDC per tick)
+          tx.pure.u64(1_000_000_000),     // lot_size (1.0 iUSD at 9 decimals)
+          tx.pure.u64(1_000_000_000),     // min_size (1.0 iUSD minimum)
+          feeCoin,                         // creation_fee: Coin<DEEP>
+          tx.object('0x6'),               // clock
         ],
       });
+
+      // Return leftover DEEP to keeper
+      tx.transferObjects([primaryDeep], tx.pure.address(keeperAddr));
 
       const txBytes = await tx.build({ client: transport as never });
       const sig = await keypair.signTransaction(txBytes);
       const digest = await this._submitTx(txBytes, sig.signature);
-      console.log(`[TreasuryAgents] iUSD/USDC pool created: ${digest}`);
+      console.log(`[TreasuryAgents] iUSD/USDC DeepBook pool created: ${digest}`);
+      // TODO: Parse transaction effects to extract the new pool object ID
+      // and update DB_IUSD_USDC_POOL + DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION
       return { digest };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      const errStr = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] createIusdUsdcPool error:', errStr);
+      return { error: errStr };
     }
   }
 

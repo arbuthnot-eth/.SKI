@@ -862,6 +862,41 @@ app.post('/api/thunder/set-fee', async (c) => {
   }
 });
 
+// ── Swap SUI→DEEP (acquire DEEP for pool creation) ──────────────
+app.post('/api/treasury/swap-sui-for-deep', async (c) => {
+  try {
+    const body = await c.req.json() as { amountMist?: string };
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?swap-sui-for-deep', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Create iUSD/USDC DeepBook pool ──────────────────────────────
+app.post('/api/treasury/create-iusd-pool', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?create-iusd-pool', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({}),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Acquire NS for user (iUSD route via TreasuryAgents) ───────────
 app.post('/api/treasury/acquire-ns', async (c) => {
   try {

@@ -122,8 +122,8 @@ export async function buildThunderSendTx(
       tx.object('0x6'),
     ],
   });
-  // Piggyback: update SUIAMI Roster if chain addresses changed
-  maybeAppendRoster(tx, senderAddress, senderName);
+  // Roster piggyback disabled — v2 contract hits abort on upsert, needs debugging
+  // maybeAppendRoster(tx, senderAddress, senderName);
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;

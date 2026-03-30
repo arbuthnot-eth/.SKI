@@ -16,10 +16,10 @@ import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
-/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility.
- *  Piggybacks SUIAMI Roster update if chain addresses changed (free ride). */
+/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
-  maybeAppendRoster(tx);
+  // Roster piggyback disabled — v2 contract hits abort on upsert, needs debugging
+  // maybeAppendRoster(tx);
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;

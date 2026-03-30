@@ -1,6 +1,7 @@
 /** Thunder — encrypt signals between SuiNS identities. Types and constants. */
 
 export const THUNDER_VERSION = 1;
+export const THUNDER_PAYLOAD_SCHEMA_VERSION = 2;
 
 /**
  * Thunder mainnet deployment (v3 — signal/quest/cloud).
@@ -27,8 +28,8 @@ export const LEGACY_STORMS: Array<[string, string]> = [
 ];
 
 /** Thunder signal — the cleartext content. */
-export interface ThunderPayload {
-  v: typeof THUNDER_VERSION;
+export interface ThunderPayloadBase {
+  v: typeof THUNDER_VERSION | typeof THUNDER_V5_VERSION;
   sender: string;
   senderAddress: string;
   message: string;
@@ -37,3 +38,34 @@ export interface ThunderPayload {
   /** Recipient's counter-signature — proves they received and read the message. Private (local only). */
   receipt?: string;
 }
+
+export type ThunderPayloadEntityKind = 'mention' | 'command';
+
+export interface ThunderPayloadEntity {
+  kind: ThunderPayloadEntityKind;
+  raw: string;
+  value: string;
+  start: number;
+  end: number;
+}
+
+export interface ThunderPayloadParseResult {
+  schemaVersion: typeof THUNDER_PAYLOAD_SCHEMA_VERSION;
+  parser: 'deterministic';
+  raw: string;
+  normalized: string;
+  intent: 'signal' | 'receipt' | 'reply' | 'command';
+  recipients: string[];
+  mentions: string[];
+  commands: string[];
+  entities: ThunderPayloadEntity[];
+  confidence: number;
+}
+
+export interface ThunderPayloadStructured extends ThunderPayloadBase {
+  pv: typeof THUNDER_PAYLOAD_SCHEMA_VERSION;
+  rawMessage: string;
+  parsed: ThunderPayloadParseResult;
+}
+
+export type ThunderPayload = ThunderPayloadBase | ThunderPayloadStructured;

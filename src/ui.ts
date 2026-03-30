@@ -3950,6 +3950,8 @@ async function fetchAndShowNsPrice(label: string) {
       if (nsTradeportListing) _cache.tp = nsTradeportListing;
       sessionStorage.setItem('ski:ns-resolve', JSON.stringify(_cache));
     } catch {}
+    // Save resolved label to localStorage (not on every keystroke — only after resolution)
+    try { if (nsPriceFetchFor) localStorage.setItem('ski:ns-label', nsPriceFetchFor); } catch {}
     if (sr) _maybeDiscoverRealOwner(sr);
     // Clear stale amount if name isn't actionable (no mint, no listing to buy)
     const actionable = nsAvail === 'available' || nsAvail === 'grace' || nsKioskListing || nsTradeportListing;
@@ -7282,7 +7284,8 @@ function renderSkiMenu() {
       return;
     }
     const validLabel = isValidNsLabel(val);
-    try { if (validLabel) localStorage.setItem('ski:ns-label', val); } catch {}
+    // Don't save partial typing to localStorage — wait for debounced resolution
+    // try { if (validLabel) localStorage.setItem('ski:ns-label', val); } catch {}
     // Clear all price/availability state on name change
     // Don't show optimistic price if the name is in our owned roster
     const _inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === val);

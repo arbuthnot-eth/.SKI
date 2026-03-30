@@ -3232,7 +3232,7 @@ body {
   border-radius: 6px;
 }
 .ski-idle-card:empty { display: none; }
-.ski-idle-card-name { font-weight: 700; color: #fff; }
+.ski-idle-card-name { font-weight: 700; color: #fff; white-space: nowrap; flex-shrink: 0; }
 .ski-idle-card-bal {
   display: inline-flex;
   align-items: baseline;

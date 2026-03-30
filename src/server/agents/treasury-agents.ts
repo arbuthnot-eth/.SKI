@@ -978,47 +978,25 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       const digest2 = await this._submitTx(txBytes2, sig2.signature);
       console.log(`[TreasuryAgents] iUSD minted to keeper: ${digest2}, amount: ${iusdRaw}`);
 
-      // Step 3: Swap iUSD → USDC (DeepBook 1:1) → NS (DeepBook) → transfer NS to user
-      // Wait briefly for mint to finalize
-      await new Promise(r => setTimeout(r, 1500));
-
-      // Fetch keeper's iUSD coins
-      const iusdCoinsRes = await fetch(`${GQL_URL}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          query: `{ address(address: "${keeperAddr}") { coins(type: "${TreasuryAgents.IUSD_TYPE}") { nodes { coinObjectId version digest balance } } } }`,
-        }),
-      });
-      const iusdGql = await iusdCoinsRes.json() as any;
-      const iusdCoins = iusdGql?.data?.address?.coins?.nodes ?? [];
-      if (!iusdCoins.length) return { digest: digest2, error: 'No iUSD coins found after mint' };
-
+      // Step 3: Acquire NS for user
+      // Route: SUI → USDC (DeepBook) → NS (DeepBook) → transfer to user
+      // iUSD minted above is the accounting layer; the actual swap uses keeper's SUI
+      // When iUSD/USDC pool is live, we'll route iUSD → USDC → NS instead
+      const suiForNs = BigInt(collateralValueMist); // Use the collateral SUI amount
       const tx3 = new Transaction();
       tx3.setSender(keeperAddr);
 
-      // Merge all iUSD coins
-      const iusdCoin = tx3.object(iusdCoins[0].coinObjectId);
-      if (iusdCoins.length > 1) {
-        tx3.mergeCoins(iusdCoin, iusdCoins.slice(1).map((c: any) => tx3.object(c.coinObjectId)));
-      }
-      const [iusdForSwap] = tx3.splitCoins(iusdCoin, [tx3.pure.u64(iusdRaw)]);
-
-      // iUSD → USDC via DeepBook (1:1 stable pair)
-      if (!TreasuryAgents.DB_IUSD_USDC_POOL) {
-        return { digest: digest2, error: 'iUSD/USDC pool not configured' };
-      }
+      // SUI → USDC via DeepBook
+      const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+      const DB_SUI_USDC_POOL_ISV = 389750322;
+      const [suiPayment] = tx3.splitCoins(tx3.gas, [tx3.pure.u64(suiForNs)]);
       const [zeroDEEP1] = tx3.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
-      const [iusdChange, usdcOut, deepChange1] = tx3.moveCall({
+      const [suiChange, usdcOut, deepChange1] = tx3.moveCall({
         target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-        typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
+        typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', TreasuryAgents.USDC_TYPE],
         arguments: [
-          tx3.sharedObjectRef({
-            objectId: TreasuryAgents.DB_IUSD_USDC_POOL,
-            initialSharedVersion: TreasuryAgents.DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
-            mutable: true,
-          }),
-          iusdForSwap, zeroDEEP1, tx3.pure.u64(0), tx3.object.clock(),
+          tx3.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_ISV, mutable: true }),
+          suiPayment, zeroDEEP1, tx3.pure.u64(0), tx3.object.clock(),
         ],
       });
 
@@ -1028,18 +1006,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_quote_for_base`,
         typeArguments: [TreasuryAgents.NS_TYPE, TreasuryAgents.USDC_TYPE],
         arguments: [
-          tx3.sharedObjectRef({
-            objectId: TreasuryAgents.DB_NS_USDC_POOL,
-            initialSharedVersion: TreasuryAgents.DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
-            mutable: true,
-          }),
+          tx3.sharedObjectRef({ objectId: TreasuryAgents.DB_NS_USDC_POOL, initialSharedVersion: TreasuryAgents.DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
           usdcOut, zeroDEEP2, tx3.pure.u64(0), tx3.object.clock(),
         ],
       });
 
-      // Send NS to user, keep everything else (iUSD change + USDC dust + DEEP change)
+      // Send NS to user, keep everything else (SUI change + USDC dust + DEEP change)
       tx3.transferObjects([nsCoin], tx3.pure.address(normalizeSuiAddress(recipient)));
-      tx3.transferObjects([iusdChange, usdcChange, deepChange1, deepChange2, iusdCoin], tx3.pure.address(keeperAddr));
+      tx3.transferObjects([suiChange, usdcChange, deepChange1, deepChange2], tx3.pure.address(keeperAddr));
 
       const txBytes3 = await tx3.build({ client: transport as never });
       const sig3 = await keypair.signTransaction(txBytes3);

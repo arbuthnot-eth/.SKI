@@ -4108,11 +4108,21 @@ function _nsRouteHtml(): string {
     </div>`;
   }
 
+  // Set target address input mode
+  if (nsShowTargetInput && canEditTarget) {
+    return `<div class="wk-ns-target-row wk-ns-target-row--yellow wk-ns-target-row--transfer-input">
+      <input id="wk-ns-set-target-input" class="wk-ns-transfer-input" type="text" value="${esc(nsNewTargetAddr)}" placeholder="0x\u2026 target address" spellcheck="false" autocomplete="off">
+      <button id="wk-ns-set-target-submit" class="wk-ns-set-target-submit" type="button" title="Set target address">\u2713</button>
+      <button id="wk-ns-set-target-cancel" class="wk-ns-set-target-cancel" type="button" title="Cancel">\u2715</button>
+    </div>`;
+  }
+
   const isDim = colorClass === 'wk-ns-target-row--dim';
   const rowCls = isDim ? 'wk-ns-target-row--toggle' : 'wk-ns-target-row--copy';
   const rowTitle = isDim ? 'Show names' : `Copy Target ${shortAddr}`;
   const transferBtn = canEditTarget ? `<button id="wk-ns-transfer-btn" class="wk-ns-transfer-btn" type="button" title="Transfer ${esc(nsLabel)}.sui NFT">\u27a4</button>` : '';
-  return `<div class="wk-ns-target-row ${colorClass} ${rowCls}"${isDim ? '' : ` data-copy-target="${esc(displayAddr)}"`} title="${rowTitle}"><span class="wk-ns-target-icon${canEditTarget ? ' wk-ns-target-icon--editable' : ''}"${iconId}${iconTitle}>\u25ce</span><span class="wk-ns-target-addr">${shortAddr}</span>${extra}${transferBtn}</div>`;
+  const setTargetBtn = canEditTarget ? `<button id="wk-ns-set-target-btn" class="wk-ns-set-target-btn" type="button" title="Set target address">\u25ce</button>` : '';
+  return `<div class="wk-ns-target-row ${colorClass} ${rowCls}"${isDim ? '' : ` data-copy-target="${esc(displayAddr)}"`} title="${rowTitle}"><span class="wk-ns-target-icon${canEditTarget ? ' wk-ns-target-icon--editable' : ''}"${iconId}${iconTitle}>\u25ce</span><span class="wk-ns-target-addr">${shortAddr}</span>${extra}${setTargetBtn}${transferBtn}</div>`;
 }
 
 function _nsOwnedListHtml(): string {
@@ -7389,6 +7399,58 @@ function renderSkiMenu() {
       _patchNsRoute();
       return;
     }
+    // Set target address button
+    if (target.id === 'wk-ns-set-target-btn') {
+      e.stopPropagation();
+      nsShowTargetInput = true;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+      setTimeout(() => {
+        const inp = document.getElementById('wk-ns-set-target-input') as HTMLInputElement | null;
+        if (inp) inp.focus();
+      }, 50);
+      return;
+    }
+    // Set target cancel
+    if (target.id === 'wk-ns-set-target-cancel') {
+      e.stopPropagation();
+      nsShowTargetInput = false;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+      return;
+    }
+    // Set target submit
+    if (target.id === 'wk-ns-set-target-submit') {
+      e.stopPropagation();
+      const addr = nsNewTargetAddr.trim();
+      if (!addr || (!addr.startsWith('0x') && !addr.includes('.sui'))) { showToast('Invalid address'); return; }
+      const ws2 = getState();
+      if (!ws2.address) return;
+      const label = nsLabel.trim();
+      if (!label) return;
+      const btn = target as HTMLButtonElement;
+      btn.disabled = true;
+      btn.textContent = '\u2026';
+      (async () => {
+        try {
+          const resolvedAddr = addr.includes('.sui') ? await resolveNameToAddress(addr.replace(/\.sui$/, '')) : addr;
+          if (!resolvedAddr) { showToast('Could not resolve address'); btn.disabled = false; btn.textContent = '\u2713'; return; }
+          const txBytes = await buildSetTargetAddressTx(ws2.address, `${label}.sui`, resolvedAddr);
+          await signAndExecuteTransaction(txBytes);
+          nsTargetAddress = resolvedAddr;
+          nsShowTargetInput = false;
+          nsNewTargetAddr = '';
+          _patchNsRoute();
+          showToast(`Target set to ${resolvedAddr.slice(0, 8)}\u2026`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : '';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg || 'Failed');
+          btn.disabled = false;
+          btn.textContent = '\u2713';
+        }
+      })();
+      return;
+    }
     // Target cancel
     if (target.id === 'wk-ns-target-cancel') {
       nsShowTargetInput = false;
@@ -7420,9 +7482,21 @@ function renderSkiMenu() {
     if (target.id === 'wk-ns-transfer-input') {
       nsTransferRecipient = (target as HTMLInputElement).value.trim();
     }
+    if (target.id === 'wk-ns-set-target-input') {
+      nsNewTargetAddr = (target as HTMLInputElement).value.trim();
+    }
   });
   document.getElementById('wk-ns-route')?.addEventListener('keydown', (e) => {
     const target = e.target as HTMLElement;
+    if (target.id === 'wk-ns-set-target-input' && (e as KeyboardEvent).key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('wk-ns-set-target-submit')?.click();
+    }
+    if (target.id === 'wk-ns-set-target-input' && (e as KeyboardEvent).key === 'Escape') {
+      nsShowTargetInput = false;
+      nsNewTargetAddr = '';
+      _patchNsRoute();
+    }
     if (target.id === 'wk-ns-target-input' && (e as KeyboardEvent).key === 'Enter') {
       e.preventDefault();
       document.getElementById('wk-ns-target-submit')?.click();

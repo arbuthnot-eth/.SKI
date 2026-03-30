@@ -889,6 +889,205 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
+  // ─── iUSD Purchase Route (keeper acquires NS for user) ──────────────
+
+  private static readonly DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+  private static readonly DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+  private static readonly DB_IUSD_USDC_POOL = ''; // TODO: set after pool creation
+  private static readonly DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 0;
+  private static readonly DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
+  private static readonly DB_NS_USDC_POOL_INITIAL_SHARED_VERSION = 414947421;
+  private static readonly USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+  private static readonly NS_TYPE = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
+  private static readonly IUSD_TYPE = `${TreasuryAgents.IUSD_PKG}::iusd::IUSD`;
+
+  /**
+   * Full iUSD purchase route: attest collateral → mint iUSD → swap iUSD → USDC → NS → send NS to user.
+   * Surplus stays in treasury. Keeper signs all txs server-side.
+   *
+   * @param recipient - User's wallet address (receives NS tokens)
+   * @param collateralValueMist - SUI collateral value in MIST (9 decimals)
+   * @param domainPriceUsd - Domain price in USD (e.g. 7.50 after NS discount)
+   * @param signalId - Steganographic tag for the iUSD mint amount
+   */
+  @callable()
+  async acquireNsForUser(params: {
+    recipient: string;
+    collateralValueMist: string;
+    domainPriceUsd: number;
+    signalId: number;
+  }): Promise<{ digest?: string; nsDigest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+
+    const { recipient, collateralValueMist, domainPriceUsd, signalId } = params;
+    if (!recipient || !collateralValueMist || !domainPriceUsd) return { error: 'Missing params' };
+
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      // Encode iUSD amount with steganographic tag (2% buffer over domain price)
+      const bufferedPrice = domainPriceUsd * 1.02;
+      const cents = Math.round(bufferedPrice * 100);
+      const tag = Math.abs(signalId) % 1000;
+      const iusdRaw = BigInt(cents) * 10_000_000n + BigInt(tag) * 10_000n;
+
+      // Step 1: Attest collateral
+      const tx1 = new Transaction();
+      tx1.setSender(keeperAddr);
+      tx1.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'update_collateral',
+        arguments: [
+          tx1.object(TreasuryAgents.IUSD_TREASURY),
+          tx1.pure.vector('u8', Array.from(new TextEncoder().encode('SUI'))),
+          tx1.pure.vector('u8', Array.from(new TextEncoder().encode('sui'))),
+          tx1.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+          tx1.pure.u64(BigInt(collateralValueMist)),
+          tx1.pure.u8(0), // TRANCHE_SENIOR
+          tx1.object('0x6'),
+        ],
+      });
+      const txBytes1 = await tx1.build({ client: transport as never });
+      const sig1 = await keypair.signTransaction(txBytes1);
+      const digest1 = await this._submitTx(txBytes1, sig1.signature);
+      console.log(`[TreasuryAgents] Collateral attested: ${digest1}`);
+
+      // Step 2: Mint iUSD to keeper (not user) → swap iUSD → USDC → NS → send NS to user
+      const tx2 = new Transaction();
+      tx2.setSender(keeperAddr);
+
+      // Mint iUSD to keeper
+      tx2.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'mint_and_transfer',
+        arguments: [
+          tx2.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx2.object(TreasuryAgents.IUSD_TREASURY),
+          tx2.pure.u64(iusdRaw),
+          tx2.pure.address(keeperAddr), // mint to keeper, not user
+        ],
+      });
+
+      // Build and submit mint tx first (need the iUSD coins for next step)
+      const txBytes2 = await tx2.build({ client: transport as never });
+      const sig2 = await keypair.signTransaction(txBytes2);
+      const digest2 = await this._submitTx(txBytes2, sig2.signature);
+      console.log(`[TreasuryAgents] iUSD minted to keeper: ${digest2}, amount: ${iusdRaw}`);
+
+      // Step 3: Swap iUSD → USDC (DeepBook 1:1) → NS (DeepBook) → transfer NS to user
+      // Wait briefly for mint to finalize
+      await new Promise(r => setTimeout(r, 1500));
+
+      // Fetch keeper's iUSD coins
+      const iusdCoinsRes = await fetch(`${GQL_URL}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `{ address(address: "${keeperAddr}") { coins(type: "${TreasuryAgents.IUSD_TYPE}") { nodes { coinObjectId version digest balance } } } }`,
+        }),
+      });
+      const iusdGql = await iusdCoinsRes.json() as any;
+      const iusdCoins = iusdGql?.data?.address?.coins?.nodes ?? [];
+      if (!iusdCoins.length) return { digest: digest2, error: 'No iUSD coins found after mint' };
+
+      const tx3 = new Transaction();
+      tx3.setSender(keeperAddr);
+
+      // Merge all iUSD coins
+      const iusdCoin = tx3.object(iusdCoins[0].coinObjectId);
+      if (iusdCoins.length > 1) {
+        tx3.mergeCoins(iusdCoin, iusdCoins.slice(1).map((c: any) => tx3.object(c.coinObjectId)));
+      }
+      const [iusdForSwap] = tx3.splitCoins(iusdCoin, [tx3.pure.u64(iusdRaw)]);
+
+      // iUSD → USDC via DeepBook (1:1 stable pair)
+      if (!TreasuryAgents.DB_IUSD_USDC_POOL) {
+        return { digest: digest2, error: 'iUSD/USDC pool not configured' };
+      }
+      const [zeroDEEP1] = tx3.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+      const [iusdChange, usdcOut, deepChange1] = tx3.moveCall({
+        target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+        typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
+        arguments: [
+          tx3.sharedObjectRef({
+            objectId: TreasuryAgents.DB_IUSD_USDC_POOL,
+            initialSharedVersion: TreasuryAgents.DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          iusdForSwap, zeroDEEP1, tx3.pure.u64(0), tx3.object.clock(),
+        ],
+      });
+
+      // USDC → NS via DeepBook
+      const [zeroDEEP2] = tx3.moveCall({ target: '0x2::coin::zero', typeArguments: [TreasuryAgents.DB_DEEP_TYPE] });
+      const [nsCoin, usdcChange, deepChange2] = tx3.moveCall({
+        target: `${TreasuryAgents.DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [TreasuryAgents.NS_TYPE, TreasuryAgents.USDC_TYPE],
+        arguments: [
+          tx3.sharedObjectRef({
+            objectId: TreasuryAgents.DB_NS_USDC_POOL,
+            initialSharedVersion: TreasuryAgents.DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          usdcOut, zeroDEEP2, tx3.pure.u64(0), tx3.object.clock(),
+        ],
+      });
+
+      // Send NS to user, keep everything else (iUSD change + USDC dust + DEEP change)
+      tx3.transferObjects([nsCoin], tx3.pure.address(normalizeSuiAddress(recipient)));
+      tx3.transferObjects([iusdChange, usdcChange, deepChange1, deepChange2, iusdCoin], tx3.pure.address(keeperAddr));
+
+      const txBytes3 = await tx3.build({ client: transport as never });
+      const sig3 = await keypair.signTransaction(txBytes3);
+      const nsDigest = await this._submitTx(txBytes3, sig3.signature);
+      console.log(`[TreasuryAgents] NS acquired and sent to ${recipient}: ${nsDigest}`);
+
+      return { digest: digest2, nsDigest };
+    } catch (err) {
+      const errStr = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] acquireNsForUser error:', errStr);
+      return { error: errStr };
+    }
+  }
+
+  /** Create the iUSD/USDC DeepBook pool. Run once. */
+  @callable()
+  async createIusdUsdcPool(): Promise<{ digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const tx = new Transaction();
+      tx.setSender(keeperAddr);
+      tx.moveCall({
+        package: TreasuryAgents.DB_PACKAGE,
+        module: 'pool',
+        function: 'create_permissionless_pool',
+        typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
+        arguments: [
+          tx.pure.u64(1000),            // tick_size (0.001 granularity)
+          tx.pure.u64(1_000_000_000),   // lot_size (1.0 iUSD at 9 decimals)
+          tx.pure.u64(1_000_000_000),   // min_size
+          tx.object('0x6'),              // clock
+        ],
+      });
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] iUSD/USDC pool created: ${digest}`);
+      return { digest };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   // ─── Internal ───────────────────────────────────────────────────────
 
   private async _submitTx(txBytes: Uint8Array, signature: string): Promise<string> {

@@ -8175,8 +8175,43 @@ function renderSkiMenu() {
     // ── Normal mode: register domain ──
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+
+    // Try iUSD route first: keeper mints iUSD → swaps → sends NS to user
+    let iusdRouteUsed = false;
+    if (suiPriceCache?.price) {
+      try {
+        const domainPriceUsd = nsPriceUsd ?? 10;
+        const discountedPrice = domainPriceUsd * 0.75; // 25% NS discount
+        const collateralMist = BigInt(Math.ceil((discountedPrice / suiPriceCache.price) * 1.5 * 1e9)); // 150% collateral
+        const signalId = Date.now() % 1000;
+
+        if (btn) btn.textContent = 'iUSD';
+        const res = await fetch('/agents/treasury', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            method: 'acquireNsForUser',
+            params: {
+              recipient: ws2.address,
+              collateralValueMist: String(collateralMist),
+              domainPriceUsd: discountedPrice,
+              signalId,
+            },
+          }),
+        });
+        const iusdRes = await res.json() as any;
+        if (iusdRes?.nsDigest && !iusdRes.error) {
+          iusdRouteUsed = true;
+          // NS is now in user's wallet — wait briefly for finalization
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      } catch {
+        // iUSD route failed — fall through to standard registration
+      }
+    }
+
     try {
-      const result = await buildRegisterSplashNsTx(ws2.address, domain, suiPriceCache?.price, !app.suinsName, selectedCoinSymbol ?? undefined);
+      const result = await buildRegisterSplashNsTx(ws2.address, domain, suiPriceCache?.price, !app.suinsName, iusdRouteUsed ? 'NS' : (selectedCoinSymbol ?? undefined));
       if (btn) btn.textContent = '\u270f';
       let digest: string;
       if (result.sponsorAddress) {

@@ -4,7 +4,7 @@
 
 **Goal:** Every SuiNS name registration routes through iUSD minting + multi-DEX swap to NS, giving users 25% discount while growing treasury collateral.
 
-**Architecture:** Keeper attests collateral + mints 9-decimal iUSD server-side. User signs one PTB: iUSD → USDC (DeepBook 1:1 pool) → NS (Aftermath aggregator with DeepBook fallback) → register name. Cross-chain (Mayan/Kamino) is deferred to a follow-up plan.
+**Architecture:** User deposits SUI. Keeper attests collateral → mints 9-decimal iUSD (to itself) → swaps iUSD → USDC → NS via DEX liquidity (server-side) → sends NS to user. Surplus stays in treasury. User signs one PTB to register with NS. Cross-chain (Mayan/Kamino) deferred.
 
 **Tech Stack:** Move (iUSD contract upgrade), `@aftermath-finance/sdk` (DEX aggregation), DeepBook v3 (iUSD/USDC pool), existing `@mysten/sui` + `@mysten/suins`
 

@@ -32,6 +32,24 @@ const IUSD_TREASURY = '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195
  *  Splits from the output coin in the PTB before transferring to user. */
 const SWAP_FEE_BPS = 10; // 0.1%
 
+// ─── iUSD constants ───────────────────────────────────────────────────
+const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515'; // TODO: update after 9-decimal upgrade
+const IUSD_TYPE = `${IUSD_PKG}::iusd::IUSD`;
+
+/**
+ * Encode a USD amount with steganographic sub-cent identifier.
+ * iUSD has 9 decimals: the last 3 digits after cents carry a hidden ID.
+ *
+ * @param usdAmount - Dollar amount (e.g. 7.50)
+ * @param signalId - Identifier to encode (truncated to 0-999)
+ * @returns Raw 9-decimal iUSD amount as bigint
+ */
+export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
+  const cents = Math.round(usdAmount * 100);
+  const tag = Math.abs(signalId) % 1000;
+  return BigInt(cents) * 10_000_000n + BigInt(tag) * 10_000n;
+}
+
 /** Split a swap fee from an output coin and send to treasury.
  *  @param tx - the Transaction
  *  @param outputCoin - the coin result to skim from
@@ -753,6 +771,10 @@ const SUI_TYPE = '0x000000000000000000000000000000000000000000000000000000000000
 const DB2_PACKAGE = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
 const DB_WAL_USDC_POOL = '0x56a1c985c1f1123181d6b881714793689321ba24301b3585eec427436eb1c76d';
 const DB_WAL_USDC_POOL_INITIAL_SHARED_VERSION = 414947427;
+
+// DeepBook iUSD/USDC pool — created by TreasuryAgents keeper (1:1 stable pair)
+const DB_IUSD_USDC_POOL = ''; // TODO: set after pool creation
+const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 0; // TODO: set after pool creation
 
 // ─── Bluefin CLMM mainnet constants ──────────────────────────────────
 // Note: 0x3492... is the original package (defines types), 0xd075... is the latest upgrade (has executable code)
@@ -2458,6 +2480,75 @@ export async function buildSwapTx(
   }
 
   throw new Error(`Swap from ${inputCoinType.split('::').pop()} to ${outputCoinType.split('::').pop()} is not supported`);
+}
+
+// ─── Multi-DEX NS Quote Racing ────────────────────────────────────────
+
+interface NsQuoteResult {
+  source: 'aftermath' | 'deepbook';
+  /** Compose this route's swap into an existing Transaction. Returns the NS Coin result. */
+  compose: (tx: InstanceType<typeof Transaction>, usdcCoin: any, walletAddress: string) => any;
+}
+
+/**
+ * Race Aftermath aggregator vs direct DeepBook for USDC → NS.
+ * Returns best route with a compose function to add the swap to a PTB.
+ */
+async function raceNsQuotes(usdcAmount: bigint): Promise<NsQuoteResult> {
+  const NS_TYPE = mainPackage.mainnet.coins.NS.type;
+  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+
+  // DeepBook direct: always available, known-good
+  const deepbookQuote: NsQuoteResult = {
+    source: 'deepbook',
+    compose: (tx, usdcCoin, walletAddress) => {
+      const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const [nsCoin, usdcChange, deepChange] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [NS_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+          usdcCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+        ],
+      });
+      tx.transferObjects([usdcChange, deepChange], tx.pure.address(walletAddress));
+      return nsCoin;
+    },
+  };
+
+  // Try Aftermath aggregator — it races 15+ DEXes internally
+  try {
+    const { Aftermath } = await import('aftermath-ts-sdk');
+    const af = new Aftermath('MAINNET');
+    await af.init();
+    const router = af.Router();
+
+    const route = await router.getCompleteTradeRouteGivenAmountIn({
+      coinInAmount: usdcAmount,
+      coinInType: USDC_TYPE,
+      coinOutType: NS_TYPE,
+    });
+
+    if (route && route.coinOut?.amount && BigInt(route.coinOut.amount) > 0n) {
+      return {
+        source: 'aftermath',
+        compose: (tx, usdcCoin, walletAddress) => {
+          const { coinOutId } = router.addTransactionForCompleteTradeRoute({
+            tx,
+            walletAddress,
+            completeRoute: route,
+            slippage: 0.02,
+            coinInId: usdcCoin,
+          });
+          return coinOutId;
+        },
+      };
+    }
+  } catch {
+    // Aftermath failed — fall back to DeepBook
+  }
+
+  return deepbookQuote;
 }
 
 // ─── Send tokens to an address ──────────────────────────────────────

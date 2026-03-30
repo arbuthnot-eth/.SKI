@@ -67,6 +67,7 @@
     "@pythnetwork/pyth-sui-js": "^3.0.0",
     "@scure/base": "^2.0.0",
     "@wallet-standard/app": "^1.1.0",
+    "aftermath-ts-sdk": "^2.0.0",
     "agents": "^0.6.0",
     "hono": "^4.12.9",
     "hono-agents": "^3.0.7",

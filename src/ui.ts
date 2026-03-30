@@ -9573,7 +9573,7 @@ function bindEvents() {
             let preSignedBytes: string | null = null;
             let preSignedSig: string | null = null;
             try {
-              const regResult = await buildRegisterSplashNsTx(ws.address, `${label}.sui`, undefined, true, 'NS');
+              const regResult = await buildRegisterSplashNsTx(ws.address, `${label}.sui`, suiPriceCache?.price, true, 'NS');
               if (regResult) {
                 const bytes = regResult instanceof Uint8Array ? regResult : regResult;
                 const { signature } = await signTransaction(bytes);
@@ -10778,7 +10778,7 @@ export function initUI() {
           const nsBalance = (nsData?.result?.data ?? []).reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
           if (nsBalance < 100_000_000n) return; // need at least 0.1 NS
           showToast(`\u26a1 Quest filled! Registering ${pendingLabel}.sui\u2026`);
-          const regResult = await buildRegisterSplashNsTx(ws.address, `${pendingLabel}.sui`, undefined, true, 'NS');
+          const regResult = await buildRegisterSplashNsTx(ws.address, `${pendingLabel}.sui`, suiPriceCache?.price, true, 'NS');
           if (regResult) {
             await signAndExecuteTransaction(regResult instanceof Uint8Array ? regResult : regResult);
             showToast(`\u2728 ${pendingLabel}.sui minted!`);

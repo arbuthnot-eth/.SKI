@@ -1248,8 +1248,17 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     }
   }
 
-  // ── No path viable ──
-  const rumbleUsd = (Number(totalUsdc) / 1e6) + (Number(totalNs) / 1e6 * 0.03) + (suiPrice ? suiPrice * 4.29 : 0);
+  // ── No path viable — calculate actual spendable balance ──
+  // Fetch real SUI balance for error message
+  let suiBalMist = 0n;
+  try {
+    const suiCoins = await listCoinsOfType(transport, walletAddress, '0x2::sui::SUI');
+    suiBalMist = suiCoins.reduce((s, c) => s + c.balance, 0n);
+  } catch {}
+  const suiBalUsd = suiPrice ? (Number(suiBalMist) / 1e9) * suiPrice : 0;
+  const usdcBalUsd = Number(totalUsdc) / 1e6;
+  const nsBalUsd = Number(totalNs) / 1e6 * 0.03; // rough NS→USD
+  const rumbleUsd = suiBalUsd + usdcBalUsd + nsBalUsd;
   throw new Error(
     `Rumble Balance (~$${rumbleUsd.toFixed(2)}) insufficient for ${domain} (~$${discountedUsd.toFixed(2)} with NS discount).\n\n` +
     `Need more SUI, USDC, or NS tokens. Swap IKA or other tokens to SUI first.`,

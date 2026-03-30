@@ -3188,6 +3188,18 @@ let nsAvail: null | 'available' | 'taken' | 'owned' | 'grace' = null;
 let nsGraceEndMs = 0;
 let nsTargetAddress: string | null = null; // resolved address for the current label (if registered)
 let nsNftOwner: string | null = null; // NFT owner address (fallback when targetAddress is null)
+// Restore cached resolution state for instant overlay render on refresh
+try {
+  const _rc = sessionStorage.getItem('ski:ns-resolve');
+  if (_rc) {
+    const _cached = JSON.parse(_rc);
+    if (_cached.label && _cached.avail) {
+      nsPriceFetchFor = _cached.label;
+      nsAvail = _cached.avail;
+      nsTargetAddress = _cached.target ?? null;
+    }
+  }
+} catch {}
 let nsLastDigest = ''; // digest from last successful registration; shown in route area
 let nsSubnameParent: OwnedDomain | null = null; // when set, we're in subname-creation mode
 let nsShowTargetInput = false; // target-address inline editor open
@@ -3698,6 +3710,15 @@ let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
 let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // on-chain kiosk listing for current label
 let nsTradeportListing: TradeportListing | null = null; // Tradeport marketplace listing for current label
+// Restore cached listing data for instant overlay render on refresh
+try {
+  const _rc = sessionStorage.getItem('ski:ns-resolve');
+  if (_rc) {
+    const _cached = JSON.parse(_rc);
+    if (_cached.kiosk) nsKioskListing = _cached.kiosk;
+    if (_cached.tp) nsTradeportListing = _cached.tp;
+  }
+} catch {}
 /** Get the active marketplace listing — prefer on-chain kiosk, fall back to Tradeport. */
 function _nsListing(): { priceMist: string; seller?: string; source: 'kiosk' | 'tradeport' } | null {
   if (nsKioskListing) return { priceMist: nsKioskListing.priceMist, source: 'kiosk' };
@@ -3907,6 +3928,13 @@ async function fetchAndShowNsPrice(label: string) {
       ? { kioskId: sr.kioskId, nftId: sr.kioskNftId!, priceMist: sr.kioskListingPriceMist! }
       : null;
     nsTradeportListing = tp;
+    // Cache resolution state for instant overlay render on refresh
+    try {
+      const _cache: any = { avail: nsAvail, target: nsTargetAddress, label: nsPriceFetchFor };
+      if (nsKioskListing) _cache.kiosk = nsKioskListing;
+      if (nsTradeportListing) _cache.tp = nsTradeportListing;
+      sessionStorage.setItem('ski:ns-resolve', JSON.stringify(_cache));
+    } catch {}
     if (sr) _maybeDiscoverRealOwner(sr);
     // Clear stale amount if name isn't actionable (no mint, no listing to buy)
     const actionable = nsAvail === 'available' || nsAvail === 'grace' || nsKioskListing || nsTradeportListing;

@@ -17,6 +17,7 @@ import type { DWalletCap } from '@ika.xyz/sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { deriveAddress, chainsForCurve, IkaCurve, type ChainConfig } from './chains.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, gqlClient, jsonRpcClient } from '../rpc.js';
 
 let ikaClient: IkaClient | null = null;
@@ -687,4 +688,59 @@ export async function burnDWalletCaps(
   const result = await callbacks.signAndExecuteTransaction(txBytes);
   console.log('[ika:burn] Burned caps:', capIdsToRemove, 'digest:', result.digest);
   return result.digest ?? '';
+}
+
+// ── Storm ID derivation (Thunder v5) ──────────────────────────────
+
+const STORM_DOMAIN_TAG = new TextEncoder().encode('thunder-storm');
+
+/**
+ * Derive a private Storm ID from ECDH shared secret between two dWallet public keys.
+ * storm_id = keccak256(ecdh_shared_secret || "thunder-storm")
+ * Only the two dWallet holders can compute this — third parties see opaque bytes.
+ *
+ * Note: True ECDH requires the private key share (IKA 2PC-MPC ceremony).
+ * Until the SDK exposes an ECDH primitive, we use a deterministic combination
+ * of both public keys sorted lexicographically. Both parties derive the same ID.
+ * TODO: Replace with actual IKA ECDH ceremony when SDK supports it.
+ */
+export async function deriveStormId(
+  myPublicOutput: Uint8Array,
+  theirPublicOutput: Uint8Array,
+): Promise<Uint8Array> {
+  const myPubkey = await extractPubkey(myPublicOutput);
+  const theirPubkey = await extractPubkey(theirPublicOutput);
+
+  // Sort pubkeys lexicographically so both parties get the same result
+  const [first, second] = comparePubkeys(myPubkey, theirPubkey) <= 0
+    ? [myPubkey, theirPubkey]
+    : [theirPubkey, myPubkey];
+
+  const combined = new Uint8Array(first.length + second.length + STORM_DOMAIN_TAG.length);
+  combined.set(first);
+  combined.set(second, first.length);
+  combined.set(STORM_DOMAIN_TAG, first.length + second.length);
+
+  return keccak_256(combined);
+}
+
+/**
+ * Derive a Storm ID from two Sui addresses (fallback when dWallets unavailable).
+ * Deterministic: both parties compute the same ID regardless of who is "sender."
+ * Less private than ECDH (addresses are public) but works without IKA.
+ */
+export function deriveStormIdFromAddresses(addr1: string, addr2: string): Uint8Array {
+  // Sort addresses so both parties get the same ID regardless of order
+  const sorted = [addr1.toLowerCase(), addr2.toLowerCase()].sort();
+  const input = new TextEncoder().encode(sorted[0] + sorted[1] + 'thunder-storm');
+  return keccak_256(input);
+}
+
+/** Compare two Uint8Arrays lexicographically. Returns <0, 0, or >0. */
+function comparePubkeys(a: Uint8Array, b: Uint8Array): number {
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
 }

@@ -2757,18 +2757,28 @@ function getTotalSui(): number {
   return totalUsd / price;
 }
 
-/** Fetch SOL balance for the IKA dWallet Solana address. Single lightweight RPC call. */
+/** Fetch SOL balance for the IKA dWallet Solana address. Races multiple Solana RPCs. */
 async function _fetchSolBalance(): Promise<void> {
   if (!app.solAddress) return;
+  const endpoints = [
+    'https://solana-rpc.publicnode.com',
+    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    'https://mainnet.triton.one/rpc',
+  ];
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] });
   try {
-    const res = await fetch('https://solana-rpc.publicnode.com', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] }),
-    });
-    const data = await res.json() as { result?: { value?: number } };
-    const lamports = data?.result?.value ?? 0;
-    app.solBalance = lamports / 1e9; // lamports → SOL
+    const result = await Promise.any(
+      endpoints.map(url =>
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+          .then(r => r.json())
+          .then((data: any) => {
+            const lamports = data?.result?.value;
+            if (typeof lamports !== 'number') throw new Error('no balance');
+            return lamports;
+          })
+      ),
+    );
+    app.solBalance = result / 1e9;
   } catch { /* non-blocking */ }
 }
 
@@ -9157,6 +9167,10 @@ function bindEvents() {
             </div>
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
           </div>
+          <div class="ski-idle-price-row" id="ski-idle-price" hidden>
+            <svg class="ski-idle-price-icon" viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.5"/></svg>
+            <span class="ski-idle-price-text" id="ski-idle-price-text"></span>
+          </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
           <div id="ski-idle-card" class="ski-idle-card"></div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
@@ -9233,6 +9247,33 @@ function bindEvents() {
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
           _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = true;
+        }
+
+        // Update price row
+        const priceRow = _idleOverlay?.querySelector('#ski-idle-price') as HTMLElement | null;
+        const priceText = _idleOverlay?.querySelector('#ski-idle-price-text') as HTMLElement | null;
+        if (priceRow && priceText) {
+          if (!label || (!nsPriceUsd && !hasListing)) {
+            priceRow.hidden = true;
+          } else if (hasListing && !isOwned) {
+            const listing = _nsListing();
+            if (listing) {
+              const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
+              const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
+              const totalSui = suiAmt + fee;
+              const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
+              priceText.textContent = usdVal != null ? `Trade $${usdVal.toFixed(2)}` : `Trade ${totalSui.toFixed(2)} SUI`;
+              priceRow.hidden = false;
+            }
+          } else if (nsAvail === 'available' && nsPriceUsd) {
+            priceText.textContent = `Mint $${nsPriceUsd.toFixed(2)}`;
+            priceRow.hidden = false;
+          } else if (isOwned) {
+            priceText.textContent = 'Owned';
+            priceRow.hidden = false;
+          } else {
+            priceRow.hidden = true;
+          }
         }
       };
 

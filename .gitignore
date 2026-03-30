@@ -17,3 +17,4 @@ contracts/*/Move.lock
 .worktrees/
 .superpowers/
 *.key
+drafts/

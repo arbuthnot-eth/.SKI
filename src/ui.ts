@@ -3676,11 +3676,11 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
 
   const mentions: string[] = [];
   const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?![a-z0-9-])/gi;
-  const cleaned = trimmed
-    .replace(mentionPattern, (_match, prefix: string, name: string) => {
-      mentions.push(name.toLowerCase());
-      return prefix ?? '';
-    })
+  let cleaned = trimmed.replace(mentionPattern, (_match, prefix: string, name: string) => {
+    mentions.push(name.toLowerCase());
+    return prefix ?? ' ';
+  });
+  cleaned = cleaned
     .replace(/\s+([,.;:!?])/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
@@ -3703,7 +3703,7 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
   if (recipients.length === 0) {
     return {
       raw: trimmed,
-      message: cleaned || trimmed,
+      message: cleaned,
       recipients,
       source,
       sourceLabel: 'no recipient detected',
@@ -3713,7 +3713,7 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
 
   return {
     raw: trimmed,
-    message: cleaned || trimmed,
+    message: cleaned,
     recipients,
     source,
     sourceLabel,
@@ -9782,6 +9782,16 @@ function bindEvents() {
               await signAndExecuteTransaction(txBytes);
               await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out', undefined, nsTargetAddress ?? undefined);
               _addThunderContact(recip);
+            }
+            if (_cancelled) {
+              if (sendBtn) {
+                sendBtn.innerHTML = origBtnHtml;
+                sendBtn.className = 'ski-idle-thunder-send';
+                sendBtn.title = 'Send signal';
+              }
+              _thunderComposeStage = 'confirmed';
+              _renderThunderComposePreview();
+              return;
             }
             // Success: show bubble, clear input, resume GIF
             if (_idleThunderInput) _idleThunderInput.value = '';

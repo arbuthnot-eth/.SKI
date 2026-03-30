@@ -16,10 +16,7 @@ import {
   THUNDER_VERSION,
   THUNDER_PACKAGE_ID,
   STORM_ID,
-  LEGACY_THUNDER_PACKAGE_ID,
-  LEGACY_STORM_ID,
-  LEGACY2_THUNDER_PACKAGE_ID,
-  LEGACY2_STORM_ID,
+  LEGACY_STORMS,
   type ThunderPayload,
 } from './thunder-types.js';
 
@@ -158,7 +155,7 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
   try {
     const { grpcClient } = await import('../rpc.js');
     // Check both new and legacy storms
-    const stormIds = [STORM_ID, LEGACY_STORM_ID, LEGACY2_STORM_ID];
+    const stormIds = [STORM_ID]; // Only check current storm — legacy signals are orphaned
     for (const sid of stormIds) {
       try {
         const dfResult = await grpcClient.listDynamicFields({ parentId: sid });
@@ -180,12 +177,35 @@ export async function getThunderCountsBatch(names: string[]): Promise<Record<str
 
 // ─── Quest (batch) ──────────────────────────────────────────────────
 
-/** Check pending signals on a specific storm for a name. */
+/** Check pending signals on a specific storm for a name. Returns actual signal count via GraphQL. */
 async function _countOnStorm(stormId: string, recipientName: string): Promise<number> {
   try {
     const bare = recipientName.replace(/\.sui$/i, '').toLowerCase();
     const ns = nameHash(bare);
     const hex = Array.from(ns).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // Try GraphQL first — can read dynamic field content
+    try {
+      const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: `{ object(address: "${stormId}") { dynamicFields { nodes { name { json } value { ... on MoveValue { json } } } } } }` }),
+      });
+      const gql = await res.json() as any;
+      const nodes = gql?.data?.object?.dynamicFields?.nodes ?? [];
+      for (const n of nodes) {
+        const val = n?.value?.json;
+        if (val?.signals) {
+          // Match by checking if this is our name's thunderstorm
+          // Name hash is base64 in the key — convert our hex to base64 to match
+          const nameB64 = btoa(String.fromCharCode(...Array.from(ns)));
+          const keyB64 = typeof n.name?.json === 'string' ? n.name.json : '';
+          if (keyB64 === nameB64) return val.signals.length;
+        }
+      }
+    } catch { /* fall back to gRPC */ }
+
+    // Fallback: gRPC field existence check
     const { grpcClient } = await import('../rpc.js');
     const dfResult = await grpcClient.listDynamicFields({ parentId: stormId });
     const fields = dfResult.dynamicFields ?? [];
@@ -216,40 +236,19 @@ export async function buildBatchQuestTx(
     tx.setGasOwner(normalizeSuiAddress(sponsorAddress));
   }
 
-  // Auto-strike legacy storm signals (destructive — old contracts only have destructive quest)
-  const legacyStorms: [string, string][] = [
-    [LEGACY_THUNDER_PACKAGE_ID, LEGACY_STORM_ID],
-    [LEGACY2_THUNDER_PACKAGE_ID, LEGACY2_STORM_ID],
-  ];
-  for (const [pkg, sid] of legacyStorms) {
-    const n = await _countOnStorm(sid, recipientName);
-    for (let i = 0; i < n; i++) {
-      tx.moveCall({
-        package: pkg,
-        module: 'thunder',
-        function: 'quest',
-        arguments: [
-          tx.object(sid),
-          tx.pure.vector('u8', Array.from(ns)),
-          tx.object(nftObjectId),
-          tx.object('0x6'),
-        ],
-      });
-    }
-  }
-
-  // Quest from current storm (non-destructive — reads by index)
+  // Strike from current storm only — legacy signals are orphaned
+  // (Legacy storms lack strike_relay and quest needs NFT object which WaaP can't pass)
   const newStormCount = await _countOnStorm(STORM_ID, recipientName);
   for (let i = 0; i < newStormCount; i++) {
     tx.moveCall({
       package: THUNDER_PACKAGE_ID,
       module: 'thunder',
-      function: 'quest',
+      function: 'strike',
       arguments: [
         tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
-        tx.pure.u64(i),
         tx.object(nftObjectId),
+        tx.object('0x6'),
       ],
     });
   }
@@ -284,6 +283,21 @@ export async function buildBatchStrikeTx(
   const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
+}
+
+/** Parse Questfi events from tx effects and decrypt all signals. */
+export async function parseAndDecryptQuestfi(txResult: any): Promise<ThunderPayload[]> {
+  const quested = parseQuestfiEvents(txResult);
+  const results: ThunderPayload[] = [];
+  await Promise.all(
+    quested.map(async (s) => {
+      try {
+        const cleartext = await aesDecrypt(s.payload, s.aesKey, s.aesNonce);
+        results.push(JSON.parse(new TextDecoder().decode(cleartext)) as ThunderPayload);
+      } catch { /* skip stale */ }
+    }),
+  );
+  return results;
 }
 
 /** Parse Questfi events from tx effects. */

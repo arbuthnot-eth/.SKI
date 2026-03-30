@@ -3290,7 +3290,7 @@ async function _renderConversation(counterparty: string, force = false) {
   const unquestedCount = _thunderCounts[_questDomain] ?? 0;
   if (unquestedEl && replyWrap) {
     if (unquestedCount > 0) {
-      unquestedEl.innerHTML = `<button class="wk-thunder-quest-btn" id="wk-thunder-quest" type="button">Decrypt</button> \u2014 <span class="wk-thunder-unquested-count">\u26a1${unquestedCount}</span>`;
+      unquestedEl.innerHTML = `<button class="wk-thunder-quest-btn" id="wk-thunder-quest" type="button">Strike</button> \u2014 <span class="wk-thunder-unquested-count">\u26a1${unquestedCount}</span>`;
       unquestedEl.removeAttribute('hidden');
       replyWrap.setAttribute('hidden', '');
     } else {
@@ -3411,17 +3411,52 @@ async function _renderConversation(counterparty: string, force = false) {
       // Quest signals on the card's domain (our owned name), not the conversation counterparty
       const cardDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase() || '';
       if (!cardDomain) { showToast('No card domain'); return; }
-      const { decryptAndQuest } = await import('./client/thunder.js');
+      const { decryptAndQuest, nameHash: nhFn } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
       const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === cardDomain && d.kind === 'nft');
       if (!nft) { showToast('SuiNS NFT not found'); return; }
       const count = _thunderCounts[cardDomain] ?? 0;
       if (count === 0) return;
-      const payloads = await decryptAndQuest(
-        ws.address, cardDomain + '.sui', nft.objectId, count,
-        (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-      );
+
+      // WaaP: use strike relay (signPersonalMessage + server-side submit)
+      let payloads: import('./client/thunder-types.js').ThunderPayload[];
+      const isWaaP = /waap/i.test(ws.walletName || '');
+      if (isWaaP) {
+        const ns = nhFn(cardDomain);
+        const authMsg = new TextEncoder().encode(`strike:${cardDomain}.sui:${count}`);
+        const { signature: authSig } = await signPersonalMessage(authMsg);
+        const toB64 = (a: Uint8Array) => btoa(String.fromCharCode(...a));
+        const res = await fetch('/api/thunder/strike-relay', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            nameHash: toB64(ns),
+            nftId: nft.objectId,
+            authMsg: toB64(authMsg),
+            authSig: authSig,
+            senderAddress: ws.address,
+            count,
+          }),
+        });
+        const result = await res.json() as { digest?: string; effects?: any; error?: string };
+        if (!res.ok || result.error) throw new Error(result.error || 'Strike relay failed');
+        // Fetch events from the tx to decrypt
+        await new Promise(r => setTimeout(r, 2000));
+        const txRes = await fetch('/api/sui-rpc', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock', params: [result.digest, { showEvents: true }] }),
+        });
+        const txJson = await txRes.json() as any;
+        const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
+        payloads = await parseAndDecryptQuestfi(txJson?.result ?? {});
+      } else {
+        payloads = await decryptAndQuest(
+          ws.address, cardDomain + '.sui', nft.objectId, count,
+          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+        );
+      }
       const _myLog = app.suinsName || ws.address;
       for (const p of payloads) {
         const _pSender = p.sender || p.senderAddress.slice(0, 8);

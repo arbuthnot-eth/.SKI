@@ -767,6 +767,30 @@ app.post('/api/suiami/verify', async (c) => {
   }
 });
 
+// ── Thunder strike relay (keeper submits, user authorizes via signPersonalMessage) ──
+app.post('/api/thunder/strike-relay', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      nameHash: string; nftId: string; authMsg: string; authSig: string; senderAddress: string; count: number;
+    };
+    if (!body.nameHash || !body.nftId || !body.authMsg || !body.authSig || !body.senderAddress) {
+      return c.json({ error: 'Missing params' }, 400);
+    }
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?strike-relay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text || 'Unknown DO error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── iUSD attest collateral (keeper signs, oracle-gated) ───────────
 app.post('/api/iusd/attest', async (c) => {
   try {

@@ -181,6 +181,19 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    if ((url.pathname.endsWith('/strike-relay') || url.searchParams.has('strike-relay')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as Parameters<typeof this.strikeRelay>[0];
+        const result = await this.strikeRelay(params);
+        return new Response(JSON.stringify(result), {
+          status: result.error ? 400 : 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if ((url.pathname.endsWith('/mint-iusd') || url.searchParams.has('mint-iusd')) && request.method === 'POST') {
       try {
         const params = await request.json() as Parameters<typeof this.mintIusd>[0];
@@ -676,6 +689,96 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private static readonly IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
   private static readonly IUSD_TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
   private static readonly IUSD_TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
+
+  // ─── Thunder Strike Relay ─────────────────────────────────────────
+
+  private static readonly THUNDER_PKG = '0xecd7cec9058d82b6c7fbae3cbc0a0c2cf58fe4be2e87679ff9667ee7a0309e0f';
+  private static readonly STORM_OBJ = '0xd67490b2047490e81f7467eedb25c726e573a311f9139157d746e4559282844f';
+
+  /** Strike signals via relay — verify auth server-side, keeper submits on-chain. */
+  @callable()
+  async strikeRelay(params: {
+    nameHash: string; nftId: string; authMsg: string; authSig: string; senderAddress: string; count: number;
+  }): Promise<{ digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No keeper key' };
+    try {
+      // Verify the user's signPersonalMessage signature server-side
+      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+      const authMsgBytes = Uint8Array.from(atob(params.authMsg), c => c.charCodeAt(0));
+      await verifyPersonalMessageSignature(authMsgBytes, params.authSig, { address: params.senderAddress });
+
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const keeperAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      const nameHashBytes = Array.from(Uint8Array.from(atob(params.nameHash), c => c.charCodeAt(0)));
+      const nameB64 = params.nameHash;
+
+      // Check all storms (new + legacy) for signals via GraphQL
+      const LEGACY_STORMS: Array<[string, string]> = [
+        ['0xbe5c6df7fc1340f8e3b5fa880e5fbeee3844114778e65f442815ba8922e80bd6', '0xf32adacbdb83c7ad5d75b68e1c5d2cd3e696ac8a2b13c0cc06ecdd9c110bd383'],
+        ['0xc6255a592244024da44551f52d44236e35d290db016c4fe59239ec02e269148b', '0xba0c4ec86ab44f20812bfd24f00f1d3f2e9eae8bcaaae42d9f6a4d0c317ae193'],
+        ['0x1de29b4dfa0c4e434ddfc0826159cbe4d404ea7922243396fd0a9e78cafa3e25', '0x1b3fec208b3935e7964bffc78fe4755d5ec5c6318ab5dc4df97f5865cd3adfe6'],
+        ['0x567e1e7e3b35d1bccc58faa8f2f72dda984828d6937bec6a6c13c30b85f5f38c', '0xf54cdf0a5587c123d4a54d70c88dbf0f86ae3a88230954f1c3f50437ae35e2f7'],
+        ['0x7d2a68288a8687c54901d3e47511dc65c5a41c50d09378305c556a65cbe2f782', '0x04928995bbb8e1ab9beff0ccb2747ea1ce404140be8dcc8929827c3985d836e6'],
+      ];
+
+      const tx = new Transaction();
+      tx.setSender(keeperAddr);
+      let totalCalls = 0;
+
+      // Helper: check if a storm has signals for this name via GraphQL
+      const _checkStorm = async (stormId: string): Promise<number> => {
+        try {
+          const r = await fetch(GQL_URL, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: `{ object(address: "${stormId}") { dynamicFields { nodes { name { json } value { ... on MoveValue { json } } } } } }` }),
+          });
+          const gql = await r.json() as any;
+          for (const n of (gql?.data?.object?.dynamicFields?.nodes ?? [])) {
+            if (n?.name?.json === nameB64 && n?.value?.json?.signals) return n.value.json.signals.length;
+          }
+        } catch {}
+        return 0;
+      };
+
+      // New storm: use strike_relay (admin-gated)
+      const newCount = await _checkStorm(TreasuryAgents.STORM_OBJ);
+      for (let i = 0; i < newCount; i++) {
+        tx.moveCall({
+          package: TreasuryAgents.THUNDER_PKG,
+          module: 'thunder',
+          function: 'strike_relay',
+          arguments: [
+            tx.object(TreasuryAgents.STORM_OBJ),
+            tx.pure.vector('u8', nameHashBytes),
+            tx.pure.address(params.nftId),
+            tx.object('0x6'),
+          ],
+        });
+        totalCalls++;
+      }
+
+      // Legacy storms: use old destructive quest (no admin check, needs NFT — but legacy quest is permissionless with NFT object)
+      // Legacy contracts don't have strike_relay, only quest which needs &SuinsRegistration.
+      // The keeper can't pass someone else's NFT. For legacy, we skip — they'll be auto-struck client-side for non-WaaP wallets.
+      // For WaaP: legacy signals are stuck unless the user transfers to a non-WaaP wallet.
+      // TODO: sweep legacy storms to clean up
+
+      if (totalCalls === 0) return { error: 'No signals found on current storm' };
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] Strike relay: ${digest}, calls: ${totalCalls}`);
+      return { digest };
+    } catch (err) {
+      const errStr = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] strikeRelay error:', errStr);
+      return { error: errStr };
+    }
+  }
 
   /** Attest collateral only — keeper signs as oracle. Mint is done by the wallet that owns the TreasuryCap. */
   @callable()

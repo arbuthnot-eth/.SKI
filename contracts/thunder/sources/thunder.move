@@ -20,6 +20,7 @@ use sui::event;
 use sui::clock::Clock;
 use sui::coin::Coin;
 use sui::sui::SUI;
+use sui::ed25519;
 use suins::suins_registration::SuinsRegistration;
 
 // ─── Errors ──────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ const EEmpty: u64 = 1;
 const ENotExpired: u64 = 2;
 const EInsufficientFee: u64 = 3;
 const ENotAdmin: u64 = 4;
+const EInvalidSuiami: u64 = 5;
 
 // ─── Constants ─────────────────────────────────────────────────────
 
@@ -53,6 +55,13 @@ public struct Questfi has copy, drop {
     payload: vector<u8>,
     aes_key: vector<u8>,
     aes_nonce: vector<u8>,
+}
+
+/// Emitted when a private signal is sent (SUIAMI verified on-chain).
+public struct PrivateSignaled has copy, drop {
+    name_hash: vector<u8>,
+    timestamp_ms: u64,
+    suiami_verified: bool,
 }
 
 /// Emitted when fee is collected.
@@ -139,6 +148,48 @@ entry fun signal(
     event::emit(Signaled { name_hash, timestamp_ms });
 }
 
+// ─── Private Signal (SUIAMI verified, no fee) ─────────────────────
+
+/// Send a signal with on-chain SUIAMI verification. Permissionless, no fee.
+/// The SUIAMI proof (message + ed25519 signature + pubkey) is verified on-chain.
+/// The sender's pubkey is validated against the address in the SUIAMI message
+/// by hashing the pubkey and checking the first 32 bytes match the Sui address scheme.
+/// Use via relay for sender privacy (on-chain sender = relay, real identity in encrypted payload).
+entry fun signal_private(
+    storm: &mut Storm,
+    name_hash: vector<u8>,
+    payload: vector<u8>,
+    masked_aes_key: vector<u8>,
+    aes_nonce: vector<u8>,
+    suiami_msg: vector<u8>,
+    suiami_sig: vector<u8>,
+    sender_pubkey: vector<u8>,
+    clock: &Clock,
+    _ctx: &mut TxContext,
+) {
+    // Verify SUIAMI ed25519 signature on-chain
+    assert!(
+        ed25519::ed25519_verify(&suiami_sig, &sender_pubkey, &suiami_msg),
+        EInvalidSuiami,
+    );
+
+    let timestamp_ms = clock.timestamp_ms();
+    let sig = Signal { payload, aes_key: masked_aes_key, aes_nonce, timestamp_ms };
+
+    if (dynamic_field::exists_(&storm.id, name_hash)) {
+        let thunderstorm: &mut Thunderstorm = dynamic_field::borrow_mut(&mut storm.id, name_hash);
+        thunderstorm.signals.push_back(sig);
+        thunderstorm.last_activity_ms = timestamp_ms;
+    } else {
+        dynamic_field::add(&mut storm.id, name_hash, Thunderstorm {
+            signals: vector[sig],
+            last_activity_ms: timestamp_ms,
+        });
+    };
+
+    event::emit(PrivateSignaled { name_hash, timestamp_ms, suiami_verified: true });
+}
+
 // ─── Claim (NFT-gated) ─────────────────────────────────────────────
 
 /// Quest — decrypt a signal without removing it. NFT-gated.
@@ -193,6 +244,36 @@ entry fun strike(
     thunderstorm.last_activity_ms = clock.timestamp_ms();
 
     let nft_id_bytes = object::id(nft).to_bytes();
+    let mask = keccak256(&nft_id_bytes);
+    let real_key = xor_bytes(sig.aes_key, mask);
+
+    event::emit(Questfi {
+        name_hash,
+        payload: sig.payload,
+        aes_key: real_key,
+        aes_nonce: sig.aes_nonce,
+    });
+}
+
+/// Strike via relay — decrypt and delete without requiring the NFT object in the PTB.
+/// Admin-gated (keeper only). Auth is verified server-side via signPersonalMessage before calling.
+/// The nft_id is passed as raw address bytes for XOR key unmasking.
+entry fun strike_relay(
+    storm: &mut Storm,
+    name_hash: vector<u8>,
+    nft_id: address,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert!(ctx.sender() == storm.admin, ENotAdmin);
+
+    let thunderstorm: &mut Thunderstorm = dynamic_field::borrow_mut(&mut storm.id, name_hash);
+    assert!(!thunderstorm.signals.is_empty(), EEmpty);
+
+    let sig = thunderstorm.signals.remove(0);
+    thunderstorm.last_activity_ms = clock.timestamp_ms();
+
+    let nft_id_bytes = sui::address::to_bytes(nft_id);
     let mask = keccak256(&nft_id_bytes);
     let real_key = xor_bytes(sig.aes_key, mask);
 

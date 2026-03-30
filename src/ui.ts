@@ -9134,13 +9134,16 @@ function bindEvents() {
         // Show card immediately from cached state
         if (nsAvail) _updateIdleCard(_initLabel);
         fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
-        // Auto-open conversation if there are pending signals or history
+        // Auto-open conversation if there are pending signals or local history
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
         const _localCount = _thunderLocalCounts[_initLabel.toLowerCase()] ?? 0;
-        if (_pendingCount > 0 || _localCount > 0) {
+        const _isOwnedName = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === _initLabel.toLowerCase())
+          || (app.suinsName?.replace(/\.sui$/, '').toLowerCase() === _initLabel.toLowerCase());
+        // For own name: always open if pending signals exist (show quest mode)
+        // For other names: open if local conversation history exists
+        if (_pendingCount > 0 || _localCount > 0 || (_isOwnedName && _pendingCount > 0)) {
           _expandIdleConvo(_initLabel);
           // Transform send button to quest button if user owns this name and has pending signals
-          const _isOwnedName = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === _initLabel.toLowerCase());
           if (_isOwnedName && _pendingCount > 0) {
             const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
             if (sendBtn) {
@@ -9150,6 +9153,9 @@ function bindEvents() {
               sendBtn.dataset.questMode = '1';
               sendBtn.dataset.questName = _initLabel;
             }
+            // Also pre-fill thunder input with @name for context
+            const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+            if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_pendingCount} signal${_pendingCount > 1 ? 's' : ''} waiting...`;
           }
         }
       }

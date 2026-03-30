@@ -1251,11 +1251,16 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       }
       console.log(`[SKI-NS] Path ${pathNames[i]} returned null (skipped)`);
     } catch (err) {
-      console.warn(`[SKI-NS] Path ${pathNames[i]} failed:`, err instanceof Error ? err.message : err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[SKI-NS] Path ${pathNames[i]} failed:`, errMsg);
+      // Surface first real error to help debug
+      if (i === 0) (window as any).__skiNsFirstError = errMsg;
     }
   }
 
-  // ── No path viable — calculate actual spendable balance ──
+  // ── No path viable — show what actually failed ──
+  const firstErr = (window as any).__skiNsFirstError || 'unknown';
+  delete (window as any).__skiNsFirstError;
   // Fetch real SUI balance for error message
   let suiBalMist = 0n;
   try {
@@ -1267,8 +1272,8 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   const nsBalUsd = Number(totalNs) / 1e6 * 0.03; // rough NS→USD
   const rumbleUsd = suiBalUsd + usdcBalUsd + nsBalUsd;
   throw new Error(
-    `Rumble Balance (~$${rumbleUsd.toFixed(2)}) insufficient for ${domain} (~$${discountedUsd.toFixed(2)} with NS discount).\n\n` +
-    `Need more SUI, USDC, or NS tokens. Swap IKA or other tokens to SUI first.`,
+    `Rumble Balance (~$${rumbleUsd.toFixed(2)}) for ${domain} (~$${discountedUsd.toFixed(2)} with NS discount).\n\n` +
+    `Path error: ${firstErr}`,
   );
 }
 

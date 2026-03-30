@@ -8265,9 +8265,10 @@ function renderSkiMenu() {
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
 
-    // Try iUSD route first: keeper mints iUSD → swaps → sends NS to user
+    // iUSD route disabled — ultron needs funding for NS acquisition
+    // TODO: re-enable when ultron has sufficient SUI for swaps
     let iusdRouteUsed = false;
-    if (suiPriceCache?.price) {
+    if (false && suiPriceCache?.price) {
       try {
         const domainPriceUsd = nsPriceUsd ?? 10;
         const discountedPrice = domainPriceUsd * 0.75; // 25% NS discount

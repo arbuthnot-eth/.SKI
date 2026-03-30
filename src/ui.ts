@@ -3223,15 +3223,28 @@ let _thunderConvoOpen = (() => {
 
 const _selectedThunderTs = new Set<number>();
 
-/** Recompute _thunderLocalCounts from the encrypted log. */
+/** Recompute _thunderLocalCounts from the encrypted log.
+ *  Groups by address when available so conversations persist across SuiNS name changes.
+ *  Falls back to name-based grouping for entries without an addr field. */
 async function _refreshThunderLocalCounts() {
   const ws = getState();
   if (!ws.address) { _thunderLocalCounts = {}; return; }
   try {
     const all = await _readThunderLog();
     const counts: Record<string, number> = {};
+    // Build addr→name mapping (most recent name wins)
+    const addrToName: Record<string, string> = {};
     for (const e of all) {
       const peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
+      if (peer && e.addr) addrToName[e.addr.toLowerCase()] = peer;
+    }
+    for (const e of all) {
+      let peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
+      // Normalize to most recent name for this address
+      if (e.addr) {
+        const canonical = addrToName[e.addr.toLowerCase()];
+        if (canonical) peer = canonical;
+      }
       if (peer) counts[peer] = (counts[peer] ?? 0) + 1;
     }
     _thunderLocalCounts = counts;
@@ -9413,7 +9426,7 @@ function bindEvents() {
               const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText);
               if (_cancelled) break;
               await signAndExecuteTransaction(txBytes);
-              await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out');
+              await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out', undefined, nsTargetAddress ?? undefined);
               _addThunderContact(recip);
             }
             // Success: show bubble, clear input, resume GIF

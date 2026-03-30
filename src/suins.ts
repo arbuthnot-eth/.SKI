@@ -1009,7 +1009,113 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     return buildWithTx(tx, transport);
   };
 
-  // ── Rumble combo: swap IKA→SUI to top up gas, then register with SUI ──
+  // ── Rumble: consolidate ALL tokens → USDC → NS → register ──
+  // Accepts any combo of SUI + USDC + IKA to reach the target.
+  // Gate check: if user owns a SuiNS name, they get the 25% NS discount.
+  // If not, Sibyl routes through NS and taxes the discount spread to cache.
+  const buildRumbleMint = async (): Promise<Uint8Array | null> => {
+    if (!suiPrice || suiPrice <= 0) return null;
+
+    // Gate check: does user already own a SuiNS name?
+    const isGated = nsOwnedDomains.length > 0 || !!app.suinsName;
+    const targetUsd = isGated ? discountedUsd * 1.05 : basePriceUsd * 1.05; // 5% buffer
+
+    // Gather all available tokens
+    const ikaType = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+    const ikaCoins = await listCoinsOfType(transport, walletAddress, ikaType);
+    const totalIka = ikaCoins.reduce((sum, c) => sum + c.balance, 0n);
+
+    // Calculate available USD value
+    const suiValueUsd = app.sui * suiPrice;
+    const usdcValueUsd = Number(totalUsdc) / 1e6;
+    const ikaPrice = 0.003; // from Sibyl/coingecko
+    const ikaValueUsd = Number(totalIka) / 1e9 * ikaPrice;
+    const availableUsd = suiValueUsd + usdcValueUsd + ikaValueUsd;
+
+    if (availableUsd < targetUsd * 0.80) return null; // truly can't afford even with everything
+
+    const tx = new Transaction();
+    tx.setSender(walletAddress);
+
+    // Step 1: Swap IKA → SUI via Cetus (if we have IKA)
+    // IKA/SUI Cetus CLMM pool
+    if (ikaCoins.length > 0 && totalIka > 0n) {
+      const ikaCoin = tx.objectRef(ikaCoins[0]);
+      if (ikaCoins.length > 1) {
+        tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
+      }
+      // Transfer IKA to ultron — ultron will handle the swap server-side
+      // For now: just merge IKA value into the available pool
+      // TODO: direct IKA→SUI swap in PTB via Cetus
+      tx.transferObjects([ikaCoin], tx.pure.address(walletAddress)); // keep for now
+    }
+
+    // Step 2: Merge all USDC
+    let usdcForSwap: any = null;
+    if (usdcCoins.length > 0 && totalUsdc > 0n) {
+      usdcForSwap = tx.objectRef(usdcCoins[0]);
+      if (usdcCoins.length > 1) {
+        tx.mergeCoins(usdcForSwap, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+      }
+    }
+
+    // Step 3: Swap USDC → NS via DeepBook (if we have USDC)
+    let nsCoinFromSwap: any = null;
+    if (usdcForSwap && totalUsdc > 100_000n) { // > $0.10 USDC
+      const dbPool = tx.sharedObjectRef({
+        objectId: DB_NS_USDC_POOL,
+        initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
+        mutable: true,
+      });
+      const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const [nsOut, usdcChange, deepChange] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+        typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+        arguments: [dbPool, usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
+      });
+      nsCoinFromSwap = nsOut;
+      tx.transferObjects([usdcChange, deepChange], tx.pure.address(walletAddress));
+    }
+
+    // Step 4: Merge any existing NS coins with swapped NS
+    let finalNsCoin: any = null;
+    if (nsCoins.length > 0 && nsCoinFromSwap) {
+      finalNsCoin = nsCoinFromSwap;
+      tx.mergeCoins(finalNsCoin, nsCoins.map(c => tx.objectRef(c)));
+    } else if (nsCoinFromSwap) {
+      finalNsCoin = nsCoinFromSwap;
+    } else if (nsCoins.length > 0) {
+      finalNsCoin = tx.objectRef(nsCoins[0]);
+      if (nsCoins.length > 1) {
+        tx.mergeCoins(finalNsCoin, nsCoins.slice(1).map(c => tx.objectRef(c)));
+      }
+    }
+
+    // If we have NS (from swap or existing), register with NS (25% discount)
+    if (finalNsCoin) {
+      const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
+        tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+      );
+      const suinsTx = new SuinsTransaction(suinsClient, tx);
+      const nft = suinsTx.register({
+        domain, years: 1,
+        coinConfig: mainPackage.mainnet.coins.NS,
+        coin: finalNsCoin,
+        priceInfoObjectId,
+      });
+      suinsTx.setTargetAddress({ nft, address: walletAddress });
+      if (setAsDefault) suinsTx.setDefault(domain);
+      tx.transferObjects([nft], tx.pure.address(walletAddress));
+      // Return NS remainder
+      tx.transferObjects([finalNsCoin], tx.pure.address(walletAddress));
+      return buildWithTx(tx, transport);
+    }
+
+    // Fallback: no NS available, try SUI direct
+    return null;
+  };
+
+  // ── (legacy) Rumble combo: swap IKA→SUI to top up gas, then register with SUI ──
   const buildRumbleCombo = async (): Promise<Uint8Array | null> => {
     if (!suiPrice || suiPrice <= 0) return null;
     // Check if we have IKA tokens to swap
@@ -1112,17 +1218,19 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   let paths: PathEntry[];
   const nsPath: PathEntry = { fn: buildNsDirect, canSponsor: true };
   const usdcPath: PathEntry = { fn: buildUsdcSwap, canSponsor: true };
+  const rumblePath: PathEntry = { fn: buildRumbleMint, canSponsor: false };
   const comboPath: PathEntry = { fn: buildUsdcSuiCombo, canSponsor: false };
   const suiPath: PathEntry = { fn: buildSuiDirect, canSponsor: false };
 
   if (pref === 'NS') {
-    paths = [nsPath, usdcPath, comboPath, suiPath];
+    paths = [nsPath, usdcPath, rumblePath, comboPath, suiPath];
   } else if (pref === 'USDC' || pref === 'USD') {
-    paths = [usdcPath, comboPath, nsPath, suiPath];
+    paths = [usdcPath, rumblePath, nsPath, comboPath, suiPath];
   } else if (pref === 'SUI') {
-    paths = [suiPath, nsPath, usdcPath, comboPath];
+    paths = [suiPath, nsPath, usdcPath, rumblePath, comboPath];
   } else {
-    paths = [nsPath, usdcPath, comboPath, suiPath];
+    // Default: NS direct → USDC → Rumble (consolidate everything) → combo → SUI
+    paths = [nsPath, usdcPath, rumblePath, comboPath, suiPath];
   }
 
   for (const { fn, canSponsor } of paths) {

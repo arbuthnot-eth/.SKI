@@ -285,6 +285,77 @@ export async function buildBatchStrikeTx(
   return bytes;
 }
 
+/** Build a combined PTB: strike N signals + send receipt back to sender. One signature. */
+export async function buildStrikeWithReceiptTx(
+  recipientAddress: string,
+  recipientName: string,
+  nftObjectId: string,
+  strikeCount: number,
+  senderName: string,
+  senderNftObjectId: string,
+  receiptMessage: string,
+  suiamiToken: string,
+): Promise<Uint8Array> {
+  const myNs = nameHash(recipientName.replace(/\.sui$/i, '').toLowerCase());
+  const senderNs = nameHash(senderName.replace(/\.sui$/i, '').toLowerCase());
+  const addr = normalizeSuiAddress(recipientAddress);
+
+  // Encrypt the receipt for the sender
+  const payload: ThunderPayload = {
+    v: THUNDER_VERSION,
+    sender: recipientName,
+    senderAddress: addr,
+    message: receiptMessage,
+    timestamp: new Date().toISOString(),
+    suiami: suiamiToken,
+  };
+  const { ciphertext, key, nonce } = await aesEncrypt(new TextEncoder().encode(JSON.stringify(payload)));
+  const nftHex = senderNftObjectId.toLowerCase().replace(/^0x/, '');
+  const nftRawBytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) nftRawBytes[i] = parseInt(nftHex.slice(i * 2, i * 2 + 2), 16);
+  const maskedKey = xorBytes(key, keccak_256(nftRawBytes));
+
+  const tx = new Transaction();
+  tx.setSender(addr);
+
+  // Phase 1: Strike incoming signals
+  for (let i = 0; i < strikeCount; i++) {
+    tx.moveCall({
+      package: THUNDER_PACKAGE_ID,
+      module: 'thunder',
+      function: 'strike',
+      arguments: [
+        tx.object(STORM_ID),
+        tx.pure.vector('u8', Array.from(myNs)),
+        tx.object(nftObjectId),
+        tx.object('0x6'),
+      ],
+    });
+  }
+
+  // Phase 2: Send receipt signal to sender (no fee — uses signal with fee split from gas)
+  const SIGNAL_FEE_MIST = 3_000_000;
+  const [feeCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SIGNAL_FEE_MIST)]);
+  tx.moveCall({
+    package: THUNDER_PACKAGE_ID,
+    module: 'thunder',
+    function: 'signal',
+    arguments: [
+      tx.object(STORM_ID),
+      tx.pure.vector('u8', Array.from(senderNs)),
+      tx.pure.vector('u8', Array.from(ciphertext)),
+      tx.pure.vector('u8', Array.from(maskedKey)),
+      tx.pure.vector('u8', Array.from(nonce)),
+      feeCoin,
+      tx.object('0x6'),
+    ],
+  });
+
+  const bytes = await tx.build({ client: gqlClient as never }) as Uint8Array & { tx?: unknown };
+  bytes.tx = tx;
+  return bytes;
+}
+
 /** Verify a SUIAMI token. Returns true if valid. */
 async function _verifySuiami(token: string): Promise<boolean> {
   if (!token?.startsWith('suiami:')) return false;

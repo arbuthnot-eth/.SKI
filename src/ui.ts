@@ -3476,10 +3476,37 @@ async function _renderConversation(counterparty: string, force = false) {
         const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
         payloads = await parseAndDecryptQuestfi(txJson?.result ?? {}, _sendReceiptCb);
       } else {
-        payloads = await decryptAndQuest(
-          ws.address, cardDomain + '.sui', nft.objectId, count,
-          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-        );
+        // Try combined strike + receipt in one PTB
+        const _convoTarget = _thunderConvoTarget || '';
+        let _usedCombined = false;
+        if (_convoTarget && app.suinsName) {
+          try {
+            const { buildStrikeWithReceiptTx, lookupRecipientNftId } = await import('./client/thunder.js');
+            const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
+            const myName = app.suinsName.replace(/\.sui$/, '');
+            const targetNftId = await lookupRecipientNftId(_convoTarget);
+            if (targetNftId) {
+              const raw = buildSuiamiMessage(myName, ws.address, nft.objectId);
+              const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
+              const { signature: suiamiSig } = await signPersonalMessage(msgBytes);
+              const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), suiamiSig);
+              const combinedBytes = await buildStrikeWithReceiptTx(
+                ws.address, cardDomain + '.sui', nft.objectId, count,
+                _convoTarget, targetNftId, `\u2713 read by ${myName}.sui`, proof.token,
+              );
+              const result = await signAndExecuteTransaction(combinedBytes);
+              const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
+              payloads = await parseAndDecryptQuestfi(result.effects ?? result);
+              _usedCombined = true;
+            }
+          } catch { /* fall back to strike-only */ }
+        }
+        if (!_usedCombined) {
+          payloads = await decryptAndQuest(
+            ws.address, cardDomain + '.sui', nft.objectId, count,
+            (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+          );
+        }
       }
       const _myLog = app.suinsName || ws.address;
       for (const p of payloads) {
@@ -8822,12 +8849,26 @@ function bindEvents() {
 
         const label = nsLabel.trim();
         const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        const hasListing = !!(nsKioskListing || nsTradeportListing);
         const _iamName = label || app.suinsName?.replace(/\.sui$/, '') || 'you';
         if (!label) {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
           _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = !app.suinsName;
+        } else if (hasListing && !isOwned) {
+          const listing = _nsListing();
+          if (listing) {
+            const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
+            const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
+            const totalSui = suiAmt + fee;
+            const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
+            const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
+            _idleActionBtn.textContent = 'TRADE';
+            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--trade';
+            _idleActionBtn.title = `Trade ${priceStr} for ${label}.sui`;
+            _idleActionBtn.disabled = false;
+          }
         } else if (nsAvail === 'available') {
           _idleActionBtn.textContent = 'MINT';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--mint';
@@ -8973,6 +9014,13 @@ function bindEvents() {
           const name = label || (app.suinsName?.replace(/\.sui$/, '') || '');
           if (!name) return;
           window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
+        } else if (btnText === 'TRADE') {
+          // Marketplace purchase — open menu and delegate to send button
+          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
+          setTimeout(() => {
+            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
+          }, 500);
         } else if (btnText === 'MINT') {
           // Open menu for mint flow
           if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
@@ -9492,6 +9540,13 @@ function bindEvents() {
       });
       const headerEl = document.querySelector('.ski-header') as HTMLElement;
       (headerEl || document.body).appendChild(_idleOverlay);
+
+      // Close the SKI menu so it doesn't show behind the overlay
+      if (app.skiMenuOpen) {
+        app.skiMenuOpen = false;
+        try { localStorage.setItem('ski:lift', '0'); } catch {}
+        render();
+      }
 
       // Populate card inside the media (above thunder row)
       const _idleCardDomain2 = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';

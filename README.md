@@ -121,20 +121,33 @@ Full SuiNS lifecycle from the SKI menu:
 
 Encrypt signals between SuiNS identities. On-chain encrypted messaging powered by [Seal](https://docs.mystenlabs.com/seal) threshold encryption (2-of-3 key servers) with ciphertext stored on [Walrus](https://walrus.xyz).
 
-- **Signal** — encrypt and send a message to any `.sui` name; only the NFT owner can decrypt
-- **Quest** — claim and decrypt your signals, NFT-gated via Seal policies
-- **Strike** — relay signals server-side for WaaP wallets that can't run Seal in-browser
+- **Signal** — encrypt and send a message to any `.sui` name; only the NFT owner can decrypt. Free signals (fee set to 0)
+- **Quest** — claim and decrypt your signals, NFT-gated via Seal policies. Quest mode accessible from the idle overlay via the storm button. Fresh quest bubbles render with white background and support click-to-delete
+- **Strike** — tap-to-delete removes the signal on-chain, routing the storage rebate to treasury. Server-side relay for WaaP wallets that can't run Seal in-browser
 - **@tags** — mention other SuiNS names in signals with autocomplete from your roster
+- **Conversation persistence** — signals are grouped by address, so conversations persist across SuiNS name changes
 
 Thunder surfaces throughout the UI: as the default action when viewing someone else's taken name (no amount), in the idle overlay's messaging row, and via the quick-thunder button in the menu.
 
 **Move contract (v4):** `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581`
+
+**Thunder v5 / Storm v1 (planned):** ECDH-derived private Storm IDs via IKA dWallets. Hides who talks to whom — knowledge of the storm_id IS authorization.
 
 ## SUIAMI
 
 SUI-Authenticated Message Identity — cryptographic proof that a SuiNS name belongs to you. Sign a structured message with your wallet to generate a verifiable identity proof, validated server-side via `/api/suiami/verify`.
 
 Used for sender authentication in Thunder signals and as a standalone identity primitive.
+
+## SUIAMI Roster
+
+Cross-chain identity resolver on Sui. Maps SuiNS names to addresses on any chain via a shared on-chain registry.
+
+- **Contract:** `0x4a04a5701ae8420c16e51597553fc3a21a19ebb5800d5f48cd98f75ecd429906`
+- **Roster object:** `0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689`
+- **Dual-keyed lookup** — name hash, Sui address, and chain address strings
+- **`VecMap<String,String>`** for chains — future-proof for post-quantum curves and arbitrary chain identifiers
+- Piggybacked onto every user transaction (pending contract v2 upgrade)
 
 ## iUSD — Yield-Bearing Stable
 
@@ -353,7 +366,7 @@ The worker hosts five Durable Objects:
 | `SponsorAgent` | Manages Splash sponsor state |
 | `SplashDeviceAgent` | Tracks per-device Splash activation (keyed by FingerprintJS `visitorId`) |
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace-period expiry via DO Alarms |
-| `TreasuryAgents` | iUSD minting, collateral attestation, NS acquisition, pool management |
+| `TreasuryAgents` | Signed by ultron.sui — autonomous agent for iUSD minting, collateral attestation, NS acquisition, dust sweeps, Thunder relay |
 
 API routes served by the worker:
 
@@ -413,6 +426,7 @@ Chain registry and signing ceremony adapted from [inkwell-finance/ows-ika](https
 - `@mysten/sui` ^2.5.1, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` ^1.2.2, `@ika.xyz/sdk` ^0.3.1
 - DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3 (direct pools), Bluefin CLMM, Cetus CLMM
 - Transport: `SuiGrpcClient` primary with `SuiGraphQLClient` fallback (no JSON-RPC)
+- gRPC proxy: Hayabusa at `hb.sui.ski` — hedged requests across 4 fullnodes, two-tier caching (L1 Cache API + L2 KV)
 - Crypto: `@noble/hashes` (SHA-256, RIPEMD-160), `@scure/base` (bech32)
 - Build: `bun build src/ski.ts --outdir public/dist --target browser`
 - Deploy: Cloudflare Workers + Wrangler 4.78

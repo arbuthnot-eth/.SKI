@@ -8927,7 +8927,18 @@ function bindEvents() {
         const thunderCount = _thunderCounts[name.toLowerCase()] ?? 0;
         const localCount = _thunderLocalCounts[name.toLowerCase()] ?? 0;
         const badgeHtml = (localCount > 0 ? `\u26c8\ufe0f${localCount} ` : '') + (thunderCount > 0 ? `\u26a1${thunderCount}` : '');
-        card.innerHTML = `<span class="ski-idle-card-name">${esc(name)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
+        // Listing price from Tradeport/kiosk
+        const listing = _nsListing();
+        let listingHtml = '';
+        if (listing) {
+          const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
+          const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
+          const totalSui = suiAmt + fee;
+          const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
+          const priceStr = usdVal != null ? `$${Math.round(usdVal)}` : `${totalSui.toFixed(0)} SUI`;
+          listingHtml = ` <span class="ski-idle-card-listing">${priceStr}</span>`;
+        }
+        card.innerHTML = `<span class="ski-idle-card-name">${esc(name)}<span class="ski-nft-tld">.sui</span></span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${listingHtml}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
         // Fetch resolved address balance
         (async () => {
           try {
@@ -8958,10 +8969,8 @@ function bindEvents() {
               if (ct.includes('::sui::SUI')) totalUsd += (Number(raw) / 1e9) * price;
               else if (ct.includes('::usdc::USDC')) totalUsd += Number(raw) / 1e6;
             }
-            if (totalUsd >= 0.01) {
-              const whole = Math.floor(totalUsd);
-              const dec = (totalUsd - whole).toFixed(2).slice(1);
-              balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${whole.toLocaleString()}</span><span class="ski-idle-card-bal-dec">${dec}</span>`;
+            if (totalUsd >= 0.50) {
+              balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
             }
           } catch {}
         })();

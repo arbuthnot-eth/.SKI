@@ -3220,6 +3220,12 @@ body {
   font-size: 0.6rem;
 }
 .ski-idle-card-badges { color: #FFB800; font-weight: 600; }
+.ski-idle-card-listing {
+  color: #f0a500;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.75rem;
+}
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {
   position: absolute;

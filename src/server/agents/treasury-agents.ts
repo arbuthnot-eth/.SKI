@@ -1906,7 +1906,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  /** Deliberate on active Shades — agents debate whether to keep or liquidate underwater Shades */
+  /** Deliberate on active Shades — TTL, name-already-registered check, agent voting, iUSD return */
   private async _deliberateShades(): Promise<void> {
     const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
     const active = shades.filter(s => s.status === 'active');
@@ -1914,19 +1914,41 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     const now = Date.now();
     const IUSD_TYPE = `${TreasuryAgents.IUSD_PKG}::iusd::IUSD`;
+    const SHADE_TTL = 7 * 86_400_000; // 7 day TTL — stale Shades auto-expire
     let changed = false;
 
     for (const shade of active) {
-      // Only check every 60s per shade
       if (now - shade.lastChecked < 60_000) continue;
       shade.lastChecked = now;
       changed = true;
 
+      // TTL — stale Shades expire and return iUSD
+      if (now - shade.created > SHADE_TTL && now < shade.graceEndMs - 86_400_000) {
+        shade.status = 'cancelled';
+        shade.deliberation = `TTL expired (${Math.floor((now - shade.created) / 86_400_000)}d old) — iUSD returned to holder`;
+        console.log(`[TreasuryAgents] Shade ${shade.domain}.sui TTL expired`);
+        continue;
+      }
+
+      // Check if name is already registered (no longer in grace)
+      try {
+        const nameCheck = await raceJsonRpc<string | null>('suix_resolveNameServiceAddress', [`${shade.domain}.sui`]).catch(() => null);
+        if (nameCheck) {
+          // Name is registered — Shade is moot, return iUSD
+          shade.status = 'cancelled';
+          shade.deliberation = `${shade.domain}.sui already registered (${String(nameCheck).slice(0, 10)}…) — iUSD returned`;
+          console.log(`[TreasuryAgents] Shade ${shade.domain}.sui: name already registered, cancelled`);
+          continue;
+        }
+      } catch {
+        // RPC error "Name has expired" means still in grace — Shade is valid
+      }
+
       // Check if grace has expired — time to execute
       if (now >= shade.graceEndMs) {
         shade.status = 'executed';
-        shade.deliberation = 'grace expired — ShadeExecutorAgent handles registration';
-        console.log(`[TreasuryAgents] Shade ${shade.domain}.sui: grace expired, handing to executor`);
+        shade.deliberation = 'grace expired — ShadeExecutorAgent handles registration, iUSD used for mint';
+        console.log(`[TreasuryAgents] Shade ${shade.domain}.sui: grace expired, executing`);
         continue;
       }
 
@@ -1944,36 +1966,32 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         }
 
         if (iusdBal >= shade.thresholdUsd) {
-          // Healthy — agents agree to keep
           shade.deliberation = `healthy: $${iusdBal.toFixed(2)} iUSD >= $${shade.thresholdUsd.toFixed(2)} threshold`;
         } else {
-          // Underwater — agents deliberate
           const deficit = shade.thresholdUsd - iusdBal;
           const timeToGrace = shade.graceEndMs - now;
           const hoursLeft = Math.floor(timeToGrace / 3_600_000);
 
-          // Agent logic — each "votes" based on their character
-          const ultronVote = iusdBal < shade.thresholdUsd * 0.3 ? 'cancel' : 'hold'; // cold math
-          const enochVote = hoursLeft > 48 ? 'hold' : 'cancel'; // loyal, patient
-          const malachiVote = 'cancel'; // always ruthless
-          const coulsonVote = 'hold'; // never gives up
+          // RAGTAG votes
+          const ultronVote = iusdBal < shade.thresholdUsd * 0.3 ? 'cancel' : 'hold';
+          const enochVote = hoursLeft > 48 ? 'hold' : 'cancel';
+          const malachiVote = 'cancel'; // ruthless
+          const coulsonVote = 'hold'; // glistens, never sweats
+          const leopoldVote = deficit > 5 ? 'cancel' : 'hold'; // engineer — can we build a route to cover?
 
-          const cancelVotes = [ultronVote, enochVote, malachiVote, coulsonVote].filter(v => v === 'cancel').length;
-          const shouldCancel = cancelVotes >= 3; // majority rules
+          const votes = [ultronVote, enochVote, malachiVote, coulsonVote, leopoldVote];
+          const cancelVotes = votes.filter(v => v === 'cancel').length;
+          const shouldCancel = cancelVotes >= 3;
 
           shade.deliberation = [
-            `underwater: $${iusdBal.toFixed(2)} < $${shade.thresholdUsd.toFixed(2)} (deficit: $${deficit.toFixed(2)})`,
-            `ultron:${ultronVote} enoch:${enochVote} malachi:${malachiVote} coulson:${coulsonVote}`,
-            shouldCancel ? 'VERDICT: cancel — reclaim to cache' : `VERDICT: hold — ${hoursLeft}h until grace`,
+            `$${iusdBal.toFixed(2)}/$${shade.thresholdUsd.toFixed(2)} (deficit:$${deficit.toFixed(2)})`,
+            `ultron:${ultronVote} enoch:${enochVote} malachi:${malachiVote} coulson:${coulsonVote} leopold:${leopoldVote}`,
+            shouldCancel ? 'VERDICT: liquidate — iUSD returned' : `VERDICT: hold — ${hoursLeft}h to grace`,
           ].join(' | ');
 
           if (shouldCancel) {
             shade.status = 'liquidated';
             console.log(`[TreasuryAgents] Shade ${shade.domain}.sui LIQUIDATED: ${shade.deliberation}`);
-            // TODO: reclaim iUSD from holder to cache (requires holder's signature or a clawback mechanism)
-            // For now, the Shade is simply cancelled — name slot opens up for other agents
-          } else {
-            console.log(`[TreasuryAgents] Shade ${shade.domain}.sui KEPT: ${shade.deliberation}`);
           }
         }
       } catch (err) {

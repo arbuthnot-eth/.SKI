@@ -9284,9 +9284,10 @@ function bindEvents() {
           _idleActionBtn.disabled = true;
         }
 
-        // Show QR only when Quest button is active — user can't afford to mint
+        // Show QR only when Quest button is active — cap at $9.50 (no name costs more via Quest)
         if (_idleActionBtn.textContent === 'Quest') {
-          _showSolQr(nsPriceUsd ?? 7.77);
+          const _qrAmt = Math.min(nsPriceUsd ?? 7.77, 9.50);
+          _showSolQr(_qrAmt);
         } else {
           _hideSolQr();
         }

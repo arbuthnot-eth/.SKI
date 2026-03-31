@@ -9850,27 +9850,58 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
-          // Fetch fresh SUI balance via gRPC (don't rely on cached app.sui)
-          const _bals = await grpcClient.core.listBalances({ owner: ws.address }).catch(() => null);
-          let suiBalMist = 0n;
-          if (_bals?.balances) {
-            for (const b of _bals.balances) {
-              if (b.coinType?.includes('::sui::SUI') || b.coinType?.includes('0x2::sui::SUI')) {
-                suiBalMist = BigInt(b.totalBalance ?? '0');
-              }
+          // Find all non-gas tokens to route to iUSD (keep SUI for gas)
+          const nonGas = walletCoins.filter(c =>
+            c.balance > 0 &&
+            !c.coinType.includes('::sui::SUI') && // keep SUI gas
+            !c.coinType.includes('::iusd::IUSD')  // already iUSD
+          );
+          const totalNonGasUsd = nonGas.reduce((s, c) => s + c.balance, 0);
+
+          if (totalNonGasUsd < 0.01 && (app.sui || 0) < 1) {
+            showToast('No tokens to route to iUSD');
+            return;
+          }
+
+          // If user has NS, USDC, or other tokens — send to ultron for routing
+          // Agents will debate and swap NS→USDC→iUSD, keeping the spread
+          const nsCoins = nonGas.filter(c => c.coinType.includes('::ns::NS'));
+          const usdcCoins = nonGas.filter(c => c.coinType.includes('::usdc::USDC'));
+          const otherCoins = nonGas.filter(c => !c.coinType.includes('::ns::NS') && !c.coinType.includes('::usdc::USDC'));
+
+          const routeDesc = [
+            nsCoins.length > 0 ? `${nsCoins.reduce((s, c) => s + c.balance, 0).toFixed(0)} NS` : '',
+            usdcCoins.length > 0 ? `$${usdcCoins.reduce((s, c) => s + c.balance, 0).toFixed(2)} USDC` : '',
+            otherCoins.length > 0 ? `${otherCoins.length} other tokens` : '',
+          ].filter(Boolean).join(' + ');
+
+          showToast(`\u26a1 Routing ${routeDesc} \u2192 iUSD — agents competing for best rate`);
+
+          // For NS: send to ultron (auto-sweeps NS→USDC every tick)
+          // For USDC: send to ultron (will attest + mint iUSD)
+          // For SUI: keep gas, route excess through collateral attestation
+          const ULTRON = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+
+          if (nsCoins.length > 0 || usdcCoins.length > 0) {
+            // Build a PTB that sends all NS + USDC to ultron
+            const sendResult = await buildConsolidateToUsdcTx(ws.address, ULTRON);
+            if (sendResult) {
+              await signAndExecuteTransaction(sendResult instanceof Uint8Array ? sendResult : sendResult);
+              showToast('\u26a1 Tokens sent to cache — agents routing to iUSD');
+              // Poke ultron to process immediately
+              await fetch('/api/cache/poke');
+              refreshPortfolio(true);
+              return;
             }
           }
-          if (suiBalMist === 0n) {
-            // Fallback to app.sui
-            suiBalMist = BigInt(Math.floor((app.sui || 0) * 1e9));
-          }
-          const swapAmount = Number(suiBalMist * 95n / 100n); // 95%
-          if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
 
-          // Compute collateral + mint amounts
+          // Fallback: SUI-only route — attest collateral + mint iUSD (keep gas)
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const walletAddr = normalizeSuiAddress(ws.address);
-          const suiPrice = suiPriceCache?.price ?? 3;
+          const suiPrice = suiPriceCache?.price ?? 0.87;
+          const suiBalMist = BigInt(Math.floor((app.sui || 0) * 1e9));
+          const swapAmount = Number(suiBalMist * 80n / 100n); // 80% — keep 20% for gas
+          if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
           const collateralValueMist = BigInt(swapAmount);
           const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6);
           const mintAmount = BigInt(Math.floor(usdValue / 1.5));

@@ -573,6 +573,7 @@ export type DomainStatusResult = {
   avail: 'available' | 'taken' | 'owned' | 'grace';
   targetAddress: string | null;
   graceEndMs?: number;
+  expirationMs?: number;
   /** On-chain owner address of the NFT (may differ from wallet address for WaaP wallets). */
   nftOwner?: string;
   /** Seller's kiosk object ID (when NFT is listed in a marketplace kiosk). */
@@ -605,6 +606,7 @@ export async function checkDomainStatus(
       return { avail: 'available', targetAddress: null };
     }
     const targetAddress = record.targetAddress ?? null;
+    const expirationMs = record.expirationTimestampMs ?? undefined;
     // Check ownership via the nftId on the record — one targeted query, no pagination issues
     if (walletAddress && record.nftId) {
       const res = await fetch(GQL_URL, {
@@ -658,9 +660,9 @@ export async function checkDomainStatus(
             for (const a of additionalOwnerAddresses) candidates.push(normalizeSuiAddress(a).toLowerCase());
           }
           if (candidates.includes(normalizedOwner)) {
-            return { avail: 'owned', targetAddress, nftOwner: ownerAddr };
+            return { avail: 'owned', targetAddress, expirationMs, nftOwner: ownerAddr };
           }
-          return { avail: 'taken', targetAddress, nftOwner: ownerAddr };
+          return { avail: 'taken', targetAddress, expirationMs, nftOwner: ownerAddr };
         }
       }
       // ObjectOwner — NFT is inside a kiosk (dynamic field wrapper)
@@ -672,13 +674,13 @@ export async function checkDomainStatus(
           if (kioskId && record.nftId) {
             const listingPrice = await _fetchKioskListingPrice(kioskId, record.nftId);
             if (listingPrice) {
-              return { avail: 'taken', targetAddress, kioskId, kioskNftId: record.nftId, kioskListingPriceMist: listingPrice };
+              return { avail: 'taken', targetAddress, expirationMs, kioskId, kioskNftId: record.nftId, kioskListingPriceMist: listingPrice };
             }
           }
         }
       }
     }
-    return { avail: 'taken', targetAddress };
+    return { avail: 'taken', targetAddress, expirationMs };
   } catch {
     return { avail: 'available', targetAddress: null };
   }

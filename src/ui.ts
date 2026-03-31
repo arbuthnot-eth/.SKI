@@ -3883,6 +3883,7 @@ let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
 let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // on-chain kiosk listing for current label
 let nsTradeportListing: TradeportListing | null = null; // Tradeport marketplace listing for current label
+let nsExpirationMs = 0; // expiration timestamp for current searched name (any name, not just owned)
 // Restore cached listing data for instant overlay render on refresh
 try {
   const _rc = sessionStorage.getItem('ski:ns-resolve');
@@ -4091,6 +4092,7 @@ async function fetchAndShowNsPrice(label: string) {
   const _applyStatusAndListing = (sr: DomainStatusResult | null, tp: TradeportListing | null) => {
     nsAvail = sr?.avail ?? null;
     nsGraceEndMs = sr?.graceEndMs ?? 0;
+    nsExpirationMs = sr?.expirationMs ?? 0;
     nsTargetAddress = sr?.targetAddress ?? null;
     nsNftOwner = sr?.nftOwner ?? null;
     // If domain is in our owned roster, override 'taken' → 'owned'
@@ -6772,7 +6774,7 @@ function renderSkiMenu() {
         if (infer.tx?.base64) {
           const bytes = Uint8Array.from(atob(infer.tx.base64), ch => ch.charCodeAt(0));
           if (btn) btn.textContent = '\u270f';
-          const { digest } = await signAndExecuteTransaction(bytes);
+          const { digest } = isSponsorActive() ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
           nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
           app.suinsName = app.suinsName || `${label}.sui`;
           showToast(`${label}.sui purchased \u2713`);
@@ -6820,7 +6822,8 @@ function renderSkiMenu() {
     const inEqualsOut = _getSwapInCoinType() === (SWAP_OUT_OPTIONS.find(o => o.key === swapOutputKey)?.coinType ?? '');
     const isSwapOrSend = coinChipsOpen && !inEqualsOut; // swap takes priority
     const isSendMode = coinChipsOpen && inEqualsOut && nsLabel.trim().length > 0 && !isSelfTarget && !isOwned; // sending to other
-    const suiamiClick = _btnText === 'SUIAMI' || (!isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName)));
+    const _hasListing = !!(nsKioskListing || nsTradeportListing);
+    const suiamiClick = !_hasListing && (_btnText === 'SUIAMI' || (!isSwapOrSend && !isSendMode && (((isSelfTarget || isOwned) && nsLabel.trim().length > 0) || (!nsLabel.trim() && !!app.suinsName))));
     if (suiamiClick) {
       const ws2 = getState();
       if (!ws2.address) return;
@@ -9409,20 +9412,20 @@ function bindEvents() {
           const primaryThunder = _thunderCounts[primaryName.toLowerCase()] ?? 0;
           const primaryLocal = _thunderLocalCounts[primaryName.toLowerCase()] ?? 0;
           const badgeHtml = (primaryLocal > 0 ? `\u26c8\ufe0f${primaryLocal} ` : '') + (primaryThunder > 0 ? `\u26a1${primaryThunder}` : '');
-          card.innerHTML = `<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
-          // Fetch primary name's balance
-          (async () => {
-            try {
-              const ws = getState();
-              if (!ws.address) return;
-              const balEl = card.querySelector('#ski-idle-card-bal');
-              if (!balEl) return;
-              const totalUsd = app.usd ?? 0;
-              if (totalUsd >= 0.50) {
-                balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
-              }
-            } catch {}
-          })();
+          const primaryOwned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === primaryName.toLowerCase());
+          let primaryExpiryHtml = '';
+          if (primaryOwned?.expirationMs) {
+            const daysLeft = Math.max(0, Math.ceil((primaryOwned.expirationMs - Date.now()) / 86_400_000));
+            let cls = 'wk-ns-owned-expiry';
+            if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
+            else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
+            primaryExpiryHtml = ` <span class="${cls}">${daysLeft}D</span>`;
+          }
+          const totalUsd = app.usd ?? 0;
+          const balHtml = totalUsd >= 0.50 ? `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span></span> ` : '';
+          // iUSD badge — shows after SUIAMI is completed (identity verified)
+          const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
+          card.innerHTML = `${balHtml}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${iusdBadge}${primaryExpiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
           return;
         }
         // Persist as authoritative domain — drives NS input on refresh and menu open
@@ -9432,19 +9435,20 @@ function bindEvents() {
         const thunderCount = _thunderCounts[name.toLowerCase()] ?? 0;
         const localCount = _thunderLocalCounts[name.toLowerCase()] ?? 0;
         const badgeHtml = (localCount > 0 ? `\u26c8\ufe0f${localCount} ` : '') + (thunderCount > 0 ? `\u26a1${thunderCount}` : '');
-        // Listing price from Tradeport/kiosk
-        const listing = _nsListing();
-        let listingHtml = '';
-        if (listing) {
-          const suiAmt = Number(BigInt(listing.priceMist)) / 1e9;
-          const fee = listing.source === 'tradeport' ? suiAmt * 0.03 : 0;
-          const totalSui = suiAmt + fee;
-          const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
-          listingHtml = usdVal != null
-            ? ` <span class="ski-idle-card-listing"><span class="ski-idle-card-listing-sign">$</span><span class="ski-idle-card-listing-val">${Math.round(usdVal)}</span></span>`
-            : ` <span class="ski-idle-card-listing"><span class="ski-idle-card-listing-val">${Math.round(totalSui)} SUI</span></span>`;
+        // Expiration days — check owned domains first, then fall back to on-chain record
+        const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name.toLowerCase());
+        const expMs = ownedEntry?.expirationMs ?? nsExpirationMs;
+        let expiryHtml = '';
+        if (expMs > 0 && expMs > Date.now()) {
+          const daysLeft = Math.max(0, Math.ceil((expMs - Date.now()) / 86_400_000));
+          let cls = 'wk-ns-owned-expiry';
+          if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
+          else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
+          expiryHtml = ` <span class="${cls}">${daysLeft}D</span>`;
+        } else if (nsGraceEndMs > 0) {
+          expiryHtml = ` <span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent">EXPIRED</span>`;
         }
-        card.innerHTML = `<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${listingHtml}<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span>`;
+        card.innerHTML = `<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span><span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${expiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
         // Fetch resolved address balance
         (async () => {
           try {
@@ -9469,14 +9473,19 @@ function bindEvents() {
             if (!balEl) return;
             let totalUsd = 0;
             const price = suiPriceCache?.price ?? 0.87;
+            const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+            const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+            const IUSD_CT = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+            const IKA_CT = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
+            const DEEP_CT = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
             for (const b of (gql2?.data?.address?.balances?.nodes ?? [])) {
               const ct = b.coinType?.repr ?? '';
               const raw = BigInt(b.totalBalance ?? '0');
-              if (ct.includes('::sui::SUI')) totalUsd += (Number(raw) / 1e9) * price;
-              else if (ct.includes('::usdc::USDC')) totalUsd += Number(raw) / 1e6;
-              else if (ct.includes('::iusd::IUSD')) totalUsd += Number(raw) / 1e9;
-              else if (ct.includes('::ika::IKA')) totalUsd += (Number(raw) / 1e9) * 0.003;
-              else if (ct.includes('::deep::DEEP')) totalUsd += (Number(raw) / 1e6) * 0.03;
+              if (ct === SUI_CT) totalUsd += (Number(raw) / 1e9) * price;
+              else if (ct === USDC_CT) totalUsd += Number(raw) / 1e6;
+              else if (ct === IUSD_CT) totalUsd += Number(raw) / 1e9;
+              else if (ct === IKA_CT) totalUsd += (Number(raw) / 1e9) * 0.003;
+              else if (ct === DEEP_CT) totalUsd += (Number(raw) / 1e6) * 0.03;
             }
             // Add SOL balance if this is the connected wallet
             const ws = getState();
@@ -9614,7 +9623,7 @@ function bindEvents() {
               _idleActionBtn!.textContent = '\u270f';
               const b64 = infer.tx.base64;
               const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-              const { digest } = await signAndExecuteTransaction(bytes);
+              const { digest } = isSponsorActive() ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
               nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
               app.suinsName = app.suinsName || `${label}.sui`;
               showToast(`${label}.sui purchased \u2713`);
@@ -10964,44 +10973,10 @@ export function initUI() {
         }
       })();
 
-      // Background Quest fulfillment — check for filled quests and auto-register
-      (async () => {
-        try {
-          if (!ws.address) return;
-          const r = await fetch(`/api/cache/quest-bounties?recipient=${encodeURIComponent(ws.address)}`);
-          if (!r.ok) return;
-          const { bounties } = await r.json() as { bounties: Array<{ id: string; status: string }> };
-          const filled = bounties.filter(b => b.status === 'filled');
-          if (filled.length === 0) return;
-          // We have filled quests — NS tokens are waiting. Check if user has a pending name to register.
-          const pendingLabel = nsLabel.trim() || localStorage.getItem('ski:ns-label') || '';
-          if (!pendingLabel) return;
-          // Skip if name has a marketplace listing — it's a TRADE, not a registration
-          if (nsKioskListing || nsTradeportListing) return;
-          // Check if this name is already owned
-          const owned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === pendingLabel.toLowerCase());
-          if (owned) return;
-          // Check if user has NS tokens via RPC
-          const nsCheck = await fetch('https://sui-rpc.publicnode.com', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [ws.address, '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS'] }),
-          });
-          const nsData = await nsCheck.json() as any;
-          const nsBalance = (nsData?.result?.data ?? []).reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
-          if (nsBalance < 100_000_000n) return; // need at least 0.1 NS
-          showToast(`\u26a1 Quest filled! Registering ${pendingLabel}.sui\u2026`);
-          const regResult = await buildRegisterSplashNsTx(ws.address, `${pendingLabel}.sui`, suiPriceCache?.price, true, 'NS');
-          if (regResult) {
-            await signAndExecuteTransaction(regResult instanceof Uint8Array ? regResult : regResult);
-            showToast(`\u2728 ${pendingLabel}.sui minted!`);
-            nsAvail = 'owned';
-            window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: pendingLabel } }));
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : '';
-          if (msg && !msg.toLowerCase().includes('reject')) console.log('[SKI] Auto-register:', msg);
-        }
-      })();
+      // Background Quest fulfillment disabled — too aggressive, fires on page load
+      // for names the user didn't explicitly Quest. Registration should only happen
+      // when the user clicks MINT or Quest and explicitly signs.
+      // TODO: re-enable with explicit Quest session tracking (not localStorage label)
 
       // Restore idle overlay if it was open before refresh
       if (!_idleOverlay && localStorage.getItem('ski:idle-open') === '1') {

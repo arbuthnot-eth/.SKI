@@ -67,17 +67,38 @@ ZK proof attached if location/attribute verification needed
 Thunder gate: recipient must have signals to claim
 ```
 
-### Every action is a Prism
+### One Primitive: Thunder
 
-| Action | Prism fields used |
-|--------|-------------------|
-| **TRADE** | intent=TRADE, amount=listing price, recipient=seller, digest=purchase TX |
-| **MINT** | intent=MINT, amount=NS cost (steganographic tag), payload=domain on Walrus |
-| **Quest** | intent=Quest, amount=bounty (tag in last 4), gate=agents race to fill |
-| **Thunder** | intent=Thunder, payload=Seal-encrypted message on Walrus, gate=signal fee. If amount > 0, it's a transfer. There is no "Send" — send is just Thunder with coins attached. |
-| **Swap** | intent=Swap, amount=iUSD↔SUI, sender/recipient=ultron↔user |
-| **Shade** | intent=Shade, payload=Seal commitment, proof=grace period expiry |
-| **SUIAMI** | intent=SUIAMI, proof=cross-chain identity ZK, payload=Roster entry on Walrus |
+Everything is a Thunder. A Thunder is an encrypted signal between two identities that optionally carries value, proofs, and gates. There is no "Send", no "Swap", no "Quest" as separate types. There is only Thunder with different attachments.
+
+```
+Thunder {
+  message:  always (Seal-encrypted payload on Walrus)
+  coins:    optional (makes it a payment)
+  proof:    optional (makes it verified — ZK location, SUIAMI identity)
+  gate:     optional (makes it conditional — signal count, time lock, agent fill)
+  intent:   tag (what the UI calls it — TRADE/MINT/Quest/Shade/SUIAMI/Swap)
+}
+```
+
+| What the UI shows | What it actually is |
+|-------------------|---------------------|
+| **TRADE** | Thunder to seller. Coins = listing price. Gate = Tradeport listing exists. |
+| **MINT** | Thunder to SuiNS. Coins = NS registration cost. Payload = domain. |
+| **Quest** | Thunder to agents. Coins = bounty. Gate = first agent to fill wins. |
+| **Send** | Thunder to recipient. Coins = transfer amount. That's it. |
+| **Swap** | Thunder to ultron. Coins = iUSD. Return Thunder = SUI. Two Thunders. |
+| **Shade** | Thunder to future self. Coins = escrow. Gate = grace period expiry. |
+| **SUIAMI** | Thunder to the chain. Coins = 0. Proof = cross-chain identity ZK. |
+| **Message** | Thunder with no coins. Just encrypted text. The base case. |
+
+The intent tag exists for the UI and agents to interpret. On-chain, it's all the same `SignalV2` derived object under Storm. Prism is the envelope that wraps the Thunder for storage and replay.
+
+**Thunder(message)** = DM.
+**Thunder(message + coins)** = payment.
+**Thunder(message + coins + gate)** = conditional payment.
+**Thunder(message + proof)** = verified attestation.
+**Thunder(message + coins + proof + gate)** = the full stack — a verified conditional payment with an encrypted message. That's a Prism.
 
 ### Prism in the idle overlay
 

@@ -2524,7 +2524,7 @@ function _debounceSwapQuote() {
 
 function _isStableCoin(coinType: string): boolean {
   const name = coinShortName(coinType).toUpperCase();
-  return name === 'USDC' || name === 'USDT' || name === 'DAI' || name === 'AUSD' || name === 'BUCK' || name === 'USDY';
+  return name === 'USDC' || name === 'USDT' || name === 'DAI' || name === 'AUSD' || name === 'BUCK' || name === 'USDY' || name === 'IUSD';
 }
 
 function normalizeSuiAddress(addr: string): string {
@@ -8276,8 +8276,8 @@ function renderSkiMenu() {
       return;
     }
 
-    // ── Marketplace purchase (kiosk or Tradeport) — handled by early return above ──
-    if (false) { // unreachable — kept for structure
+    // ── Marketplace purchase (kiosk or Tradeport) ──
+    if (_nsListing()) {
       if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
       try {
         const listing = _nsListing()!;

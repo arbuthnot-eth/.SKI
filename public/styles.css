@@ -3645,9 +3645,8 @@ a.ski-idle-bubble-name:hover {
 /* Inline SOL QR on idle overlay */
 .ski-idle-sol-qr {
   position: absolute;
-  bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: 44px;
+  right: 8px;
   z-index: 10;
   pointer-events: auto;
 }

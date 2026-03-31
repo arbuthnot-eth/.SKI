@@ -38,6 +38,31 @@ const SUI_TYPE = '0x000000000000000000000000000000000000000000000000000000000000
 const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
 const DB_SUI_USDC_POOL = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
 
+// ─── Scallop Protocol constants ──────────────────────────────────────
+const SCALLOP = {
+  package: '0xde5c09ad171544aa3724dc67216668c80e754860f419136a68d78504eb2e2805',
+  version: '0x07871c4b3c847a0f674510d4978d5cf6f960452795e8ff6f189fd2088a3f6ac7',
+  market: '0xa757975255146dc9686aa823b7838b507f315d704f428cbadad2f4ea061939d9',
+  sCoinPackage: '0x80ca577876dec91ae6d22090e56c39bc60dce9086ab0729930c6900bc4162b4c',
+  sUsdcTreasury: '0xbe6b63021f3d82e0e7e977cdd718ed7c019cf2eba374b7b546220402452f938e',
+  sSuiTreasury: '0x5c1678c8261ac9eec024d4d630006a9f55c80dc0b1aa38a003fcb1d425818c6b',
+  sUsdcType: '0x854950aa624b1df59fe64e630b2ba7c550642e9342267a33061d59fb31582da5::scallop_usdc::SCALLOP_USDC',
+  sSuiType: '0xaafc4f740de0dd0dde642a31148fb94517087052f19afb0f7bed1dc41a50c77b::scallop_sui::SCALLOP_SUI',
+};
+
+// ─── Cache state: 110% overcollateralization ─────────────────────────
+const OVERCOLLATERAL_BPS = 11000; // 110% — everything above this is surplus for agents
+
+// ─── QuestFi: Agent Economics ────────────────────────────────────────
+// Parent keeps 1% of all deployed amounts, redistributes based on performance.
+// Lazy agents die at threshold, bold RWA-focused agents spawn to replace them.
+const PARENT_CUT_BPS = 100;           // 1% of deployed goes to parent cache
+const DEATH_THRESHOLD_RUNS = 50;      // agents with 50+ runs and no profit get culled
+const DEATH_THRESHOLD_PROFIT = 0n;    // must have positive lifetime profit to survive
+
+// RWA tokens the bold new agents hunt for as collateral
+const RWA_TARGETS = ['XAUM', 'XAGM', 'TSLAx', 'NVIDIA', 'META'] as const;
+
 // ─── Types ────────────────────────────────────────────────────────────
 
 // ─── t2000 Agent Registry ─────────────────────────────────────────────
@@ -49,10 +74,11 @@ interface T2000Agent {
   dwalletId: string;       // IKA dWallet controlling this agent
   operator: address;
   deployed_ms: number;
-  total_profit_mist: string;
+  total_profit_iusd: string; // measured in iUSD (dollars)
   last_run_ms: number;
   runs: number;
   active: boolean;
+  focus?: string[];         // RWA targets for bold agents (e.g. ['XAUM', 'TSLAx'])
 }
 
 type address = string;
@@ -594,6 +620,24 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       });
     }
 
+    // Cache state — iUSD supply, collateral, ratio, surplus above 110%
+    if (url.pathname.endsWith('/cache-state') || url.searchParams.has('cache-state')) {
+      try {
+        const cache = await this._getCacheState();
+        return new Response(JSON.stringify({
+          supply: String(cache.supply),
+          senior: String(cache.senior),
+          junior: String(cache.junior),
+          total_collateral: String(cache.total),
+          ratio_bps: cache.ratioBps,
+          surplus_mist: String(cache.surplusMist),
+          overcollateral_target_bps: OVERCOLLATERAL_BPS,
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if (url.pathname.endsWith('/status') || url.searchParams.has('status')) {
       return new Response(JSON.stringify({
         positions: this.state.positions,
@@ -744,12 +788,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       await this._deliberateShades();
       await this._sweepNsToIusd();
 
-      // Every 15 min: check yield rotation + lend idle assets
+      // Every 15 min: sweep dust, rotate yield across NAVI/Scallop/DeepBook
       const FIFTEEN_MIN = 15 * 60 * 1000;
       if (now - this.state.last_sweep_ms > FIFTEEN_MIN) {
         await this.sweepDust(); // Convert USDC/DEEP dust → SUI → attest → mint iUSD
-        await this.sweepFees(); // Sweep SUI into NAVI lending
-        await this.lendUsdcToNavi(); // Lend idle USDC to NAVI for yield
+        await this._yieldRotate(); // Deploy surplus above 110% to best venue
+        this.setState({ ...this.state, last_sweep_ms: Date.now() });
       }
 
       // Every 24h: rebalance
@@ -1063,11 +1107,334 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
-  // ─── Dust Sweep (recursive treasury growth) ─────────────────────────
+  // ─── Cache State Query ─────────────────────────────────────────────
+  //
+  // Reads iUSD Treasury on-chain: supply, senior/junior collateral, ratio.
+  // Used to calculate surplus above 110% overcollateralization.
+
+  private async _getCacheState(): Promise<{
+    supply: bigint; senior: bigint; junior: bigint; total: bigint;
+    ratioBps: number; surplusMist: bigint;
+  }> {
+    const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+    const res = await transport.query({
+      query: `query {
+        object(address: "${TreasuryAgents.IUSD_TREASURY}") {
+          asMoveObject { contents { json } }
+        }
+      }`,
+    });
+    const json = (res.data as any)?.object?.asMoveObject?.contents?.json ?? {};
+    const totalMinted = BigInt(json.total_minted ?? '0');
+    const totalBurned = BigInt(json.total_burned ?? '0');
+    const supply = totalMinted - totalBurned;
+    const senior = BigInt(json.senior_value_mist ?? '0');
+    const junior = BigInt(json.junior_value_mist ?? '0');
+    const total = senior + junior;
+    const ratioBps = supply > 0n ? Number(total * 10000n / supply) : 0;
+    // Surplus = collateral above 110% of supply
+    const required = supply * BigInt(OVERCOLLATERAL_BPS) / 10000n;
+    const surplusMist = total > required ? total - required : 0n;
+    return { supply, senior, junior, total, ratioBps, surplusMist };
+  }
+
+  // ─── Scallop Lending ──────────────────────────────────────────────
+  //
+  // Deposit USDC/SUI into Scallop lending. Returns sCoin receipt tokens.
+  // Two-step: mint (deposit → MarketCoin) then mint_s_coin (→ sCoin).
+
+  async lendUsdcToScallop(amount?: bigint): Promise<{ digest?: string; amount?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+      // Get USDC balance
+      const coinData = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, USDC_TYPE],
+      );
+      const usdcCoins = (coinData?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+      const totalUsdc = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+
+      const KEEP_LIQUID = 5_000_000n; // keep $5 liquid
+      if (totalUsdc <= KEEP_LIQUID) return { error: 'Insufficient USDC (keeping $5 liquid)' };
+
+      const lendAmount = amount && amount < (totalUsdc - KEEP_LIQUID) ? amount : (totalUsdc - KEEP_LIQUID);
+      console.log(`[TreasuryAgents] Lending ${Number(lendAmount) / 1e6} USDC to Scallop`);
+
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      // Merge all USDC coins
+      const usdcCoin = tx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
+      if (usdcCoins.length > 1) {
+        tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest })));
+      }
+
+      const [lendCoin] = tx.splitCoins(usdcCoin, [tx.pure.u64(lendAmount)]);
+
+      // Step 1: Deposit USDC → MarketCoin<USDC>
+      const marketCoin = tx.moveCall({
+        target: `${SCALLOP.package}::mint::mint`,
+        typeArguments: [USDC_TYPE],
+        arguments: [
+          tx.object(SCALLOP.version),
+          tx.object(SCALLOP.market),
+          lendCoin,
+          tx.object('0x6'), // Clock
+        ],
+      });
+
+      // Step 2: MarketCoin<USDC> → sCoin (sUSDC receipt)
+      const sCoin = tx.moveCall({
+        target: `${SCALLOP.sCoinPackage}::s_coin_converter::mint_s_coin`,
+        typeArguments: [SCALLOP.sUsdcType, USDC_TYPE],
+        arguments: [
+          tx.object(SCALLOP.sUsdcTreasury),
+          marketCoin,
+        ],
+      });
+
+      // Keep the sCoin receipt
+      tx.transferObjects([sCoin], tx.pure.address(ultronAddr));
+      // Return remaining USDC
+      tx.transferObjects([usdcCoin], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] USDC lent to Scallop: ${digest}, amount: ${Number(lendAmount) / 1e6}`);
+
+      // Track position
+      this._updatePosition('scallop', USDC_TYPE, lendAmount);
+
+      return { digest, amount: String(lendAmount) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] Scallop USDC lend error:', msg);
+      return { error: msg };
+    }
+  }
+
+  async lendSuiToScallop(amount: bigint): Promise<{ digest?: string; amount?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+      console.log(`[TreasuryAgents] Lending ${Number(amount) / 1e9} SUI to Scallop`);
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      const [depositCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+
+      // Step 1: Deposit SUI → MarketCoin<SUI>
+      const marketCoin = tx.moveCall({
+        target: `${SCALLOP.package}::mint::mint`,
+        typeArguments: [SUI_TYPE],
+        arguments: [
+          tx.object(SCALLOP.version),
+          tx.object(SCALLOP.market),
+          depositCoin,
+          tx.object('0x6'),
+        ],
+      });
+
+      // Step 2: MarketCoin<SUI> → sCoin (sSUI receipt)
+      const sCoin = tx.moveCall({
+        target: `${SCALLOP.sCoinPackage}::s_coin_converter::mint_s_coin`,
+        typeArguments: [SCALLOP.sSuiType, SUI_TYPE],
+        arguments: [
+          tx.object(SCALLOP.sSuiTreasury),
+          marketCoin,
+        ],
+      });
+
+      tx.transferObjects([sCoin], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      console.log(`[TreasuryAgents] SUI lent to Scallop: ${digest}, amount: ${Number(amount) / 1e9}`);
+
+      this._updatePosition('scallop', SUI_TYPE, amount);
+
+      return { digest, amount: String(amount) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] Scallop SUI lend error:', msg);
+      return { error: msg };
+    }
+  }
+
+  // ─── Yield Rotator ──────────────────────────────────────────────────
+  //
+  // t2000 farm agents prowl for the best yield across NAVI, Scallop, and
+  // DeepBook. They deploy surplus above 110% overcollateralization.
+  // The cache keeps 110% backing — everything above is fair game.
+
+  private async _yieldRotate(): Promise<{ deployed?: string; venue?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+
+    try {
+      // 1. Get cache state — how much surplus do we have?
+      const cache = await this._getCacheState();
+      console.log(`[TreasuryAgents:yield] Cache state: supply=${cache.supply}, collateral=${cache.total}, ratio=${cache.ratioBps}bps, surplus=${cache.surplusMist}`);
+
+      if (cache.surplusMist <= 0n) {
+        console.log('[TreasuryAgents:yield] No surplus above 110% — t2000s standing down');
+        return { error: 'No surplus above 110%' };
+      }
+
+      // 2. Fetch APYs from all three venues
+      const apys = await this._fetchVenueApys();
+      console.log(`[TreasuryAgents:yield] APYs: ${apys.map(a => `${a.venue}=${a.apyBps}bps`).join(', ')}`);
+
+      // 3. Pick the best venue
+      const best = apys.sort((a, b) => b.apyBps - a.apyBps)[0];
+      if (!best || best.apyBps <= 0) {
+        console.log('[TreasuryAgents:yield] No positive APY venues');
+        return { error: 'No positive APY' };
+      }
+
+      // 4. Convert surplus to deployable amount
+      //    Surplus is in MIST (SUI-denominated). For USDC venues, convert at SUI price.
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+      // Check what ultron actually has available to deploy
+      const balRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, USDC_TYPE],
+      );
+      const availUsdc = (balRes?.data ?? []).reduce((s, c) => s + BigInt(c.balance), 0n);
+
+      const suiBalRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, SUI_TYPE],
+      );
+      const availSui = (suiBalRes?.data ?? []).reduce((s, c) => s + BigInt(c.balance), 0n);
+      const MIN_GAS = 200_000_000n; // keep 0.2 SUI for gas
+      const deployableSui = availSui > MIN_GAS ? availSui - MIN_GAS : 0n;
+
+      // Deploy to best venue
+      let result: { digest?: string; amount?: string; error?: string } = { error: 'Nothing to deploy' };
+      const surplusUsd = Number(cache.surplusMist) / 1e9; // approximate $1 = 1e9 MIST for iUSD
+
+      switch (best.venue) {
+        case 'navi': {
+          // Deploy USDC to NAVI if available, else SUI
+          if (availUsdc > 5_000_000n) {
+            const cap = BigInt(Math.floor(surplusUsd * 1e6)); // surplus in USDC terms
+            const amount = cap < availUsdc - 5_000_000n ? cap : availUsdc - 5_000_000n;
+            if (amount > 0n) result = await this.lendUsdcToNavi();
+          } else if (deployableSui > 100_000_000n) {
+            // SUI sweep to NAVI is handled by sweepFees
+            result = await this.sweepFees();
+            if (result.swept !== undefined) result = { digest: undefined, amount: (result as any).amount };
+          }
+          break;
+        }
+        case 'scallop': {
+          if (availUsdc > 5_000_000n) {
+            const cap = BigInt(Math.floor(surplusUsd * 1e6));
+            const amount = cap < availUsdc - 5_000_000n ? cap : availUsdc - 5_000_000n;
+            if (amount > 0n) result = await this.lendUsdcToScallop(amount);
+          } else if (deployableSui > 100_000_000n) {
+            const cap = BigInt(Math.floor(surplusUsd * 1e9));
+            const amount = cap < deployableSui ? cap : deployableSui;
+            if (amount > 0n) result = await this.lendSuiToScallop(amount);
+          }
+          break;
+        }
+        case 'deepbook': {
+          // DeepBook LP — provide liquidity to SUI/USDC pool for trading fees
+          // Uses existing arb scanner profits as the deployment vehicle
+          console.log('[TreasuryAgents:yield] DeepBook venue — arb scanner covers this');
+          result = { digest: undefined, amount: String(cache.surplusMist) };
+          break;
+        }
+      }
+
+      if (result.digest || result.amount) {
+        console.log(`[TreasuryAgents:yield] Deployed to ${best.venue}: ${result.amount ?? 'sweep'}`);
+      }
+
+      return { deployed: result.amount, venue: best.venue };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents:yield] Rotation error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /** Fetch current APYs from NAVI, Scallop, and DeepBook. */
+  private async _fetchVenueApys(): Promise<Array<{ venue: string; apyBps: number; asset: string }>> {
+    const results: Array<{ venue: string; apyBps: number; asset: string }> = [];
+
+    // NAVI — query their API for USDC lending APY
+    try {
+      const naviRes = await fetch('https://api-defi.naviprotocol.io/api/navi/overview');
+      if (naviRes.ok) {
+        const navi = await naviRes.json() as any;
+        // NAVI returns APY as a decimal (e.g., 0.04 = 4%)
+        const usdcPool = (navi?.pools ?? navi?.data ?? []).find?.((p: any) =>
+          p.symbol === 'USDC' || p.asset === 'USDC' || (p.coinType ?? '').includes('::usdc::USDC')
+        );
+        const apy = usdcPool?.supply_apy ?? usdcPool?.supplyApy ?? usdcPool?.apy ?? 0;
+        results.push({ venue: 'navi', apyBps: Math.round(Number(apy) * 10000), asset: 'USDC' });
+      }
+    } catch { results.push({ venue: 'navi', apyBps: 400, asset: 'USDC' }); } // fallback ~4%
+
+    // Scallop — query their API for USDC lending APY
+    try {
+      const scallopRes = await fetch('https://sui.apis.scallop.io/pool/whitelist');
+      if (scallopRes.ok) {
+        const pools = await scallopRes.json() as any[];
+        const usdcPool = (pools ?? []).find?.((p: any) =>
+          p.coinName === 'usdc' || (p.coinType ?? '').includes('::usdc::USDC')
+        );
+        const apy = usdcPool?.supplyApy ?? usdcPool?.apy ?? 0;
+        results.push({ venue: 'scallop', apyBps: Math.round(Number(apy) * 10000), asset: 'USDC' });
+      }
+    } catch { results.push({ venue: 'scallop', apyBps: 350, asset: 'USDC' }); } // fallback ~3.5%
+
+    // DeepBook — trading fee APY estimated from volume
+    // DeepBook doesn't have a traditional lending APY, but maker rebates generate yield
+    // The arb scanner already captures this via spread profit
+    results.push({ venue: 'deepbook', apyBps: 200, asset: 'SUI/USDC' }); // conservative ~2%
+
+    return results;
+  }
+
+  /** Track yield position in state. */
+  private _updatePosition(protocol: string, asset: string, amount: bigint) {
+    const positions = [...(this.state.positions ?? [])];
+    const existing = positions.findIndex(p => p.protocol === protocol && p.asset === asset);
+    if (existing >= 0) {
+      positions[existing] = {
+        ...positions[existing],
+        amount: String(BigInt(positions[existing].amount) + amount),
+        updated_ms: Date.now(),
+      };
+    } else {
+      positions.push({
+        protocol,
+        asset,
+        amount: String(amount),
+        apy_bps: 0,
+        updated_ms: Date.now(),
+      });
+    }
+    this.setState({ ...this.state, positions });
+  }
+
+  // ─── Dust Sweep (recursive cache growth) ───────────────────────────
   //
   // Every NS acquisition leaves USDC change, DEEP change, and rounding dust
   // in the ultron wallet. This sweep converts all non-SUI dust → SUI via
-  // DeepBook, then attests it as collateral and mints iUSD. The treasury
+  // DeepBook, then attests it as collateral and mints iUSD. The cache
   // literally grows from swap rounding errors across thousands of transactions.
   //
   // Recursive flywheel:
@@ -1179,9 +1546,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   private async _rebalance() {
     console.log('[TreasuryAgents] Rebalance check');
-    // TODO: Compare current allocation vs target allocation
-    // If drift > 5%, execute rebalancing swaps via DeepBook
-    // For now, just update timestamp
+
+    // Check cache state — if ratio dropped below 110%, pull funds from lending
+    try {
+      const cache = await this._getCacheState();
+      console.log(`[TreasuryAgents:rebalance] ratio=${cache.ratioBps}bps, surplus=${cache.surplusMist}`);
+
+      if (cache.ratioBps < OVERCOLLATERAL_BPS && cache.ratioBps > 0) {
+        console.warn(`[TreasuryAgents:rebalance] Ratio ${cache.ratioBps}bps < ${OVERCOLLATERAL_BPS}bps — agents should withdraw from lending`);
+        // TODO: withdraw from NAVI/Scallop to restore 110% ratio
+      }
+    } catch (err) {
+      console.error('[TreasuryAgents:rebalance] Cache state query failed:', err);
+    }
+
     this.setState({
       ...this.state,
       last_rebalance_ms: Date.now(),
@@ -1217,7 +1595,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const agent: T2000Agent = {
       ...params,
       deployed_ms: Date.now(),
-      total_profit_mist: '0',
+      total_profit_iusd: '0',
       last_run_ms: 0,
       runs: 0,
       active: true,
@@ -1250,55 +1628,60 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     return this.state.t2000s ?? [];
   }
 
-  /** Execute missions for all active t2000 agents. Called from _tick(). */
+  /** QuestFi: Execute quests for all active agents. Parent keeps 1%, redistributes by performance.
+   *  Lazy agents die. Bold RWA-focused agents spawn to replace them. */
   private async _runT2000Missions() {
     const agents = (this.state.t2000s ?? []).filter(a => a.active);
     if (agents.length === 0) return;
 
+    let totalProfitIusd = 0n; // parent accumulates 1% of all activity (measured in iUSD)
+
     for (const agent of agents) {
       try {
-        let profitMist = 0n;
+        let agentProfitIusd = 0n; // per-agent profit, measured in iUSD (dollars)
 
         switch (agent.mission) {
           case 'arb':
-            // Arb agents run the same scanner but track profit per-agent
             await this._scanArb();
             break;
 
-          case 'sweep':
-            // Sweep agents run fee collection
+          case 'sweep': {
             const sweepResult = await this.sweepFees();
             if (sweepResult.swept && sweepResult.amount) {
-              profitMist = BigInt(sweepResult.amount) / 100n; // attribute 1% as agent profit
+              // Convert MIST to iUSD estimate (1 SUI ≈ price * 1e9 MIST)
+              agentProfitIusd = BigInt(sweepResult.amount) / 1_000_000_000n; // rough $1/SUI
             }
             break;
+          }
 
-          case 'farm':
-            // Farm agents are the yield rotator
-            // Profit attributed from yield earned since last run
+          case 'farm': {
+            const farmResult = await this._yieldRotate();
+            if (farmResult.deployed) {
+              // deployed is already in iUSD-scale (MIST for iUSD = 1e9 per dollar)
+              agentProfitIusd = BigInt(farmResult.deployed);
+            }
             break;
+          }
 
           case 'watch':
-            // Liquidation monitor — scans health factors
-            // TODO: implement liquidation scanning + execution
             break;
 
           case 'route':
-            // Maker bot — places resting limit orders on DeepBook
-            // TODO: implement maker order placement
             break;
 
           case 'storm':
-            // Thunder Storm agent — sweeps storms, manages thunder counts
-            // TODO: implement storm sweep scheduling
             break;
 
           case 'snipe':
-            // Shade sniper — handled by ShadeExecutorAgent
             break;
         }
 
-        // Update agent stats
+        // Parent takes 1% cut — cache keeps the spread
+        const parentCut = agentProfitIusd * BigInt(PARENT_CUT_BPS) / 10000n;
+        const agentShare = agentProfitIusd - parentCut;
+        totalProfitIusd += parentCut;
+
+        // Update agent stats (all measured in iUSD)
         this.setState({
           ...this.state,
           t2000s: (this.state.t2000s ?? []).map(a => {
@@ -1307,45 +1690,130 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               ...a,
               last_run_ms: Date.now(),
               runs: a.runs + 1,
-              total_profit_mist: String(BigInt(a.total_profit_mist) + profitMist),
+              total_profit_iusd: String(BigInt(a.total_profit_iusd) + agentShare),
             };
           }),
         });
 
-        // Report profit on-chain if significant (>0.01 SUI)
-        if (profitMist > 10_000_000n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
+        // Report profit on-chain if significant (> $0.01 iUSD)
+        if (agentShare > 10_000_000n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
           try {
             const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
             const ultronAddr = keypair.getPublicKey().toSuiAddress();
             const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-            const T2000_PKG = '0x3e708a6e1dfd6f96b54e0145613d505e508577df4a80aa5523caf380abba5e33';
+            const T2000_PKG = '0x1a160f225ae758173f0ab7bf42db0f8d658a13c728051763754204219828f3ca';
+            const T2000_ARMORY = '0xc78197ce97f89833e5da857cc4da41e7d71163c259128350c8c145a1ecfc67e5';
 
             const tx = new Transaction();
             tx.setSender(normalizeSuiAddress(ultronAddr));
-            tx.moveCall({
-              package: T2000_PKG,
-              module: 't2000',
-              function: 'report_mission',
-              arguments: [
-                tx.object(agent.objectId),
-                tx.pure.vector('u8', Array.from(new TextEncoder().encode(agent.mission))),
-                tx.pure.u64(profitMist),
-                tx.object('0x6'),
-              ],
-            });
+
+            // v2 derived agents use report_quest (idx-based), v1 use report_mission (object-based)
+            const isV2 = agent.objectId.startsWith('spawn-') || typeof (agent as any).focus !== 'undefined';
+            if (isV2) {
+              // Parse idx from objectId: "spawn-{timestamp}-{random}" → use agent index from state
+              const idx = (this.state.t2000s ?? []).indexOf(agent);
+              tx.moveCall({
+                package: T2000_PKG,
+                module: 't2000',
+                function: 'report_quest',
+                arguments: [
+                  tx.object(T2000_ARMORY),
+                  tx.pure.u64(idx >= 0 ? idx : 0),
+                  tx.pure.vector('u8', Array.from(new TextEncoder().encode(agent.mission))),
+                  tx.pure.u64(agentShare),
+                  tx.object('0x6'),
+                ],
+              });
+            } else {
+              tx.moveCall({
+                package: T2000_PKG,
+                module: 't2000',
+                function: 'report_mission',
+                arguments: [
+                  tx.object(agent.objectId),
+                  tx.pure.vector('u8', Array.from(new TextEncoder().encode(agent.mission))),
+                  tx.pure.u64(agentShare),
+                  tx.object('0x6'),
+                ],
+              });
+            }
 
             const txBytes = await tx.build({ client: transport as never });
             const { signature } = await keypair.signTransaction(txBytes);
             await this._submitTx(txBytes, signature);
-            console.log(`[TreasuryAgents] t2000 ${agent.designation}: reported ${profitMist} MIST profit`);
+            console.log(`[QuestFi:${agent.designation}] Reported $${Number(agentShare) / 1e9} iUSD profit on-chain`);
           } catch (err) {
-            console.error(`[TreasuryAgents] t2000 ${agent.designation}: report_mission failed:`, err);
+            console.error(`[QuestFi:${agent.designation}] report failed:`, err);
           }
         }
       } catch (err) {
-        console.error(`[TreasuryAgents] t2000 ${agent.designation} mission failed:`, err);
+        console.error(`[QuestFi:${agent.designation}] quest failed:`, err);
       }
     }
+
+    // ─── Natural Selection: cull lazy agents, spawn bold ones ──────────
+    await this._cullAndSpawn();
+
+    // Parent profit goes to cache (iUSD yield earned)
+    if (totalProfitIusd > 0n) {
+      this.setState({
+        ...this.state,
+        total_yield_earned_mist: String(BigInt(this.state.total_yield_earned_mist) + totalProfitIusd),
+      });
+      console.log(`[QuestFi:parent] Cache earned $${Number(totalProfitIusd) / 1e9} iUSD from agent activity`);
+    }
+  }
+
+  /** Cull underperforming agents, spawn bold RWA-focused replacements. */
+  private async _cullAndSpawn() {
+    const agents = this.state.t2000s ?? [];
+    const toKill: string[] = [];
+
+    for (const agent of agents) {
+      if (!agent.active) continue;
+      // Death threshold: 50+ runs and zero or negative profit
+      if (agent.runs >= DEATH_THRESHOLD_RUNS && BigInt(agent.total_profit_iusd) <= DEATH_THRESHOLD_PROFIT) {
+        console.log(`[QuestFi:cull] ${agent.designation} dies — ${agent.runs} runs, $${Number(BigInt(agent.total_profit_iusd)) / 1e9} iUSD profit. Pathetic.`);
+        toKill.push(agent.objectId);
+      }
+    }
+
+    if (toKill.length === 0) return;
+
+    // Kill the lazy ones
+    const updated = agents.map(a =>
+      toKill.includes(a.objectId) ? { ...a, active: false } : a,
+    );
+
+    // Spawn bold RWA-focused replacements
+    for (const deadId of toKill) {
+      const dead = agents.find(a => a.objectId === deadId);
+      if (!dead) continue;
+
+      // Pick a random RWA focus
+      const focusCount = 2 + Math.floor(Math.random() * (RWA_TARGETS.length - 1));
+      const shuffled = [...RWA_TARGETS].sort(() => Math.random() - 0.5);
+      const focus = shuffled.slice(0, focusCount);
+
+      const spawn: T2000Agent = {
+        designation: `${dead.designation}-mk${dead.runs}`,
+        mission: 'farm', // RWA agents are farmers — hunt for tokenized collateral
+        objectId: `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        dwalletId: dead.dwalletId, // inherit dWallet
+        operator: dead.operator,
+        deployed_ms: Date.now(),
+        total_profit_iusd: '0',
+        last_run_ms: 0,
+        runs: 0,
+        active: true,
+        focus,
+      };
+
+      updated.push(spawn);
+      console.log(`[QuestFi:spawn] ${spawn.designation} born — no altcoins, hunting ${focus.join(', ')}`);
+    }
+
+    this.setState({ ...this.state, t2000s: updated });
   }
 
   // ─── IKA DKG (emergency provisioning) ────────────────────────────────

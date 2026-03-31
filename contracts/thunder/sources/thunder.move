@@ -351,6 +351,239 @@ public fun signal_fee(storm: &Storm): u64 {
     storm.signal_fee_mist
 }
 
+// ─── v2: Derived Object Signals ─────────────────────────────────────
+//
+// Signals as dynamic_object_field children of Storm, keyed by
+// (recipient_address, counter). Each signal is a visible on-chain object
+// queryable via GraphQL by recipient. When the name re-points, new
+// signals go to the new address. IKA derived addresses get their own
+// signal namespace — sol@stables signals separate from sui@stables.
+
+/// A v2 signal — derived object under Storm, visible to GraphQL.
+public struct SignalV2 has key, store {
+    id: UID,
+    recipient: address,
+    name_hash: vector<u8>,
+    payload: vector<u8>,
+    aes_key: vector<u8>,
+    aes_nonce: vector<u8>,
+    timestamp_ms: u64,
+}
+
+/// Key for indexing signals per recipient under Storm.
+/// Storm[RecipientKey { recipient, idx }] → SignalV2
+public struct RecipientKey has copy, drop, store {
+    recipient: address,
+    idx: u64,
+}
+
+/// Per-recipient signal counter stored as dynamic_field on Storm.
+public struct RecipientCounter has store, drop {
+    count: u64,
+}
+
+/// Emitted when a v2 signal is created as a derived object.
+public struct SignaledV2 has copy, drop {
+    recipient: address,
+    name_hash: vector<u8>,
+    signal_id: address,
+    idx: u64,
+    timestamp_ms: u64,
+}
+
+/// Emitted when a v2 signal is claimed (decrypted + deleted).
+public struct ClaimedV2 has copy, drop {
+    recipient: address,
+    name_hash: vector<u8>,
+    signal_id: address,
+    timestamp_ms: u64,
+}
+
+/// Send a v2 signal — creates a derived object under Storm keyed by recipient.
+/// Permissionless with fee. Recipient address is the target (what the SuiNS name resolves to).
+entry fun signal_v2(
+    storm: &mut Storm,
+    recipient: address,
+    name_hash: vector<u8>,
+    payload: vector<u8>,
+    masked_aes_key: vector<u8>,
+    aes_nonce: vector<u8>,
+    fee: Coin<SUI>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(fee.value() >= storm.signal_fee_mist, EInsufficientFee);
+    let fee_amount = fee.value();
+    transfer::public_transfer(fee, storm.fee_treasury);
+    event::emit(FeePaid { amount: fee_amount, treasury: storm.fee_treasury });
+
+    let timestamp_ms = clock.timestamp_ms();
+
+    // Get or create recipient counter
+    let counter_key = recipient;
+    let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
+        let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
+        let i = counter.count;
+        counter.count = i + 1;
+        i
+    } else {
+        dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 });
+        0
+    };
+
+    let sig = SignalV2 {
+        id: object::new(ctx),
+        recipient,
+        name_hash,
+        payload,
+        aes_key: masked_aes_key,
+        aes_nonce,
+        timestamp_ms,
+    };
+
+    let signal_id = object::id_to_address(&object::id(&sig));
+    let key = RecipientKey { recipient, idx };
+
+    // Store as derived object under Storm — visible to GraphQL, queryable by recipient
+    sui::dynamic_object_field::add(&mut storm.id, key, sig);
+
+    event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
+}
+
+/// Send v2 signal with SUIAMI verification — no fee.
+entry fun signal_v2_private(
+    storm: &mut Storm,
+    recipient: address,
+    name_hash: vector<u8>,
+    payload: vector<u8>,
+    masked_aes_key: vector<u8>,
+    aes_nonce: vector<u8>,
+    suiami_msg: vector<u8>,
+    suiami_sig: vector<u8>,
+    sender_pubkey: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(
+        ed25519::ed25519_verify(&suiami_sig, &sender_pubkey, &suiami_msg),
+        EInvalidSuiami,
+    );
+
+    let timestamp_ms = clock.timestamp_ms();
+
+    let counter_key = recipient;
+    let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
+        let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
+        let i = counter.count;
+        counter.count = i + 1;
+        i
+    } else {
+        dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 });
+        0
+    };
+
+    let sig = SignalV2 {
+        id: object::new(ctx),
+        recipient,
+        name_hash,
+        payload,
+        aes_key: masked_aes_key,
+        aes_nonce,
+        timestamp_ms,
+    };
+
+    let signal_id = object::id_to_address(&object::id(&sig));
+    let key = RecipientKey { recipient, idx };
+    sui::dynamic_object_field::add(&mut storm.id, key, sig);
+
+    event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
+}
+
+/// Claim a v2 signal — NFT-gated decrypt + delete. Returns decryption keys via event.
+entry fun claim_v2(
+    storm: &mut Storm,
+    recipient: address,
+    idx: u64,
+    nft: &SuinsRegistration,
+    clock: &Clock,
+    _ctx: &TxContext,
+) {
+    // Verify the NFT resolves to the recipient address
+    let domain_bytes = nft.domain().to_string().into_bytes();
+    let computed_hash = keccak256(&domain_bytes);
+
+    let key = RecipientKey { recipient, idx };
+    let sig: SignalV2 = sui::dynamic_object_field::remove(&mut storm.id, key);
+    assert!(sig.name_hash == computed_hash, ENotOwner);
+
+    let nft_id_bytes = object::id(nft).to_bytes();
+    let mask = keccak256(&nft_id_bytes);
+    let real_key = xor_bytes(sig.aes_key, mask);
+    let signal_id = object::id_to_address(&object::id(&sig));
+
+    event::emit(Questfi {
+        name_hash: sig.name_hash,
+        payload: sig.payload,
+        aes_key: real_key,
+        aes_nonce: sig.aes_nonce,
+    });
+
+    event::emit(ClaimedV2 {
+        recipient,
+        name_hash: sig.name_hash,
+        signal_id,
+        timestamp_ms: clock.timestamp_ms(),
+    });
+
+    // Destroy the signal object
+    let SignalV2 { id, recipient: _, name_hash: _, payload: _, aes_key: _, aes_nonce: _, timestamp_ms: _ } = sig;
+    object::delete(id);
+}
+
+/// Claim v2 via relay — admin-gated, for ultron to relay on behalf of name owner.
+entry fun claim_v2_relay(
+    storm: &mut Storm,
+    recipient: address,
+    idx: u64,
+    nft_id: address,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert!(ctx.sender() == storm.admin, ENotAdmin);
+
+    let key = RecipientKey { recipient, idx };
+    let sig: SignalV2 = sui::dynamic_object_field::remove(&mut storm.id, key);
+
+    let nft_id_bytes = sui::address::to_bytes(nft_id);
+    let mask = keccak256(&nft_id_bytes);
+    let real_key = xor_bytes(sig.aes_key, mask);
+    let signal_id = object::id_to_address(&object::id(&sig));
+
+    event::emit(Questfi {
+        name_hash: sig.name_hash,
+        payload: sig.payload,
+        aes_key: real_key,
+        aes_nonce: sig.aes_nonce,
+    });
+
+    event::emit(ClaimedV2 {
+        recipient,
+        name_hash: sig.name_hash,
+        signal_id,
+        timestamp_ms: clock.timestamp_ms(),
+    });
+
+    let SignalV2 { id, recipient: _, name_hash: _, payload: _, aes_key: _, aes_nonce: _, timestamp_ms: _ } = sig;
+    object::delete(id);
+}
+
+/// Count v2 signals for a recipient.
+public fun count_v2(storm: &Storm, recipient: address): u64 {
+    if (!dynamic_field::exists_<address>(&storm.id, recipient)) return 0;
+    let counter: &RecipientCounter = dynamic_field::borrow(&storm.id, recipient);
+    counter.count
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 fun xor_bytes(data: vector<u8>, mask: vector<u8>): vector<u8> {

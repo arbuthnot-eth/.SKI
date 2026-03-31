@@ -679,6 +679,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       });
     }
 
+    // Swap ultron's USDC→SUI via DeepBook to refill cache for trades
+    if (url.pathname.endsWith('/refill-sui') || url.searchParams.has('refill-sui')) {
+      const result = await this._refillSui();
+      return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+    }
+
     if ((url.pathname.endsWith('/attest-collateral') || url.searchParams.has('attest-collateral')) && request.method === 'POST') {
       try {
         const params = await request.json() as { collateralValueMist: string };
@@ -3425,6 +3431,65 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     return { error: `Route "${route}" not supported. SUI: ${Number(realSuiBal) / 1e9}, needed: ${Number(totalNeeded) / 1e9}` };
+  }
+
+  /** Swap all USDC→SUI via DeepBook to refill ultron's SUI for cache trades. */
+  private async _refillSui(): Promise<{ digest?: string; suiReceived?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+      const coinData = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, USDC_TYPE],
+      );
+      const usdcCoins = (coinData?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+      const totalUsdc = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+      if (totalUsdc < 1_000_000n) return { error: `Only ${Number(totalUsdc) / 1e6} USDC — not enough to swap` };
+
+      console.log(`[Cache:refill] Swapping ${Number(totalUsdc) / 1e6} USDC → SUI`);
+
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+
+      // Merge all USDC
+      const usdcCoin = tx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
+      if (usdcCoins.length > 1) {
+        tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c =>
+          tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
+        ));
+      }
+
+      // Swap USDC→SUI via DeepBook
+      const DB_PKG = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+      const DB_SUI_USDC = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+      const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+
+      const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const dbResult = tx.moveCall({
+        target: `${DB_PKG}::pool::swap_exact_quote_for_base`,
+        typeArguments: [SUI_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_SUI_USDC, initialSharedVersion: 389750322, mutable: true }),
+          usdcCoin, zeroDEEP, tx.pure.u64(0), // min_out = 0 (accept any)
+          tx.object('0x6'),
+        ],
+      });
+
+      // Merge SUI result into gas, return USDC change + DEEP dust
+      tx.mergeCoins(tx.gas, [dbResult[0]]);
+      tx.transferObjects([dbResult[1], dbResult[2]], tx.pure.address(ultronAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+
+      console.log(`[Cache:refill] USDC→SUI swap: ${digest}`);
+      return { digest, suiReceived: `~${(Number(totalUsdc) / 1e6 / 0.87).toFixed(2)} SUI` };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /** Ultron sends SUI to buyer in exchange for iUSD. Buyer trades for the name themselves.

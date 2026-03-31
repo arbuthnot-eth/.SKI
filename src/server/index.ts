@@ -846,6 +846,21 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
+// ── Refill ultron SUI cache (swap USDC→SUI) ─────────────────────────
+app.post('/api/cache/refill-sui', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?refill-sui', {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    return c.json(await res.json() as any, res.status as any);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── /api/infer — Intent inference engine ────────────────────────────
 // Reads real on-chain balances, determines best action + payment route,
 // builds TX server-side. AI glue layer wraps this later.

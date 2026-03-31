@@ -991,16 +991,6 @@ app.post('/api/infer', async (c) => {
       if (doJson?.txBase64) {
         txBase64 = doJson.txBase64;
         txDescription = doJson.description;
-      } else if (doJson?.digest) {
-        // Ultron bought directly — no user signature needed
-        return c.json({
-          label: name, address,
-          balances: { sui: { mist: String(suiBal), usd: suiUsd }, usdc: { raw: String(usdcBal), usd: usdcUsd }, iusd: { raw: String(iusdBal), usd: iusdUsd }, total_usd: totalUsd },
-          suiPrice, nameStatus: 'purchased', listing, actions,
-          recommended: { ...best, digest: doJson.digest },
-          tx: null,
-          purchased: { digest: doJson.digest, description: doJson.description, by: 'ultron' },
-        });
       } else if (doJson?.error) {
         best.reason = doJson.error;
       }

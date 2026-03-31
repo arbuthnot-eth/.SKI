@@ -9920,49 +9920,81 @@ function bindEvents() {
             const bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
             bytes.tx = tx;
             await signAndExecuteTransaction(bytes);
-            showToast('\u26a1 Tokens sent to cache — agents routing to iUSD');
+            showToast('\u26a1 Tokens sent to cache — ultron sweeping NS\u2192USDC\u2026');
+            // Initiate sweep + wait for it
             await fetch('/api/cache/initiate');
+            // Brief pause for sweep to complete
+            await new Promise(r => setTimeout(r, 3000));
+          }
+
+          // Attest + mint iUSD — auto-calculate max mintable from treasury state
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const walletAddr = normalizeSuiAddress(ws.address);
+
+          // Fetch treasury state to calculate max mintable
+          const treasuryGql = await fetch('https://graphql.mainnet.sui.io/graphql', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: '{ object(address: "0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb") { asMoveObject { contents { json } } } }' }),
+          });
+          const treasuryData = await treasuryGql.json() as any;
+          const tState = treasuryData?.data?.object?.asMoveObject?.contents?.json;
+
+          // Also attest new collateral from SUI balance (80%, keep 20% gas)
+          const suiPrice = suiPriceCache?.price ?? 0.87;
+          const suiBalMist = BigInt(Math.floor((app.sui || 0) * 1e9));
+          const suiCollateral = suiBalMist * 80n / 100n;
+          const totalNewCollateral = suiCollateral > 50_000_000n ? suiCollateral : 0n;
+
+          if (totalNewCollateral > 0n) {
+            showToast('\ud83c\udf0d Attesting SUI collateral\u2026');
+            const attestRes = await fetch('/api/iusd/attest', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ collateralValueMist: String(totalNewCollateral) }),
+            });
+            const attestResult = await attestRes.json() as { digest?: string; error?: string };
+            if (!attestRes.ok || attestResult.error) console.warn('Attest:', attestResult.error);
+          }
+
+          // Re-fetch treasury after attest
+          const tGql2 = await fetch('https://graphql.mainnet.sui.io/graphql', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: '{ object(address: "0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb") { asMoveObject { contents { json } } } }' }),
+          });
+          const tData2 = await tGql2.json() as any;
+          const t2 = tData2?.data?.object?.asMoveObject?.contents?.json ?? tState;
+
+          const seniorMist = BigInt(t2?.senior_value_mist ?? '0');
+          const juniorMist = BigInt(t2?.junior_value_mist ?? '0');
+          const totalCollateral = seniorMist + juniorMist;
+          const currentSupply = BigInt(t2?.total_minted ?? '0') - BigInt(t2?.total_burned ?? '0');
+          // Max mint at 150% ratio: collateral * 10000 / 15000 - currentSupply
+          const maxMint = totalCollateral * 10000n / 15000n - currentSupply;
+          // Leave 5% buffer
+          const mintAmount = maxMint * 95n / 100n;
+
+          if (mintAmount <= 0n) {
+            showToast('Collateral fully utilized — no iUSD to mint');
             refreshPortfolio(true);
             return;
           }
 
-          // Fallback: SUI-only route — attest collateral + mint iUSD (keep gas)
-          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
-          const walletAddr = normalizeSuiAddress(ws.address);
-          const suiPrice = suiPriceCache?.price ?? 0.87;
-          const suiBalMist = BigInt(Math.floor((app.sui || 0) * 1e9));
-          const swapAmount = Number(suiBalMist * 80n / 100n); // 80% — keep 20% for gas
-          if (swapAmount < 10_000_000) { showToast('Insufficient balance'); return; }
-          const collateralValueMist = BigInt(swapAmount);
-          const usdValue = Math.floor((swapAmount / 1e9) * suiPrice * 1e6);
-          const mintAmount = BigInt(Math.floor(usdValue / 1.5));
-          if (mintAmount <= 0n) { showToast('Amount too small'); return; }
-
-          // Step 1: Keeper attests collateral (server-side, oracle-gated)
-          showToast('\ud83c\udf0d Attesting collateral...');
-          const attestRes = await fetch('/api/iusd/attest', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ collateralValueMist: String(collateralValueMist) }),
-          });
-          const attestResult = await attestRes.json() as { digest?: string; error?: string };
-          if (!attestRes.ok || attestResult.error) throw new Error(attestResult.error || 'Attest failed');
-
-          // Step 2: Server-side mint via ultron (owns the TreasuryCap)
-          showToast('\ud83c\udf0d Minting iUSD via ultron...');
+          showToast(`\ud83c\udf0d Minting ${(Number(mintAmount) / 1e9).toFixed(2)} iUSD\u2026`);
           const mintRes = await fetch('/api/iusd/mint', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               recipient: walletAddr,
-              collateralValueMist: String(collateralValueMist),
+              collateralValueMist: String(totalCollateral),
               mintAmount: String(mintAmount),
             }),
           });
           const mintResult = await mintRes.json() as { digest2?: string; minted?: string; error?: string };
-          if (!mintRes.ok || mintResult.error) throw new Error(mintResult.error || 'Mint failed');
-
-          showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e9).toFixed(2)} iUSD minted`);
+          if (mintRes.ok && !mintResult.error) {
+            showToast(`\u2728 ${(Number(mintAmount) / 1e9).toFixed(2)} iUSD minted`);
+          } else {
+            showToast(mintResult.error || 'Mint failed');
+          }
           refreshPortfolio(true);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Mint failed';

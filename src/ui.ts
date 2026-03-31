@@ -9251,12 +9251,16 @@ function bindEvents() {
             // Show SOL deposit QR on the overlay
             _showSolQr(_mintCost);
           }
+        } else if (nsAvail === 'grace') {
+          _idleActionBtn.textContent = 'Shade';
+          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--shade';
+          _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
+          _idleActionBtn.disabled = false;
         } else if (nsAvail === 'taken' && !isOwned) {
           _idleActionBtn.textContent = 'Thunder';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
           _idleActionBtn.title = `Thunder \u2014 encrypt a signal to ${label}.sui`;
           _idleActionBtn.disabled = false;
-
         } else if (isOwned) {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
@@ -9728,6 +9732,14 @@ function bindEvents() {
             _idleActionBtn!.textContent = 'Quest';
             _idleActionBtn!.disabled = false;
           }
+        } else if (btnText === 'Shade') {
+          // Open SKI menu and trigger the Shade flow (lock funds for grace expiry)
+          e.stopPropagation();
+          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
+          setTimeout(() => {
+            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
+          }, 500);
         } else if (btnText === 'Storm' || btnText === 'Thunder') {
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
           if (convoEl && !convoEl.hasAttribute('hidden')) {

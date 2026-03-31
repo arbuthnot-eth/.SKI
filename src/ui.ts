@@ -9917,30 +9917,21 @@ function bindEvents() {
           const attestResult = await attestRes.json() as { digest?: string; error?: string };
           if (!attestRes.ok || attestResult.error) throw new Error(attestResult.error || 'Attest failed');
 
-          // Step 2: WaaP wallet signs mint (wallet owns the TreasuryCap)
-          showToast('\ud83c\udf0d Minting iUSD...');
-          const { Transaction } = await import('@mysten/sui/transactions');
-          const IUSD_PKG = '0xf62ecf124076dac335549f28ad74620da2538a89f0ab27e4b9dc113638565515';
-          const TREASURY = '0x7a96006ec866b2356882b18783d6bc9e0277e6e16ed91e00404035a2aace6895';
-          const TREASURY_CAP = '0x868d560ab460e416ced3d348dc62e808557fb9f516cecc5dae9f914f6466bc05';
-          const mintTx = new Transaction();
-          mintTx.setSender(walletAddr);
-          mintTx.moveCall({
-            package: IUSD_PKG,
-            module: 'iusd',
-            function: 'mint_and_transfer',
-            arguments: [
-              mintTx.object(TREASURY_CAP),
-              mintTx.object(TREASURY),
-              mintTx.pure.u64(mintAmount),
-              mintTx.pure.address(walletAddr),
-            ],
+          // Step 2: Server-side mint via ultron (owns the TreasuryCap)
+          showToast('\ud83c\udf0d Minting iUSD via ultron...');
+          const mintRes = await fetch('/api/iusd/mint', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              recipient: walletAddr,
+              collateralValueMist: String(collateralValueMist),
+              mintAmount: String(mintAmount),
+            }),
           });
-          const mintBytes = await mintTx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
-          mintBytes.tx = mintTx;
-          await signAndExecuteTransaction(mintBytes);
+          const mintResult = await mintRes.json() as { digest2?: string; minted?: string; error?: string };
+          if (!mintRes.ok || mintResult.error) throw new Error(mintResult.error || 'Mint failed');
 
-          showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e6).toFixed(2)} iUSD minted`);
+          showToast(`\ud83c\udf0d ${(Number(mintAmount) / 1e9).toFixed(2)} iUSD minted`);
           refreshPortfolio(true);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Mint failed';

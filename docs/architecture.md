@@ -322,7 +322,7 @@ The idle overlay is a Prism player.
 
 **Prism** (to be deployed) — The canonical transaction envelope. Every SKI action produces a Prism object on-chain. Fields: `intent` (Seal-encrypted action type), `sender` (encrypted), `recipient` (name_hash or address), `timestamp` (encrypted), `amount` (steganographic — real value + intent tag in last 4 digits), `payload_blob_id` (Walrus blob with partial encryption), `proof` (optional Thunderbun ZK bytes), `gate` (optional Thunder signal requirement for claiming), `chain` (sui/btc/eth/sol). Prisms are derived objects under the recipient's address — queryable via GraphQL, claimable by decrypting with Seal. The idle overlay is a Prism player.
 
-**iUSD** (`0x2c5653...` v1) — Yield-bearing stablecoin backed by diversified collateral. 9 decimals for steganographic encoding. Mint enforces 150% minimum collateral ratio. Senior tranche must cover 100% of supply (peg floor). Revenue from protocol fees (Thunder, Shade, swaps) flows to the Treasury. Oracle and minter roles gated to ultron.
+**iUSD** (`0x2c5653...` v1) — Yield-bearing stablecoin backed by diversified collateral. iusd.sui / iusd.eth are the canonical references. 9 decimals for steganographic encoding. Mint enforces 150% minimum collateral ratio. Senior tranche must cover 100% of supply (peg floor). Revenue from protocol fees (Thunder, Shade, swaps) flows to the Treasury. Oracle and minter roles gated to ultron.
 
 **Thunder** (`0x1171e0...` v2 Zapdos) — Encrypted signals between SuiNS identities. Storm is the shared infrastructure object. v1: signals as dynamic_field vectors per name_hash. v2: SignalV2 as dynamic_object_field derived objects keyed by (recipient_address, idx) — each signal is a visible on-chain object queryable via GraphQL. AES keys XOR-masked with recipient's NFT ID. SUIAMI-verified signals are free (no fee).
 
@@ -333,6 +333,8 @@ The idle overlay is a Prism player.
 **t2000** (`0x1a160f...` v2 Arceus) — QuestFi agent deployment contract. v1: agents as owned objects. v2: agents as derived objects under Armory via dynamic_object_field. `deploy_quest` creates agents, `report_quest` logs profit with 1% parent cut, `cull` kills underperformers, `spawn_rwa` creates RWA-focused replacements, `distribute` sends accumulated parent cache proportional to lifetime profit.
 
 **SUIAMI** (`0xef4fa3...` v2) — Cross-chain identity resolver. Maps SuiNS names to BTC/ETH/SOL addresses via IKA dWallets. The Roster is on-chain. The SUIAMI NFT is the universal access pass — unlocks all regional content, bypasses location gates, proves humanity.
+
+**Rumble** — IKA dWallet provisioning. One action: DKG for secp256k1 (BTC/ETH) + ed25519 (SOL/SUI). Provisions all chain addresses, writes to SUIAMI Roster and SuiNS dynamic fields. `sol@squids` resolves to the Solana address record on squids.sui. `eth@squids` → Ethereum. `btc@squids` → Bitcoin. The SUIAMI button triggers Rumble for owned names.
 
 **Balance Seal** (`0x1cf9ca...` v1 Lugia) — Seal access control for encrypted balance cards. `seal_approve` verifies the requester owns the SuiNS NFT referenced in the encrypted ID. `store_sealed_balance` lets ultron store encrypted blobs. BalancePolicy shared object maps name hashes to encrypted balance data.
 
@@ -434,3 +436,29 @@ entry fun sweep_prism(
 ```
 
 **Dust Sweep** — Converts USDC/DEEP rounding dust from name acquisitions into SUI, attests as collateral, mints iUSD. The cache literally grows from swap rounding errors across thousands of transactions. Recursive flywheel.
+
+### iUSD Lifecycle
+
+| Action | What happens |
+|--------|-------------|
+| **Mint** | Collateral attested by Sibyl → iUSD minted to recipient. 150% min ratio, senior tranche covers 100% peg. |
+| **Arson** | Burn iUSD → sends coin object or balance to IKA address to be swept and burned. Collateral released. |
+| **Attest** | Oracle (ultron) updates collateral value per asset per chain. Cross-chain via IKA dWallet verification. |
+| **Quest** | Agents compete to fill — swap collateral → NS → register name. Winner keeps the spread in iUSD. |
+| **Revenue** | Thunder fees, Shade escrow cuts, swap spreads → deposit_revenue → SUI balance in Treasury. |
+| **Tranche** | Senior (peg floor) absorbs losses last. Junior (growth) absorbs first. Cascade protects holders. |
+
+### Solana Integration
+
+`/api/infer` extends to Solana. Same input, same output, different chain.
+
+| Component | Solana equivalent |
+|-----------|-------------------|
+| **Kamino** | #1 lending platform. iUSD should be listed ASAP. klend-sdk / REST API. |
+| **Helius** | Primary Solana RPC. Webhooks for deposit detection. DAS for NFT queries. |
+| **P-tokens** | 95% CU savings on all Solana token transfers. |
+| **xStocks (TSLAx)** | Tokenized equities as iUSD collateral via Backed Finance. |
+| **IKA dWallets** | Sign Solana TXs from Sui. ultron.sol is the Solana keeper. |
+| **Sibyl** | Oracle attests Solana-side collateral values (SOL, TSLAx, Kamino positions). |
+
+Flow: User intent on Solana → /api/infer reads balances via Helius → agents deliberate → build Solana TX via Kamino SDK → sign via IKA ed25519 → submit via Helius.

@@ -414,7 +414,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         return new Response(JSON.stringify({
           // Primary: Sui Prism (USDC on Sui)
           prismUri,
-          qr: `https://api.qrserver.com/v1/create-qr-code/?size=256x256&color=ffffff&bgcolor=4da2ff&data=${encodeURIComponent(prismUri)}`,
+          qr: `https://api.qrserver.com/v1/create-qr-code/?size=256x256&color=ffffff&bgcolor=9945FF&data=${encodeURIComponent(prismUri)}`,
           usdcAmount: usdcTagged,
           iusdAmount: iusdTaggedStr,
           tag,

@@ -3642,12 +3642,12 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-quest-qr-close:hover { color: #fff; }
 
-/* Inline SOL QR on idle overlay — floats above the card */
+/* Inline SOL QR on idle overlay */
 .ski-idle-sol-qr {
   position: absolute;
-  top: 50%;
+  bottom: 80px;
   left: 50%;
-  transform: translate(-50%, -55%);
+  transform: translateX(-50%);
   z-index: 10;
   pointer-events: auto;
 }
@@ -3656,39 +3656,29 @@ a.ski-idle-bubble-name:hover {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
-  background: rgba(10, 10, 15, 0.8);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(77, 162, 255, 0.3);
-  border-radius: 14px;
-  padding: 10px 14px 8px;
+  gap: 4px;
+  background: rgba(10, 10, 15, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 255, 163, 0.2);
+  border-radius: 12px;
+  padding: 8px 10px 6px;
 }
 .ski-idle-sol-qr-img {
-  border-radius: 10px;
+  border-radius: 8px;
   display: block;
-  opacity: 0.9;
+  opacity: 0.85;
   transition: opacity 0.2s, transform 0.2s;
 }
-.ski-idle-sol-qr-img:hover { opacity: 1; transform: scale(1.03); }
-.ski-idle-sol-qr-label {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-}
-.ski-idle-sol-qr-route {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
-  font-size: 0.6rem;
-  font-weight: 600;
-  color: rgba(77, 162, 255, 0.5);
-  letter-spacing: 0.04em;
-}
+.ski-idle-sol-qr-img:hover { opacity: 1; transform: scale(1.04); }
 .ski-idle-sol-qr-amt {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.8);
+  background: linear-gradient(135deg, #00FFA3, #DC1FFF);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .ski-idle-bottom-row {

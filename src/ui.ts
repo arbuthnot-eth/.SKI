@@ -10395,15 +10395,13 @@ function bindEvents() {
           if (!d.qr) return;
           _solQrShown = ws.address;
           const solSvgSmall = `<svg viewBox="0 0 40 40" width="18" height="18" style="vertical-align:middle"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sqr1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sqr2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sqr3)"/></g><defs><linearGradient id="sqr1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sqr2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sqr3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
+          const estUsd = d.amountUsd ?? (d.solAmount && d.solPrice ? d.solAmount * d.solPrice : 7.77);
           qrEl.innerHTML = `
             <div class="ski-idle-sol-qr-inner">
-              <a href="${esc(d.prismUri || '')}" title="SOL \u2192 iUSD \u2192 NS">
-                <img src="${esc(d.qr)}" alt="Prism" width="100" height="100" class="ski-idle-sol-qr-img">
+              <a href="${esc(d.prismUri || '')}" title="Pay with Solana">
+                <img src="${esc(d.qr)}" alt="Prism" width="80" height="80" class="ski-idle-sol-qr-img">
               </a>
-              <div class="ski-idle-sol-qr-label">
-                <span class="ski-idle-sol-qr-route">${solSvgSmall} SOL \u2192 iUSD \u2192 NS</span>
-                <span class="ski-idle-sol-qr-amt">${d.solAmount ? d.solAmount.toFixed(4) + ' SOL' : esc(d.usdcAmount || '') + ' USDC'}</span>
-              </div>
+              <span class="ski-idle-sol-qr-amt">$${typeof estUsd === 'number' ? estUsd.toFixed(2) : '7.77'}</span>
             </div>
           `;
           qrEl.removeAttribute('hidden');

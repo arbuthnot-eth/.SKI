@@ -685,6 +685,18 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
     }
 
+    // ── Manual yield rotate trigger ──
+    if (url.pathname.endsWith('/yield-rotate') || url.searchParams.has('yield-rotate')) {
+      const result = await this._yieldRotate();
+      return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // ── Manual sweep trigger ──
+    if (url.pathname.endsWith('/sweep-fees') || url.searchParams.has('sweep-fees')) {
+      const result = await this.sweepFees();
+      return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+    }
+
     // ── iUSD→SUI/USDC swap: ultron sends output, returns TX for user to send iUSD ──
     if ((url.pathname.endsWith('/iusd-swap') || url.searchParams.has('iusd-swap')) && request.method === 'POST') {
       try {
@@ -823,8 +835,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       await this._sweepNsToIusd();
 
       // Every 15 min: sweep dust, rotate yield across NAVI/Scallop/DeepBook
-      const FIFTEEN_MIN = 15 * 60 * 1000;
-      if (now - this.state.last_sweep_ms > FIFTEEN_MIN) {
+      const YIELD_INTERVAL = 30 * 1000; // 30s for testing — restore to 15 * 60 * 1000
+      if (now - this.state.last_sweep_ms > YIELD_INTERVAL) {
         await this.sweepDust(); // Convert USDC/DEEP dust → SUI → attest → mint iUSD
         await this._yieldRotate(); // Deploy surplus above 110% to best venue
         this.setState({ ...this.state, last_sweep_ms: Date.now() });
@@ -1018,48 +1030,26 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-      const treasuryAddr = keypair.getPublicKey().toSuiAddress();
+      const treasuryAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
-      // Check treasury SUI balance
-      const balResult = await transport.query({
-        query: `query { address(address: "${treasuryAddr}") { balance(type: "${SUI_TYPE}") { totalBalance } } }`,
-      });
-      const bal = BigInt(
-        (balResult.data as any)?.address?.balance?.totalBalance ?? '0',
+      // Check treasury SUI balance via JSON-RPC (reliable)
+      const suiCoinsRes = await raceJsonRpc<{ data: Array<{ balance: string }> }>(
+        'suix_getCoins', [treasuryAddr, SUI_TYPE],
       );
+      const bal = (suiCoinsRes?.data ?? []).reduce((s, c) => s + BigInt(c.balance), 0n);
 
-      // Keep 0.1 SUI for gas, sweep the rest into NAVI lending
-      const MIN_KEEP = 100_000_000n; // 0.1 SUI
-      if (bal <= MIN_KEEP) return { swept: false };
+      // Keep 30 SUI liquid for trades + gas, sweep the rest
+      const KEEP_LIQUID = 30_000_000_000n; // 30 SUI
+      if (bal <= KEEP_LIQUID) return { swept: false };
+      const sweepAmount = bal - KEEP_LIQUID;
+      console.log(`[TreasuryAgents] Sweeping ${Number(sweepAmount) / 1e9} SUI into Scallop`);
 
-      const sweepAmount = bal - MIN_KEEP;
-      console.log(`[TreasuryAgents] Sweeping ${sweepAmount} MIST into NAVI`);
+      // Deposit SUI into Scallop lending (NAVI version-gated, using Scallop instead)
+      const lendResult = await this.lendSuiToScallop(sweepAmount);
+      if (lendResult.error) return { swept: false, error: lendResult.error };
 
-      // Build deposit-to-NAVI PTB
-      const tx = new Transaction();
-      tx.setSender(normalizeSuiAddress(treasuryAddr));
-
-      const [depositCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(sweepAmount)]);
-
-      // Deposit SUI into NAVI lending pool
-      tx.moveCall({
-        target: `${NAVI.package}::incentive_v3::entry_deposit`,
-        typeArguments: [SUI_TYPE],
-        arguments: [
-          tx.object(NAVI.storage),
-          tx.pure.u8(0), // SUI pool ID
-          depositCoin,
-          tx.object(NAVI.incentiveV2),
-          tx.object(NAVI.incentiveV3),
-        ],
-      });
-
-      const txBytes = await tx.build({ client: transport as never });
-      const { signature } = await keypair.signTransaction(txBytes);
-      const digest = await this._submitTx(txBytes, signature);
-
-      console.log(`[TreasuryAgents] Swept ${sweepAmount} MIST to NAVI: ${digest}`);
+      console.log(`[TreasuryAgents] Swept ${Number(sweepAmount) / 1e9} SUI to Scallop: ${lendResult.digest}`);
 
       this.setState({
         ...this.state,
@@ -1068,8 +1058,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       return { swept: true, amount: String(sweepAmount) };
     } catch (err) {
-      console.error('[TreasuryAgents] Sweep error:', err);
-      return { swept: false };
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[TreasuryAgents] Sweep error:', msg);
+      return { swept: false, error: msg };
     }
   }
 

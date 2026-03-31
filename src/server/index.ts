@@ -897,6 +897,26 @@ app.get('/api/cache/state', async (c) => {
   }
 });
 
+// ── Manual yield rotate ──────────────────────────────────────────────
+app.post('/api/cache/yield-rotate', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?yield-rotate', { headers: { 'x-partykit-room': 'treasury' } }));
+    return c.json(await res.json() as any, res.status as any);
+  } catch (err) { return c.json({ error: String(err) }, 500); }
+});
+
+// ── Manual sweep fees ────────────────────────────────────────────────
+app.post('/api/cache/sweep-fees', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?sweep-fees', { headers: { 'x-partykit-room': 'treasury' } }));
+    return c.json(await res.json() as any, res.status as any);
+  } catch (err) { return c.json({ error: String(err) }, 500); }
+});
+
 // ── Refill ultron SUI cache (swap USDC→SUI) ─────────────────────────
 app.post('/api/cache/refill-sui', async (c) => {
   try {

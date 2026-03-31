@@ -9225,10 +9225,20 @@ function bindEvents() {
             const totalSui = suiAmt + fee;
             const usdVal = suiPriceCache ? (totalSui * suiPriceCache.price) : null;
             const priceStr = usdVal != null ? `$${usdVal.toFixed(2)}` : `${totalSui.toFixed(2)} SUI`;
-            _idleActionBtn.textContent = 'TRADE';
-            _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--trade';
-            _idleActionBtn.title = `Trade ${priceStr} for ${label}.sui`;
-            _idleActionBtn.disabled = false;
+            // Check if user can afford the listing
+            const _tradeSpendable = app.sui * (suiPriceCache?.price ?? 0);
+            if (usdVal != null && _tradeSpendable < usdVal) {
+              // Can't afford — show Quest with the trade price
+              _idleActionBtn.textContent = 'Quest';
+              _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--quest-bounty';
+              _idleActionBtn.title = `Need ${priceStr} — Quest for ${label}.sui`;
+              _idleActionBtn.disabled = false;
+            } else {
+              _idleActionBtn.textContent = 'TRADE';
+              _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--trade';
+              _idleActionBtn.title = `Trade ${priceStr} for ${label}.sui`;
+              _idleActionBtn.disabled = false;
+            }
           }
         } else if (nsAvail === 'available') {
           // Check if user can actually afford it with spendable tokens (SUI + USDC + NS)

@@ -9733,10 +9733,18 @@ function bindEvents() {
             _idleActionBtn!.disabled = false;
           }
         } else if (btnText === 'Shade') {
-          // Open SKI menu and trigger the Shade flow (lock funds for grace expiry)
+          // Shade: mint iUSD rounded up to cover registration + 10% buffer.
+          // User holds the iUSD and can spend it, but spending below the Shade threshold
+          // liquidates the Shade order (name won't be registered at grace expiry).
           e.stopPropagation();
+          const shadeCost = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100; // round up to cent
+          showToast(`\u26a1 Shade ${label}.sui — minting $${shadeCost.toFixed(2)} iUSD to hold`);
+          // Pre-fill the amount and open the Shade flow
+          pendingSendAmount = String(shadeCost);
           if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
           setTimeout(() => {
+            const amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+            if (amtInput) { amtInput.value = String(shadeCost); amtInput.dispatchEvent(new Event('input', { bubbles: true })); }
             const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
             if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
           }, 500);

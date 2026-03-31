@@ -6774,7 +6774,8 @@ function renderSkiMenu() {
         if (infer.tx?.base64) {
           const bytes = Uint8Array.from(atob(infer.tx.base64), ch => ch.charCodeAt(0));
           if (btn) btn.textContent = '\u270f';
-          const { digest } = isSponsorActive() ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
+          const _isWaaP = /waap/i.test(getState().walletName || '');
+            const { digest } = (!_isWaaP && isSponsorActive()) ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
           nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
           app.suinsName = app.suinsName || `${label}.sui`;
           showToast(`${label}.sui purchased \u2713`);
@@ -9623,7 +9624,8 @@ function bindEvents() {
               _idleActionBtn!.textContent = '\u270f';
               const b64 = infer.tx.base64;
               const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-              const { digest } = isSponsorActive() ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
+              const _isWaaP = /waap/i.test(getState().walletName || '');
+            const { digest } = (!_isWaaP && isSponsorActive()) ? await signAndExecuteSponsoredTx(bytes) : await signAndExecuteTransaction(bytes);
               nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
               app.suinsName = app.suinsName || `${label}.sui`;
               showToast(`${label}.sui purchased \u2713`);

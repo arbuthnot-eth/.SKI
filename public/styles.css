@@ -3345,16 +3345,21 @@ body {
 .ski-idle-card-listing-val { color: #fff; }
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {
-  position: relative;
-  width: 100%;
+  position: absolute;
+  bottom: 60px;
+  left: 0;
+  right: 0;
   max-height: 40vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 3px;
   padding: 6px 8px 4px;
-  z-index: 2;
-  margin-top: 4px;
+  z-index: 4;
+  background: rgba(10, 10, 15, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 6px;
   box-sizing: border-box;
 }
 .ski-idle-thunder-convo[hidden] { display: none; }

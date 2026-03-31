@@ -2997,31 +2997,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
 
       // Fetch DEEP coin objects to build the fee payment
-      const deepCoinsRes = await transport.query({
-        query: `query {
-          address(address: "${ultronAddr}") {
-            coins(type: "${TreasuryAgents.DB_DEEP_TYPE}") {
-              nodes {
-                address
-                version
-                digest
-                contents { json }
-              }
-            }
-          }
-        }`,
-      });
-      const deepCoins = (deepCoinsRes.data as any)?.address?.coins?.nodes ?? [];
+      const deepCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, TreasuryAgents.DB_DEEP_TYPE],
+      );
+      const deepCoins = (deepCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
       if (!deepCoins.length) {
-        return { error: 'No DEEP coin objects found despite balance check passing' };
+        return { error: 'No DEEP coin objects found' };
       }
 
       const tx = new Transaction();
       tx.setSender(ultronAddr);
 
       // Build DEEP coin: merge all DEEP coins into one, then split exact fee
-      const deepRefs = deepCoins.map((c: any) => ({
-        objectId: c.address,
+      const deepRefs = deepCoins.map(c => ({
+        objectId: c.coinObjectId,
         version: String(c.version),
         digest: c.digest,
       }));

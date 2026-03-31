@@ -846,6 +846,187 @@ app.post('/api/iusd/mint', async (c) => {
   }
 });
 
+// ── /api/infer — Intent inference engine ────────────────────────────
+// Reads real on-chain balances, determines best action + payment route,
+// builds TX server-side. AI glue layer wraps this later.
+app.post('/api/infer', async (c) => {
+  try {
+    const { label, address } = await c.req.json() as { label: string; address: string };
+    if (!label || !address) return c.json({ error: 'Missing label or address' }, 400);
+
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+    const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+    const SUI_TYPE = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+
+    // ── Step 1: Read ALL on-chain balances ──────────────────────────
+    const balRes = await fetch(GQL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ address(address: "${address}") { balances { nodes { coinType { repr } totalBalance } } } }`,
+      }),
+    });
+    const balJson = await balRes.json() as any;
+    const balNodes = balJson?.data?.address?.balances?.nodes ?? [];
+
+    const balances: Record<string, { raw: bigint; usd: number }> = {};
+    let suiBal = 0n, usdcBal = 0n, iusdBal = 0n, nsBal = 0n;
+    // Fetch SUI price
+    let suiPrice = 0;
+    try {
+      const pr = await fetch('https://hermes.pyth.network/v2/updates/price/latest?ids[]=0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744&parsed=true');
+      const pj = await pr.json() as any;
+      suiPrice = Number(pj?.parsed?.[0]?.price?.price ?? 0) * Math.pow(10, Number(pj?.parsed?.[0]?.price?.expo ?? 0));
+    } catch { suiPrice = 0.87; }
+
+    for (const b of balNodes) {
+      const ct = b.coinType?.repr ?? '';
+      const raw = BigInt(b.totalBalance ?? '0');
+      if (ct.includes('::sui::SUI')) { suiBal = raw; balances['SUI'] = { raw, usd: Number(raw) / 1e9 * suiPrice }; }
+      else if (ct.includes('::usdc::USDC')) { usdcBal = raw; balances['USDC'] = { raw, usd: Number(raw) / 1e6 }; }
+      else if (ct.includes('::iusd::IUSD')) { iusdBal = raw; balances['iUSD'] = { raw, usd: Number(raw) / 1e9 }; }
+      else if (ct.includes('::ns::NS')) { nsBal = raw; balances['NS'] = { raw, usd: Number(raw) / 1e6 * 0.03 }; }
+    }
+
+    const suiUsd = Number(suiBal) / 1e9 * suiPrice;
+    const usdcUsd = Number(usdcBal) / 1e6;
+    const iusdUsd = Number(iusdBal) / 1e9;
+    const totalUsd = suiUsd + usdcUsd + iusdUsd;
+
+    // ── Step 2: Check name status + listing ─────────────────────────
+    const name = `${label.replace(/\.sui$/, '')}.sui`;
+    const [statusRes, tpRes] = await Promise.allSettled([
+      fetch(GQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `{ address: resolveSuiNsAddress(domain: "${name}") }`,
+        }),
+      }).then(r => r.json()).catch(() => ({ data: { address: null } })),
+      fetch(TRADEPORT_GQL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-user': c.env.TRADEPORT_API_USER,
+          'x-api-key': c.env.TRADEPORT_API_KEY,
+        },
+        body: JSON.stringify({
+          query: `{ sui { nfts(where: { collection_id: { _eq: "${SUINS_COLLECTION_ID}" }, name: { _eq: "${name}" }, listed: { _eq: true } }, limit: 1) { token_id listings(where: { listed: { _eq: true } }) { id price seller market_name } } } }`,
+        }),
+      }).then(r => r.json()),
+    ]);
+
+    const resolved = statusRes.status === 'fulfilled'
+      ? (statusRes.value as any)?.data?.resolveSuinsAddress?.address ?? null
+      : null;
+    const isRegistered = !!resolved;
+
+    const tpData = tpRes.status === 'fulfilled' ? tpRes.value as any : null;
+    const tpNft = tpData?.data?.sui?.nfts?.[0];
+    const tpListing = tpNft?.listings?.[0];
+    const listing = tpListing ? {
+      nftTokenId: tpNft.token_id as string,
+      priceMist: String(tpListing.price),
+      seller: tpListing.seller as string,
+      priceUsd: suiPrice > 0 ? (Number(tpListing.price) / 1e9 * suiPrice) : null,
+    } : null;
+
+    // ── Step 3: Agent deliberation — score each action ──────────────
+    const actions: Array<{ action: string; confidence: number; reason: string; route?: string }> = [];
+
+    if (listing) {
+      const listingPriceSui = Number(listing.priceMist) / 1e9;
+      const fee = listingPriceSui * 0.03; // 3% Tradeport fee
+      const totalCostSui = listingPriceSui + fee;
+      const totalCostUsd = totalCostSui * suiPrice;
+
+      // Can we afford it?
+      if (suiUsd >= totalCostUsd * 1.05) {
+        actions.push({ action: 'TRADE', confidence: 0.95, reason: `SUI direct — ${totalCostSui.toFixed(2)} SUI`, route: 'sui-direct' });
+      } else if (suiUsd + usdcUsd >= totalCostUsd * 1.02) {
+        actions.push({ action: 'TRADE', confidence: 0.90, reason: `USDC→SUI swap + purchase`, route: 'usdc-swap' });
+      } else if (suiUsd + usdcUsd + iusdUsd >= totalCostUsd) {
+        actions.push({ action: 'TRADE', confidence: 0.85, reason: `iUSD redeem→USDC→SUI + purchase`, route: 'iusd-redeem' });
+      } else {
+        actions.push({ action: 'TRADE', confidence: 0.10, reason: `Insufficient balance ($${totalUsd.toFixed(2)} < $${totalCostUsd.toFixed(2)})`, route: 'blocked' });
+      }
+    }
+
+    if (!isRegistered) {
+      const mintCostUsd = 7.50; // 5+ char with NS discount
+      if (totalUsd >= mintCostUsd) {
+        actions.push({ action: 'MINT', confidence: listing ? 0.05 : 0.90, reason: `Register ${name} ($${mintCostUsd})`, route: 'ns-register' });
+      }
+      actions.push({ action: 'Quest', confidence: listing ? 0.02 : 0.40, reason: `Post bounty for agents to fill`, route: 'quest-bounty' });
+    }
+
+    // Sort by confidence
+    actions.sort((a, b) => b.confidence - a.confidence);
+    const best = actions[0];
+
+    // ── Step 4: Build TX for the winning action ─────────────────────
+    let txBase64: string | null = null;
+    let txDescription: string | null = null;
+
+    if (best?.action === 'TRADE' && listing && best.route !== 'blocked') {
+      // Delegate to TreasuryAgents DO for server-side TX building
+      // (it has the keypair and can handle iUSD redemption atomically)
+      const doId = c.env.TreasuryAgents.idFromName('treasury');
+      const doStub = c.env.TreasuryAgents.get(doId);
+      const doRes = await doStub.fetch(new Request('https://treasury-do/?build-trade', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+        body: JSON.stringify({
+          buyer: address,
+          nftTokenId: listing.nftTokenId,
+          priceMist: listing.priceMist,
+          route: best.route,
+          suiBal: String(suiBal),
+          usdcBal: String(usdcBal),
+          iusdBal: String(iusdBal),
+        }),
+      }));
+      const doJson = await doRes.json() as any;
+      if (doJson?.txBase64) {
+        txBase64 = doJson.txBase64;
+        txDescription = doJson.description;
+      } else if (doJson?.digest) {
+        // Ultron bought directly — no user signature needed
+        return c.json({
+          label: name, address,
+          balances: { sui: { mist: String(suiBal), usd: suiUsd }, usdc: { raw: String(usdcBal), usd: usdcUsd }, iusd: { raw: String(iusdBal), usd: iusdUsd }, total_usd: totalUsd },
+          suiPrice, nameStatus: 'purchased', listing, actions,
+          recommended: { ...best, digest: doJson.digest },
+          tx: null,
+          purchased: { digest: doJson.digest, description: doJson.description, by: 'ultron' },
+        });
+      } else if (doJson?.error) {
+        best.reason = doJson.error;
+      }
+    }
+
+    return c.json({
+      label: name,
+      address,
+      balances: {
+        sui: { mist: String(suiBal), usd: suiUsd },
+        usdc: { raw: String(usdcBal), usd: usdcUsd },
+        iusd: { raw: String(iusdBal), usd: iusdUsd },
+        total_usd: totalUsd,
+      },
+      suiPrice,
+      nameStatus: isRegistered ? 'taken' : 'available',
+      listing,
+      actions,
+      recommended: best,
+      tx: txBase64 ? { base64: txBase64, description: txDescription } : null,
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Thunder admin (set fee via TreasuryAgents ultron) ──────────────
 app.post('/api/thunder/set-fee', async (c) => {
   try {

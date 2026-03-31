@@ -638,6 +638,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // ── /build-trade — Infer engine: build purchase TX with real coins ──
+    if ((url.pathname.endsWith('/build-trade') || url.searchParams.has('build-trade')) && request.method === 'POST') {
+      try {
+        const params = await request.json() as {
+          buyer: string; nftTokenId: string; priceMist: string; route: string;
+          suiBal: string; usdcBal: string; iusdBal: string;
+        };
+        const result = await this._buildTradeForBuyer(params);
+        return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if (url.pathname.endsWith('/status') || url.searchParams.has('status')) {
       return new Response(JSON.stringify({
         positions: this.state.positions,
@@ -3235,6 +3249,194 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       return publicOutput.slice(2, 34);
     }
     return null;
+  }
+
+  // ─── Infer: Build Trade TX for buyer ──────────────────────────────
+  //
+  // Server-side TX builder that reads REAL coin objects and builds the
+  // correct payment route. No stale client cache. No guessing.
+
+  private async _buildTradeForBuyer(params: {
+    buyer: string; nftTokenId: string; priceMist: string; route: string;
+    suiBal: string; usdcBal: string; iusdBal: string;
+  }): Promise<{ txBase64?: string; description?: string; error?: string }> {
+    const { buyer, nftTokenId, priceMist, route } = params;
+    const buyerAddr = normalizeSuiAddress(buyer);
+    const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+    const price = BigInt(priceMist);
+    const fee = price * 300n / 10000n; // 3% Tradeport fee
+    const totalNeeded = price + fee;
+
+    const TRADEPORT_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
+    const TRADEPORT_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+    const SUINS_REG_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::registration_nft::RegistrationNFT';
+    const DB_PKG = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+    const DB_SUI_USDC = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
+    const DB_SUI_USDC_ISV = 389750322;
+    const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+
+    const tx = new Transaction();
+    tx.setSender(buyerAddr);
+
+    // ── Fetch real SUI coins ──
+    const suiCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+      'suix_getCoins', [buyerAddr, SUI_TYPE],
+    );
+    const suiCoins = (suiCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+    const realSuiBal = suiCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+    const gasBuf = 50_000_000n; // 0.05 SUI gas
+    const availSui = realSuiBal > gasBuf ? realSuiBal - gasBuf : 0n;
+
+    if (route === 'sui-direct' && availSui >= totalNeeded) {
+      // Simple: split from gas, buy
+      const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
+      tx.moveCall({
+        target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+        typeArguments: [SUINS_REG_TYPE],
+        arguments: [tx.object(TRADEPORT_STORE), tx.pure.id(nftTokenId), payment],
+      });
+      tx.transferObjects([payment], tx.pure.address(buyerAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      return { txBase64: uint8ToBase64(txBytes), description: `Buy via SUI direct (${Number(totalNeeded) / 1e9} SUI)` };
+    }
+
+    if (route === 'usdc-swap' || route === 'iusd-redeem') {
+      // Need USDC→SUI swap to cover the shortfall
+      const shortfall = totalNeeded - availSui;
+      const suiPrice = 0.87; // TODO: use real price from params
+      const usdcNeeded = BigInt(Math.ceil((Number(shortfall) / 1e9) * suiPrice * 1.05 * 1e6)); // 5% buffer
+
+      // Fetch real USDC coins
+      const usdcCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [buyerAddr, USDC_TYPE],
+      );
+      const usdcCoins = (usdcCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+      const realUsdcBal = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+
+      if ((realUsdcBal < usdcNeeded || usdcCoins.length === 0) && route === 'iusd-redeem') {
+        // Buyer has iUSD but no SUI/USDC — ultron buys on their behalf
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'Cache offline — ultron key missing' };
+        return this._ultronBuysForBuyer(buyerAddr, nftTokenId, priceMist, transport);
+      }
+
+      if (usdcCoins.length === 0 || realUsdcBal === 0n) {
+        // No USDC either — try ultron buy if buyer has iUSD
+        const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+          'suix_getCoins', [buyerAddr, `${TreasuryAgents.IUSD_PKG}::iusd::IUSD`],
+        );
+        const iusdCoins = (iusdCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+        const realIusdBal = iusdCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+        if (realIusdBal > 0n && this.env.SHADE_KEEPER_PRIVATE_KEY) {
+          return this._ultronBuysForBuyer(buyerAddr, nftTokenId, priceMist, transport);
+        }
+        return { error: `No SUI or USDC. SUI: ${Number(realSuiBal) / 1e9} (need ${Number(totalNeeded) / 1e9})` };
+      }
+
+      // Merge USDC coins
+      const usdcCoin = tx.objectRef({ objectId: usdcCoins[0].coinObjectId, version: String(usdcCoins[0].version), digest: usdcCoins[0].digest });
+      if (usdcCoins.length > 1) {
+        tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c =>
+          tx.objectRef({ objectId: c.coinObjectId, version: String(c.version), digest: c.digest }),
+        ));
+      }
+
+      // Split USDC for swap
+      const swapAmount = usdcNeeded < realUsdcBal ? usdcNeeded : realUsdcBal;
+      const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(swapAmount.toString())]);
+
+      // Swap USDC → SUI via DeepBook
+      const minSuiOut = shortfall * 95n / 100n; // 5% slippage
+      const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const dbResult = tx.moveCall({
+        target: `${DB_PKG}::pool::swap_exact_quote_for_base`,
+        typeArguments: [SUI_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_SUI_USDC, initialSharedVersion: DB_SUI_USDC_ISV, mutable: true }),
+          usdcForSwap, zeroDEEP, tx.pure.u64(minSuiOut.toString()), tx.object('0x6'),
+        ],
+      });
+
+      // Merge swapped SUI into gas
+      tx.mergeCoins(tx.gas, [dbResult[0]]);
+      // Return USDC change + DEEP dust
+      tx.transferObjects([dbResult[1], dbResult[2], usdcCoin], tx.pure.address(buyerAddr));
+
+      // Now purchase with gas (has original SUI + swapped SUI)
+      const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
+      tx.moveCall({
+        target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+        typeArguments: [SUINS_REG_TYPE],
+        arguments: [tx.object(TRADEPORT_STORE), tx.pure.id(nftTokenId), payment],
+      });
+      tx.transferObjects([payment], tx.pure.address(buyerAddr));
+
+      const txBytes = await tx.build({ client: transport as never });
+      return { txBase64: uint8ToBase64(txBytes), description: `USDC→SUI swap + Tradeport buy (${Number(swapAmount) / 1e6} USDC → ${Number(shortfall) / 1e9} SUI)` };
+    }
+
+    return { error: `Route "${route}" not supported. SUI: ${Number(realSuiBal) / 1e9}, needed: ${Number(totalNeeded) / 1e9}` };
+  }
+
+  /** Ultron buys a Tradeport listing on behalf of a buyer, transfers NFT to them.
+   *  Buyer's iUSD balance is debited later. No user signature needed for purchase. */
+  private async _ultronBuysForBuyer(
+    buyerAddr: string,
+    nftTokenId: string,
+    priceMist: string,
+    transport: SuiGraphQLClient,
+  ): Promise<{ txBase64?: string; description?: string; digest?: string; error?: string }> {
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY!);
+    const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+    const TRADEPORT_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
+    const TRADEPORT_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+    const SUINS_REG_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::registration_nft::RegistrationNFT';
+
+    const price = BigInt(priceMist);
+    const fee = price * 300n / 10000n;
+    const totalNeeded = price + fee;
+
+    // Check ultron has enough SUI
+    const ultronSuiRes = await raceJsonRpc<{ data: Array<{ balance: string }> }>(
+      'suix_getCoins', [ultronAddr, SUI_TYPE],
+    );
+    const ultronSui = (ultronSuiRes?.data ?? []).reduce((s, c) => s + BigInt(c.balance), 0n);
+    if (ultronSui < totalNeeded + 100_000_000n) {
+      return { error: `Cache low on SUI (${Number(ultronSui) / 1e9} SUI, need ${Number(totalNeeded) / 1e9})` };
+    }
+
+    console.log(`[Infer] Ultron buying ${nftTokenId} for ${buyerAddr} — ${Number(totalNeeded) / 1e9} SUI`);
+
+    const tx = new Transaction();
+    tx.setSender(ultronAddr);
+
+    // Split payment from gas
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
+
+    // Buy from Tradeport — NFT returned to ultron
+    const [nft] = tx.moveCall({
+      target: `${TRADEPORT_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [tx.object(TRADEPORT_STORE), tx.pure.id(nftTokenId), payment],
+    });
+
+    // Transfer NFT to buyer
+    tx.transferObjects([nft], tx.pure.address(buyerAddr));
+    // Return leftover payment to ultron
+    tx.transferObjects([payment], tx.pure.address(ultronAddr));
+
+    const txBytes = await tx.build({ client: transport as never });
+    const sig = await keypair.signTransaction(txBytes);
+    const digest = await this._submitTx(txBytes, sig.signature);
+
+    console.log(`[Infer] Ultron bought for ${buyerAddr}: ${digest}`);
+
+    return {
+      digest,
+      description: `ultron purchased via cache (${Number(totalNeeded) / 1e9} SUI) — NFT transferred to you`,
+    };
   }
 
   // ─── Internal ───────────────────────────────────────────────────────

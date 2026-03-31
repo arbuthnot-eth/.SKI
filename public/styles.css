@@ -3146,7 +3146,7 @@ body {
   align-items: center;
   gap: 4px;
   position: absolute;
-  top: 30%;
+  top: calc(27% + 32px);
   left: 12px;
   z-index: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;

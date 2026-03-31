@@ -6763,18 +6763,61 @@ function renderSkiMenu() {
   document.getElementById('wk-send-btn')?.addEventListener('click', async () => {
     const sec = document.getElementById('wk-dd-ns-section');
 
-    // BUY/TRADE mode: marketplace listing — takes priority over mint
-    if ((nsKioskListing || nsTradeportListing) && nsLabel.trim().length > 0) {
-      // Fall through to the marketplace purchase handler below the swap/send block
-      // by skipping suiami/swap/send checks
+    // BUY/TRADE mode: marketplace listing OR button says TRADE — use /api/infer
+    const _btnEl = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+    const _isTrade = (nsKioskListing || nsTradeportListing || _btnEl?.textContent === 'TRADE') && nsLabel.trim().length > 0;
+    if (_isTrade) {
       const ws2 = getState();
       if (!ws2.address) return;
-      const btn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+      const btn = _btnEl;
       const label = nsLabel.trim();
-      const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-      // Jump to marketplace purchase handler (defined later in this function)
-      // We need to goto the handler — restructure: call it inline
-      await _handleMarketplacePurchase(ws2, btn, label);
+      if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+      try {
+        // Route through /api/infer — server reads real on-chain balances
+        const inferRes = await fetch('/api/infer', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ label, address: ws2.address }),
+        });
+        const infer = await inferRes.json() as any;
+
+        if (infer.error) { showToast(infer.error); return; }
+
+        // Ultron already bought — no user signature needed
+        if (infer.purchased?.digest) {
+          nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
+          app.suinsName = app.suinsName || `${label}.sui`;
+          showToast(`\u26a1 ${label}.sui acquired via cache`);
+          _patchNsStatus(); renderSkiMenu();
+          setTimeout(() => refreshPortfolio(true), 2000);
+          return;
+        }
+
+        if (infer.tx?.base64) {
+          const bytes = Uint8Array.from(atob(infer.tx.base64), ch => ch.charCodeAt(0));
+          if (btn) btn.textContent = '\u270f';
+          const { digest } = await signAndExecuteTransaction(bytes);
+          nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
+          app.suinsName = app.suinsName || `${label}.sui`;
+          showToast(`${label}.sui purchased \u2713`);
+          _patchNsStatus(); renderSkiMenu();
+          setTimeout(() => refreshPortfolio(true), 2000);
+        } else {
+          // Try local marketplace handler as fallback
+          if (nsKioskListing || nsTradeportListing) {
+            await _handleMarketplacePurchase(ws2, btn, label);
+          } else {
+            const reason = infer.recommended?.reason ?? 'No listing found';
+            const bals = infer.balances;
+            showToast(`${reason} (SUI: $${bals?.sui?.usd?.toFixed(2) ?? '?'}, USDC: $${bals?.usdc?.usd?.toFixed(2) ?? '?'}, iUSD: $${bals?.iusd?.usd?.toFixed(2) ?? '?'})`);
+          }
+        }
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        if (!raw.toLowerCase().includes('reject')) showToast(raw.slice(0, 150));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'TRADE'; }
+      }
       return;
     }
 
@@ -6793,8 +6836,8 @@ function renderSkiMenu() {
     }
 
     // SuiAMI mode: if the button literally says SUIAMI, it's a SUIAMI click
-    const _btnEl = document.getElementById('wk-send-btn');
-    const _btnText = _btnEl?.textContent?.trim() ?? '';
+    const _btnEl2 = document.getElementById('wk-send-btn');
+    const _btnText = _btnEl2?.textContent?.trim() ?? '';
     const isSelfTarget = sec?.classList.contains('wk-dd-ns-section--self-target') ?? false;
     const isOwned = sec?.classList.contains('wk-dd-ns-section--owned') ?? false;
     const suiamiName = nsLabel.trim().length > 0 ? nsLabel.trim() : (app.suinsName ?? '');
@@ -9558,70 +9601,56 @@ function bindEvents() {
           if (!name) return;
           window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
         } else if (btnText === 'TRADE') {
-          // Marketplace purchase — execute directly, no menu delegation
+          // Marketplace purchase via /api/infer — server reads real on-chain balances
           e.stopPropagation();
           const ws = getState();
           if (!ws.address) { showToast('Connect wallet first'); return; }
-          if (!nsTradeportListing && !nsKioskListing) { showToast('No listing found'); return; }
           _idleActionBtn!.disabled = true;
           _idleActionBtn!.textContent = '\u2026';
           try {
-            const purchase = nsKioskListing
-              ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: nsKioskListing.priceMist }
-              : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist };
-            const suiP = suiPriceCache?.price ?? 0;
-            const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
-            const _pMist = BigInt(purchase.priceMist);
-            const _fMist = purchase.type === 'tradeport' ? _pMist * 300n / 10000n : 0n;
-            const listingUsd = suiP > 0 ? (Number(_pMist + _fMist) / 1e9) * suiP : 999;
-            const suiUsd = app.sui * suiP;
-            const usdcBal = walletCoins.find(c => c.symbol === 'USDC')?.balance ?? app.stableUsd ?? 0;
+            // Ask infer engine for the best action + pre-built TX
+            const inferRes = await fetch('/api/infer', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ label, address: ws.address }),
+            });
+            const infer = await inferRes.json() as {
+              recommended?: { action: string; confidence: number; reason: string; route?: string };
+              tx?: { base64: string; description: string } | null;
+              balances?: { sui?: { usd: number }; usdc?: { usd: number }; iusd?: { usd: number }; total_usd?: number };
+              error?: string;
+            };
 
-            // Determine payment strategy: SUI direct, USDC swap, or iUSD redeem first
-            let selectedCoin: string | null = null;
-            let outputCoin: string | null = null;
-            if (suiUsd >= listingUsd * 1.05) {
-              // Enough SUI — pay directly
-            } else if (usdcBal >= listingUsd * 0.95) {
-              // Enough USDC — swap USDC→SUI then purchase
-              selectedCoin = USDC_CT;
-            } else {
-              // Not enough SUI or USDC — use USDC as backup (even small amounts help)
-              outputCoin = USDC_CT;
-              // If still short, try to redeem iUSD first
-              const iusdBal = walletCoins.find(c => c.symbol === 'IUSD')?.balance ?? 0;
-              if (iusdBal > 0 && suiUsd + usdcBal < listingUsd) {
-                _idleActionBtn!.textContent = 'Redeem\u2026';
-                // Redeem iUSD → USDC via cache, then retry
-                const redeemAmt = Math.ceil((listingUsd - suiUsd - usdcBal) * 1.1 * 1e9); // 10% buffer
-                try {
-                  await fetch('/api/iusd/redeem', {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ address: ws.address, amount: String(redeemAmt) }),
-                  });
-                  await new Promise(r => setTimeout(r, 2000)); // wait for chain state
-                } catch {}
-                outputCoin = USDC_CT;
-              }
+            if (infer.error) { showToast(infer.error); return; }
+
+            // Ultron already bought — no user signature needed
+            if (infer.purchased?.digest) {
+              nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
+              app.suinsName = app.suinsName || `${label}.sui`;
+              showToast(`\u26a1 ${label}.sui acquired via cache`);
+              _updateIdleStatus();
+              setTimeout(() => refreshPortfolio(true), 2000);
+              return;
             }
 
-            const txBytes = await buildSwapAndPurchaseTx(
-              ws.address, purchase,
-              selectedCoin, selectedCoin ? usdcBal : app.sui,
-              outputCoin,
-              suiP,
-            );
-            _idleActionBtn!.textContent = '\u270f';
-            const { digest } = await signAndExecuteTransaction(txBytes);
-            nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
-            app.suinsName = app.suinsName || `${label}.sui`;
-            showToast(`${label}.sui purchased \u2713`);
-            _updateIdleStatus();
-            setTimeout(() => refreshPortfolio(true), 2000);
+            if (infer.tx?.base64) {
+              _idleActionBtn!.textContent = '\u270f';
+              const b64 = infer.tx.base64;
+              const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+              const { digest } = await signAndExecuteTransaction(bytes);
+              nsAvail = 'owned'; nsKioskListing = null; nsTradeportListing = null;
+              app.suinsName = app.suinsName || `${label}.sui`;
+              showToast(`${label}.sui purchased \u2713`);
+              _updateIdleStatus();
+              setTimeout(() => refreshPortfolio(true), 2000);
+            } else {
+              const reason = infer.recommended?.reason ?? 'Could not build transaction';
+              const bals = infer.balances;
+              showToast(`${reason}${bals ? ` (SUI: $${bals.sui?.usd?.toFixed(2)}, USDC: $${bals.usdc?.usd?.toFixed(2)}, iUSD: $${bals.iusd?.usd?.toFixed(2)})` : ''}`);
+            }
           } catch (err) {
             const raw = err instanceof Error ? err.message : String(err);
-            if (!raw.toLowerCase().includes('reject')) showToast(raw.slice(0, 120));
+            if (!raw.toLowerCase().includes('reject')) showToast(raw.slice(0, 150));
           } finally {
             _idleActionBtn!.disabled = false;
             _idleActionBtn!.textContent = 'TRADE';

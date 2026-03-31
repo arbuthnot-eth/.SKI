@@ -9734,20 +9734,49 @@ function bindEvents() {
           }
         } else if (btnText === 'Shade') {
           // Shade: mint iUSD rounded up to cover registration + 10% buffer.
-          // User holds the iUSD and can spend it, but spending below the Shade threshold
-          // liquidates the Shade order (name won't be registered at grace expiry).
+          // User holds the iUSD freely but spending below threshold liquidates the Shade.
+          // Agents deliberate every 60s whether to keep or cancel underwater Shades.
           e.stopPropagation();
-          const shadeCost = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100; // round up to cent
-          showToast(`\u26a1 Shade ${label}.sui — minting $${shadeCost.toFixed(2)} iUSD to hold`);
-          // Pre-fill the amount and open the Shade flow
-          pendingSendAmount = String(shadeCost);
-          if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
-          setTimeout(() => {
-            const amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
-            if (amtInput) { amtInput.value = String(shadeCost); amtInput.dispatchEvent(new Event('input', { bubbles: true })); }
-            const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
-            if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
-          }, 500);
+          if (!label) return;
+          const ws = getState();
+          if (!ws.address) { showToast('Connect wallet first'); return; }
+          const shadeCost = Math.ceil((nsPriceUsd ?? 7.77) * 1.10 * 100) / 100;
+          _idleActionBtn!.disabled = true;
+          _idleActionBtn!.textContent = 'Shading\u2026';
+
+          // Create Shade order on server — agents will deliberate on it
+          (async () => {
+            try {
+              const commitment = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${label}.sui:${ws.address}`));
+              const commitHex = Array.from(new Uint8Array(commitment)).map(b => b.toString(16).padStart(2, '0')).join('');
+              await fetch('/api/cache/shade-create', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  domain: label,
+                  holder: ws.address,
+                  thresholdUsd: shadeCost,
+                  graceEndMs: nsGraceEndMs || (Date.now() + 30 * 86_400_000),
+                  commitment: commitHex,
+                }),
+              });
+              showToast(`\u26a1 Shade ${label}.sui — hold $${shadeCost.toFixed(2)} iUSD until grace expires`);
+
+              // Open menu with amount pre-filled for iUSD mint
+              pendingSendAmount = String(shadeCost);
+              if (!app.skiMenuOpen) { app.skiMenuOpen = true; try { localStorage.setItem('ski:lift', '1'); } catch {} render(); }
+              setTimeout(() => {
+                const amtInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+                if (amtInput) { amtInput.value = String(shadeCost); amtInput.dispatchEvent(new Event('input', { bubbles: true })); }
+                const mainBtn = document.getElementById('wk-send-btn') as HTMLButtonElement | null;
+                if (mainBtn) { mainBtn.disabled = false; mainBtn.click(); }
+              }, 500);
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : 'Shade failed');
+            }
+            _idleActionBtn!.textContent = 'Shade';
+            _idleActionBtn!.disabled = false;
+          })();
         } else if (btnText === 'Storm' || btnText === 'Thunder') {
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
           if (convoEl && !convoEl.hasAttribute('hidden')) {

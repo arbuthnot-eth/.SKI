@@ -75,6 +75,19 @@ interface ArbOpportunity {
   profit_mist: string;
 }
 
+interface ShadeOrder {
+  id: string;
+  domain: string;           // name being Shaded
+  holder: string;           // Sui address holding the iUSD
+  thresholdUsd: number;     // iUSD balance must stay above this
+  graceEndMs: number;       // when grace expires — Shade executes
+  commitment: string;       // hash(domain:holder) for privacy
+  status: 'active' | 'liquidated' | 'executed' | 'cancelled';
+  created: number;
+  lastChecked: number;
+  deliberation?: string;    // last agent debate result
+}
+
 export interface TreasuryAgentsState {
   positions: YieldPosition[];
   arb_history: ArbOpportunity[];
@@ -152,6 +165,54 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
       }
+    }
+
+    // Shade — lock iUSD for grace-period name sniping
+    if ((url.pathname.endsWith('/shade-create') || url.searchParams.has('shade-create')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as {
+          domain: string; holder: string; thresholdUsd: number; graceEndMs: number; commitment: string;
+        };
+        const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
+        // Deduplicate by domain+holder
+        const existing = shades.findIndex(s => s.domain === body.domain && s.holder === body.holder);
+        const shade: ShadeOrder = {
+          id: crypto.randomUUID(),
+          domain: body.domain,
+          holder: body.holder,
+          thresholdUsd: body.thresholdUsd,
+          graceEndMs: body.graceEndMs,
+          commitment: body.commitment,
+          status: 'active',
+          created: Date.now(),
+          lastChecked: 0,
+        };
+        if (existing >= 0) shades[existing] = shade;
+        else shades.push(shade);
+        this.setState({ ...this.state, shades } as any);
+        console.log(`[TreasuryAgents] Shade created: ${body.domain}.sui, threshold: $${body.thresholdUsd}, grace ends: ${new Date(body.graceEndMs).toISOString()}`);
+        return new Response(JSON.stringify({ id: shade.id, status: 'active' }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Shade list — get active shades for a holder
+    if ((url.pathname.endsWith('/shade-list') || url.searchParams.has('shade-list')) && request.method === 'GET') {
+      const holder = url.searchParams.get('holder') || '';
+      const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
+      const filtered = holder ? shades.filter(s => s.holder === holder) : shades.filter(s => s.status === 'active');
+      // Redact domain for non-holder queries
+      const result = filtered.map(s => ({
+        id: s.id,
+        domain: holder ? s.domain : undefined,
+        commitment: s.commitment,
+        thresholdUsd: s.thresholdUsd,
+        graceEndMs: s.graceEndMs,
+        status: s.status,
+        deliberation: s.deliberation,
+      }));
+      return new Response(JSON.stringify({ shades: result }), { headers: { 'content-type': 'application/json' } });
     }
 
     // Quest Prism — client sends commitment + amount only, no domain ever leaves the client.
@@ -659,11 +720,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     });
 
     try {
-      // Every tick: scan for arb + run t2000 missions + retry open Quests + watch SOL deposits
+      // Every tick: scan for arb + run t2000 missions + retry open Quests + watch SOL deposits + deliberate Shades
       await this._scanArb();
       await this._runT2000Missions();
       await this._retryOpenQuests();
       await this._watchSolDeposits();
+      await this._deliberateShades();
 
       // Every 15 min: check yield rotation
       const FIFTEEN_MIN = 15 * 60 * 1000;
@@ -1772,6 +1834,86 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Update last processed signature
     this.setState({ ...this.state, last_sol_sig: signatures[0]?.signature } as any);
+  }
+
+  /** Deliberate on active Shades — agents debate whether to keep or liquidate underwater Shades */
+  private async _deliberateShades(): Promise<void> {
+    const shades = ((this.state as any).shades ?? []) as ShadeOrder[];
+    const active = shades.filter(s => s.status === 'active');
+    if (active.length === 0) return;
+
+    const now = Date.now();
+    const IUSD_TYPE = `${TreasuryAgents.IUSD_PKG}::iusd::IUSD`;
+    let changed = false;
+
+    for (const shade of active) {
+      // Only check every 60s per shade
+      if (now - shade.lastChecked < 60_000) continue;
+      shade.lastChecked = now;
+      changed = true;
+
+      // Check if grace has expired — time to execute
+      if (now >= shade.graceEndMs) {
+        shade.status = 'executed';
+        shade.deliberation = 'grace expired — ShadeExecutorAgent handles registration';
+        console.log(`[TreasuryAgents] Shade ${shade.domain}.sui: grace expired, handing to executor`);
+        continue;
+      }
+
+      // Check holder's iUSD balance
+      try {
+        const balGql = await fetch(GQL_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: `{ address(address: "${shade.holder}") { balances { nodes { coinType { repr } totalBalance } } } }` }),
+        });
+        const balData = await balGql.json() as any;
+        let iusdBal = 0;
+        for (const n of (balData?.data?.address?.balances?.nodes ?? [])) {
+          if (n.coinType.repr === IUSD_TYPE) iusdBal = Number(n.totalBalance) / 1e9;
+        }
+
+        if (iusdBal >= shade.thresholdUsd) {
+          // Healthy — agents agree to keep
+          shade.deliberation = `healthy: $${iusdBal.toFixed(2)} iUSD >= $${shade.thresholdUsd.toFixed(2)} threshold`;
+        } else {
+          // Underwater — agents deliberate
+          const deficit = shade.thresholdUsd - iusdBal;
+          const timeToGrace = shade.graceEndMs - now;
+          const hoursLeft = Math.floor(timeToGrace / 3_600_000);
+
+          // Agent logic — each "votes" based on their character
+          const ultronVote = iusdBal < shade.thresholdUsd * 0.3 ? 'cancel' : 'hold'; // cold math
+          const enochVote = hoursLeft > 48 ? 'hold' : 'cancel'; // loyal, patient
+          const malachiVote = 'cancel'; // always ruthless
+          const coulsonVote = 'hold'; // never gives up
+
+          const cancelVotes = [ultronVote, enochVote, malachiVote, coulsonVote].filter(v => v === 'cancel').length;
+          const shouldCancel = cancelVotes >= 3; // majority rules
+
+          shade.deliberation = [
+            `underwater: $${iusdBal.toFixed(2)} < $${shade.thresholdUsd.toFixed(2)} (deficit: $${deficit.toFixed(2)})`,
+            `ultron:${ultronVote} enoch:${enochVote} malachi:${malachiVote} coulson:${coulsonVote}`,
+            shouldCancel ? 'VERDICT: cancel — reclaim to cache' : `VERDICT: hold — ${hoursLeft}h until grace`,
+          ].join(' | ');
+
+          if (shouldCancel) {
+            shade.status = 'liquidated';
+            console.log(`[TreasuryAgents] Shade ${shade.domain}.sui LIQUIDATED: ${shade.deliberation}`);
+            // TODO: reclaim iUSD from holder to cache (requires holder's signature or a clawback mechanism)
+            // For now, the Shade is simply cancelled — name slot opens up for other agents
+          } else {
+            console.log(`[TreasuryAgents] Shade ${shade.domain}.sui KEPT: ${shade.deliberation}`);
+          }
+        }
+      } catch (err) {
+        shade.deliberation = `check failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    if (changed) {
+      this.setState({ ...this.state, shades } as any);
+    }
   }
 
   /** Retry open Quest bounties every tick — ultron keeps hunting until filled */

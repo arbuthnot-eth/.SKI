@@ -1033,6 +1033,42 @@ app.post('/api/cache/quest-fill', async (c) => {
   }
 });
 
+// Shade — create a Shade order (lock iUSD for grace-period name sniping)
+app.post('/api/cache/shade-create', async (c) => {
+  try {
+    const body = await c.req.json() as any;
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?shade-create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Shade list — get active Shade orders
+app.get('/api/cache/shade-list', async (c) => {
+  try {
+    const holder = c.req.query('holder') || '';
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request(`https://treasury-do/?shade-list&holder=${encodeURIComponent(holder)}`, {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Poke — instant hook after sending funds. Fires SOL watcher + fills all open quests.
 app.all('/api/cache/poke', async (c) => {
   try {

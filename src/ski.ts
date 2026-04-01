@@ -11,7 +11,7 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { getState, signPersonalMessage, signAndExecuteTransaction, signTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
 import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses, SUI_DROP_URI, getAppState } from './ui.js';
-import { restoreSponsor, isSponsorActive, isKeeperSponsorActive, executeSponsored, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
+import { restoreSponsor, isSponsorActive, isKeeperSponsorActive, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
 // Ika is heavy (~150KB), lazy-load only after sign-in
@@ -455,6 +455,7 @@ window.addEventListener('ski:rumble', async () => {
       (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
       (stage: string) => {
         showToast(`Rumble: ${stage}`);
+        window.dispatchEvent(new CustomEvent('ski:rumble-progress', { detail: stage }));
       },
     );
 
@@ -486,6 +487,24 @@ window.addEventListener('ski:rumble', async () => {
     console.error('[rumble] Error:', err);
     showToast(err instanceof Error ? err.message : 'Rumble failed');
   }
+});
+
+// ─── Auto Pre-Rumble on name registration ──────────────────────────────
+// When a new name is registered, fire pre-rumble in the background so the
+// name immediately has chain addresses (ultron-custodial until user Rumbles).
+window.addEventListener('ski:name-acquired', (e) => {
+  const name = (e as CustomEvent).detail?.name;
+  const ws = getState();
+  if (!name || !ws.address) return;
+  // Fire and forget — don't block the UI
+  fetch('/api/cache/pre-rumble', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: name.replace(/\.sui$/, ''), userAddress: ws.address }),
+  }).then(r => r.json()).then((res: any) => {
+    if (res.digest) console.log(`[pre-rumble] ${name} chain addresses provisioned: ${res.digest}`);
+    else if (res.error) console.warn(`[pre-rumble] ${name}: ${res.error}`);
+  }).catch(() => {});
 });
 
 // ─── Sign & Execute Transaction ──────────────────────────────────────

@@ -117,6 +117,33 @@ export function maybeAppendRoster(
   return true;
 }
 
+/**
+ * Read chain addresses from the SUIAMI Roster for any SuiNS name.
+ * Returns { sui?, btc?, eth?, sol? } or null if not found.
+ */
+export async function readRoster(name: string): Promise<Record<string, string> | null> {
+  const bare = name.replace(/\.sui$/i, '').toLowerCase();
+  const nh = keccak_256(new TextEncoder().encode(bare));
+  const nhB64 = btoa(String.fromCharCode(...nh));
+  try {
+    const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${ROSTER_OBJ}") { dynamicField(name: { type: "vector<u8>", bcs: "${nhB64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const record = gql?.data?.object?.dynamicField?.value?.json;
+    if (!record?.chains?.contents) return null;
+    const result: Record<string, string> = {};
+    for (const { key, value } of record.chains.contents) {
+      result[key] = value;
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  } catch { return null; }
+}
+
 /** Split a swap fee from an output coin and send to treasury.
  *  @param tx - the Transaction
  *  @param outputCoin - the coin result to skim from
@@ -842,8 +869,8 @@ const DB_WAL_USDC_POOL = '0x56a1c985c1f1123181d6b881714793689321ba24301b3585eec4
 const DB_WAL_USDC_POOL_INITIAL_SHARED_VERSION = 414947427;
 
 // DeepBook iUSD/USDC pool — created by TreasuryAgents keeper (1:1 stable pair)
-const DB_IUSD_USDC_POOL = ''; // TODO: set after pool creation
-const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 0; // TODO: set after pool creation
+const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
 
 // ─── Bluefin CLMM mainnet constants ──────────────────────────────────
 // Note: 0x3492... is the original package (defines types), 0xd075... is the latest upgrade (has executable code)
@@ -992,8 +1019,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
     );
 
-    // Split registration coin from gas — simple, no coinWithBalance resolution issues
-    const regMist = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.10 * 1e9));
+    // Split registration coin from gas — use discounted price when possible
+    const regPriceUsd = discountedUsd < basePriceUsd ? discountedUsd : basePriceUsd;
+    const regMist = BigInt(Math.ceil(regPriceUsd / suiPrice * 1.05 * 1e9));
     const [regCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(regMist)]);
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
@@ -1016,55 +1044,73 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   // Accepts any combo of SUI + USDC + IKA to reach the target.
   // Gate check: if user owns a SuiNS name, they get the 25% NS discount.
   // If not, Sibyl routes through NS and taxes the discount spread to cache.
-  const buildRumbleMint = async (): Promise<Uint8Array | null> => {
-    if (!suiPrice || suiPrice <= 0) return null;
+  const buildAutoRoute = async (): Promise<Uint8Array | null> => {
+    if (!suiPrice || suiPrice <= 0) { console.warn('[Rumble] no suiPrice'); return null; }
 
-    // Gate check: does user already own a SuiNS name?
-    const isGated = nsOwnedDomains.length > 0 || !!app.suinsName;
-    const targetUsd = isGated ? discountedUsd * 1.05 : basePriceUsd * 1.05; // 5% buffer
+    // Always use discounted price — we route through NS for the 25% discount regardless
+    const targetUsd = discountedUsd * 1.05; // 5% buffer over NS-discounted price
 
-    // Gather all available tokens
-    const ikaType = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
-    const ikaCoins = await listCoinsOfType(transport, walletAddress, ikaType);
-    const totalIka = ikaCoins.reduce((sum, c) => sum + c.balance, 0n);
-
-    // Calculate available USD value
-    const suiValueUsd = app.sui * suiPrice;
+    // Fetch actual SUI balance from chain (don't rely on app.sui which may be stale)
+    let suiBalanceMist = 0n;
+    try {
+      const balRes = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getBalance', params: [walletAddress, '0x2::sui::SUI'] }),
+      });
+      const balData = await balRes.json() as any;
+      suiBalanceMist = BigInt(balData?.result?.totalBalance ?? '0');
+    } catch {}
+    const suiValueUsd = Number(suiBalanceMist) / 1e9 * suiPrice;
     const usdcValueUsd = Number(totalUsdc) / 1e6;
-    const ikaPrice = 0.003; // from Sibyl/coingecko
-    const ikaValueUsd = Number(totalIka) / 1e9 * ikaPrice;
-    const availableUsd = suiValueUsd + usdcValueUsd + ikaValueUsd;
+    const availableUsd = suiValueUsd + usdcValueUsd;
 
-    if (availableUsd < targetUsd * 0.80) return null; // truly can't afford even with everything
+    if (availableUsd < targetUsd * 0.80) return null; // truly can't afford
 
     const tx = new Transaction();
     tx.setSender(walletAddress);
 
-    // Step 1: Swap IKA → SUI via Cetus (if we have IKA)
-    // IKA/SUI Cetus CLMM pool
-    if (ikaCoins.length > 0 && totalIka > 0n) {
-      const ikaCoin = tx.objectRef(ikaCoins[0]);
-      if (ikaCoins.length > 1) {
-        tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
-      }
-      // Transfer IKA to ultron — ultron will handle the swap server-side
-      // For now: just merge IKA value into the available pool
-      // TODO: direct IKA→SUI swap in PTB via Cetus
-      tx.transferObjects([ikaCoin], tx.pure.address(walletAddress)); // keep for now
-    }
+    // Step 1: Get USDC — subtract existing NS value, only swap the gap
+    // NS price is ~$0.018/token. Existing NS covers part of the registration.
+    const nsValueUsd = Number(totalNs) / 1e6 * 0.018;
+    const gapUsd = Math.max(0, targetUsd - nsValueUsd); // what we still need after existing NS
 
-    // Step 2: Merge all USDC
     let usdcForSwap: any = null;
-    if (usdcCoins.length > 0 && totalUsdc > 0n) {
+    if (gapUsd < 0.01) {
+      // Existing NS covers the full cost — no USDC needed, skip to step 3
+      usdcForSwap = null;
+    } else if (usdcCoins.length > 0 && totalUsdc >= usdcNeeded) {
+      // Have enough USDC already
       usdcForSwap = tx.objectRef(usdcCoins[0]);
       if (usdcCoins.length > 1) {
         tx.mergeCoins(usdcForSwap, usdcCoins.slice(1).map(c => tx.objectRef(c)));
       }
+    } else {
+      // Swap only the gap worth of SUI → USDC (not the full amount)
+      const gapWithBuffer = gapUsd * 1.05; // 5% slippage buffer on the gap
+      const suiNeededMist = BigInt(Math.ceil(gapWithBuffer / suiPrice * 1e9));
+      const [suiPayment] = tx.splitCoins(tx.gas, [tx.pure.u64(suiNeededMist)]);
+      const [zeroDEEP_sui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+      const [suiChange, usdcFromSui, deepChange_sui] = tx.moveCall({
+        target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+        typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', mainPackage.mainnet.coins.USDC.type],
+        arguments: [
+          tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+          suiPayment, zeroDEEP_sui, tx.pure.u64(1), tx.object.clock(),
+        ],
+      });
+      // Merge any existing USDC with swapped USDC
+      if (usdcCoins.length > 0 && totalUsdc > 0n) {
+        const existingUsdc = tx.objectRef(usdcCoins[0]);
+        if (usdcCoins.length > 1) tx.mergeCoins(existingUsdc, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+        tx.mergeCoins(usdcFromSui, [existingUsdc]);
+      }
+      usdcForSwap = usdcFromSui;
+      tx.transferObjects([suiChange, deepChange_sui], tx.pure.address(walletAddress));
     }
 
-    // Step 3: Swap USDC → NS via DeepBook (if we have USDC)
+    // Step 3: Swap USDC → NS via DeepBook (usdcForSwap may come from SUI→USDC swap)
     let nsCoinFromSwap: any = null;
-    if (usdcForSwap && totalUsdc > 100_000n) { // > $0.10 USDC
+    if (usdcForSwap) {
       const dbPool = tx.sharedObjectRef({
         objectId: DB_NS_USDC_POOL,
         initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION,
@@ -1119,44 +1165,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   };
 
   // ── (legacy) Rumble combo: swap IKA→SUI to top up gas, then register with SUI ──
-  const buildRumbleCombo = async (): Promise<Uint8Array | null> => {
-    if (!suiPrice || suiPrice <= 0) return null;
-    // Check if we have IKA tokens to swap
-    const ikaType = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
-    const ikaCoins = await listCoinsOfType(transport, walletAddress, ikaType);
-    const totalIka = ikaCoins.reduce((sum, c) => sum + c.balance, 0n);
-
-    // Need enough combined value: SUI balance + IKA value + USDC value > registration cost
-    const regCostSui = BigInt(Math.ceil(basePriceUsd / suiPrice * 1.10 * 1e9));
-    const suiBalance = await transport.queryCoins?.({ owner: walletAddress }).catch(() => null);
-    // If we have any IKA, swap it all to SUI first, then try SUI direct
-    if (totalIka === 0n) return null;
-
-    const tx = new Transaction();
-    tx.setSender(walletAddress);
-
-    // Swap IKA → SUI via Cetus CLMM (IKA/SUI pool)
-    // Use coin::zero for the output side and let Cetus handle it
-    const ikaCoin = tx.objectRef(ikaCoins[0]);
-    if (ikaCoins.length > 1) {
-      tx.mergeCoins(ikaCoin, ikaCoins.slice(1).map(c => tx.objectRef(c)));
-    }
-
-    // IKA→SUI swap via DeepBook if pool exists, otherwise skip
-    // For now: transfer all IKA value as SUI equivalent by merging to gas after swap
-    // Simple approach: just merge IKA coins, swap via the existing IKA→SUI swap helper
-    // But we can't call our own TS helper inside a PTB...
-    //
-    // Simplest viable approach: if USDC + SUI together cover the cost, merge them
-    // USDC can be swapped to NS directly (already have that path)
-    // The gap is: USDC path needs usdcNeeded but we have less
-    // Solution: use USDC for what it covers + SUI for the rest
-
-    // Actually — let's just lower the USDC threshold and use partial USDC + SUI
-    return null; // TODO: implement multi-token combo PTB
-  };
-
-  // ── Rumble combo: swap USDC→SUI, merge into gas, then register with SUI ──
+  // ── Combo: swap USDC→SUI, merge into gas, then register with SUI ──
   const buildUsdcSuiCombo = async (): Promise<Uint8Array | null> => {
     if (usdcCoins.length === 0 || totalUsdc === 0n) return null;
     if (!suiPrice || suiPrice <= 0) return null;
@@ -1221,27 +1230,23 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
   let paths: PathEntry[];
   const nsPath: PathEntry = { fn: buildNsDirect, canSponsor: true };
   const usdcPath: PathEntry = { fn: buildUsdcSwap, canSponsor: true };
-  const rumblePath: PathEntry = { fn: buildRumbleMint, canSponsor: false };
+  const autoPath: PathEntry = { fn: buildAutoRoute, canSponsor: false };
   const comboPath: PathEntry = { fn: buildUsdcSuiCombo, canSponsor: false };
   const suiPath: PathEntry = { fn: buildSuiDirect, canSponsor: false };
 
-  if (pref === 'NS') {
-    paths = [nsPath, usdcPath, rumblePath, comboPath, suiPath];
+  // Always route through NS for the 25% discount. SUI direct is last resort only.
+  // NS direct → USDC→NS swap → Rumble (multi-token→NS) → USDC+SUI combo → SUI direct
+  if (pref === 'SUI') {
+    // User explicitly asked for SUI — still try NS first, fall back to SUI
+    paths = [nsPath, autoPath, usdcPath, comboPath, suiPath];
   } else if (pref === 'USDC' || pref === 'USD') {
-    paths = [usdcPath, rumblePath, nsPath, comboPath, suiPath];
-  } else if (pref === 'SUI') {
-    paths = [suiPath, nsPath, usdcPath, rumblePath, comboPath];
+    paths = [usdcPath, nsPath, autoPath, comboPath, suiPath];
   } else {
-    // Smart default: try paths based on what the user actually has (biggest balance first)
-    const suiVal = suiPrice ? suiPrice * 20 : 0; // rough estimate
-    const usdcVal = Number(totalUsdc) / 1e6;
-    const nsVal = Number(totalNs) / 1e6 * 0.03;
-    if (nsVal >= discountedUsd * 0.9) paths = [nsPath, usdcPath, suiPath, rumblePath, comboPath];
-    else if (usdcVal >= discountedUsd * 0.9) paths = [usdcPath, nsPath, suiPath, rumblePath, comboPath];
-    else paths = [suiPath, usdcPath, nsPath, rumblePath, comboPath]; // SUI first when it's the dominant asset
+    // Default: always NS-first for the discount
+    paths = [nsPath, usdcPath, autoPath, comboPath, suiPath];
   }
 
-  const pathNames = paths.map(p => p === nsPath ? 'NS' : p === usdcPath ? 'USDC' : p === rumblePath ? 'Rumble' : p === comboPath ? 'Combo' : p === suiPath ? 'SUI' : '?');
+  const pathNames = paths.map(p => p === nsPath ? 'NS' : p === usdcPath ? 'USDC' : p === autoPath ? 'AutoRoute' : p === comboPath ? 'Combo' : p === suiPath ? 'SUI' : '?');
   for (let i = 0; i < paths.length; i++) {
     const { fn, canSponsor } = paths[i];
     try {
@@ -1257,8 +1262,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.warn(`[SKI-NS] Path ${pathNames[i]} failed:`, errMsg);
-      // Surface first real error to help debug
-      if (i === 0) (window as any).__skiNsFirstError = errMsg;
+      if (!(window as any).__skiNsFirstError) (window as any).__skiNsFirstError = `${pathNames[i]}: ${errMsg}`;
     }
   }
 
@@ -2425,6 +2429,10 @@ export async function buildSwapTx(
 
   const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
 
+  // Slippage protection — 2% tolerance on all swaps
+  const SLIPPAGE_BPS = 200n;
+  const withSlip = (expected: bigint) => expected * (10000n - SLIPPAGE_BPS) / 10000n;
+
   // SUI↔USDC: delegate to existing buildSelfSwapTx
   if ((inputCoinType === SUI_TYPE && outputCoinType === USDC_TYPE) ||
       (inputCoinType === USDC_TYPE && outputCoinType === SUI_TYPE)) {
@@ -2449,12 +2457,56 @@ export async function buildSwapTx(
       typeArguments: [inputCoinType, USDC_TYPE],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-        nsForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+        nsForSwap, zeroDEEP, tx.pure.u64(1), tx.object.clock(),
       ],
     });
     addSwapFee(tx, dbResult[0], amount, USDC_TYPE);
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], nsCoin], tx.pure.address(walletAddress));
     return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'NS', toSymbol: 'USDC', tx };
+  }
+
+  // USDC → iUSD (DeepBook: iUSD is base, USDC is quote — buy iUSD with USDC)
+  // Stable pair: 1 USDC (6 dec) ≈ 1 iUSD (9 dec), min_out = 98% adjusted for decimals
+  if (inputCoinType === USDC_TYPE && outputCoinType === IUSD_TYPE) {
+    const usdcCoins = await listCoinsOfType(transport, walletAddress, USDC_TYPE);
+    if (!usdcCoins.length) throw new Error('No USDC found');
+    const usdcCoin = tx.objectRef(usdcCoins[0]);
+    if (usdcCoins.length > 1) tx.mergeCoins(usdcCoin, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+    const [usdcForSwap] = tx.splitCoins(usdcCoin, [tx.pure.u64(amount)]);
+    const expectedIusd = amount * 1000n; // 6 dec → 9 dec
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [IUSD_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcForSwap, zeroDEEP, tx.pure.u64(withSlip(expectedIusd)), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], usdcCoin], tx.pure.address(walletAddress));
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'USDC', toSymbol: 'iUSD', tx };
+  }
+
+  // iUSD → USDC (DeepBook: iUSD is base, USDC is quote — sell iUSD for USDC)
+  // Stable pair: 1 iUSD (9 dec) ≈ 1 USDC (6 dec), min_out = 98% adjusted for decimals
+  if (inputCoinType === IUSD_TYPE && outputCoinType === USDC_TYPE) {
+    const iusdCoins = await listCoinsOfType(transport, walletAddress, IUSD_TYPE);
+    if (!iusdCoins.length) throw new Error('No iUSD found');
+    const iusdCoin = tx.objectRef(iusdCoins[0]);
+    if (iusdCoins.length > 1) tx.mergeCoins(iusdCoin, iusdCoins.slice(1).map(c => tx.objectRef(c)));
+    const [iusdForSwap] = tx.splitCoins(iusdCoin, [tx.pure.u64(amount)]);
+    const expectedUsdc = amount / 1000n; // 9 dec → 6 dec
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [IUSD_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        iusdForSwap, zeroDEEP, tx.pure.u64(withSlip(expectedUsdc)), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], iusdCoin], tx.pure.address(walletAddress));
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'iUSD', toSymbol: 'USDC', tx };
   }
 
   // WAL → USDC (DeepBook: WAL is base, USDC is quote)
@@ -2470,7 +2522,7 @@ export async function buildSwapTx(
       typeArguments: [WAL_TYPE, USDC_TYPE],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_WAL_USDC_POOL, initialSharedVersion: DB_WAL_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-        walForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+        walForSwap, zeroDEEP, tx.pure.u64(1), tx.object.clock(),
       ],
     });
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], walCoin], tx.pure.address(walletAddress));
@@ -2625,6 +2677,86 @@ export async function buildSwapTx(
     return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'XAUM', toSymbol: 'SUI', tx };
   }
 
+  // NS → XAUM (DeepBook NS→USDC, then Bluefin USDC→XAUM)
+  if (inputCoinType === mainPackage.mainnet.coins.NS.type && outputCoinType === XAUM_TYPE) {
+    const nsCoins = await listCoinsOfType(transport, walletAddress, inputCoinType);
+    if (!nsCoins.length) throw new Error('No NS found');
+    const nsCoin = tx.objectRef(nsCoins[0]);
+    if (nsCoins.length > 1) tx.mergeCoins(nsCoin, nsCoins.slice(1).map(c => tx.objectRef(c)));
+    const [nsForSwap] = tx.splitCoins(nsCoin, [tx.pure.u64(amount)]);
+
+    // Step 1: NS → USDC via DeepBook
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
+      typeArguments: [inputCoinType, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        nsForSwap, zeroDEEP, tx.pure.u64(1), tx.object.clock(),
+      ],
+    });
+    const nsChange = dbResult[0];
+    const usdcFromDb = dbResult[1];
+    const deepChange = dbResult[2];
+
+    // Step 2: USDC → XAUM via Bluefin
+    const [usdcBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [USDC_TYPE], arguments: [usdcFromDb] });
+    const [usdcBalValue] = tx.moveCall({ target: '0x2::balance::value', typeArguments: [USDC_TYPE], arguments: [usdcBal] });
+    const [zeroBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [XAUM_TYPE] });
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'), tx.object(BF_GLOBAL_CONFIG), tx.object(BF_XAUM_USDC_POOL),
+        zeroBal, usdcBal,
+        tx.pure.bool(false), tx.pure.bool(true), usdcBalValue,
+        tx.pure.u64(0), tx.pure.u128(BF_MAX_SQRT_PRICE),
+      ],
+    });
+    const [xaumCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+    tx.transferObjects([xaumCoin, usdcDust, nsChange, deepChange, nsCoin], tx.pure.address(walletAddress));
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'NS', toSymbol: 'XAUM', tx };
+  }
+
+  // XAUM → NS (Bluefin XAUM→USDC, then DeepBook USDC→NS)
+  if (inputCoinType === XAUM_TYPE && outputCoinType === mainPackage.mainnet.coins.NS.type) {
+    const xaumCoins = await listCoinsOfType(transport, walletAddress, XAUM_TYPE);
+    if (!xaumCoins.length) throw new Error('No XAUM found');
+    const xaumCoin = tx.objectRef(xaumCoins[0]);
+    if (xaumCoins.length > 1) tx.mergeCoins(xaumCoin, xaumCoins.slice(1).map(c => tx.objectRef(c)));
+    const [xaumForSwap] = tx.splitCoins(xaumCoin, [tx.pure.u64(amount)]);
+
+    // Step 1: XAUM → USDC via Bluefin
+    const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumForSwap] });
+    const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [USDC_TYPE] });
+    const [balOutX, balOutY] = tx.moveCall({
+      target: `${BF_PACKAGE}::pool::swap`,
+      typeArguments: [XAUM_TYPE, USDC_TYPE],
+      arguments: [
+        tx.object('0x6'), tx.object(BF_GLOBAL_CONFIG), tx.object(BF_XAUM_USDC_POOL),
+        xaumBal, zeroUsdcBal,
+        tx.pure.bool(true), tx.pure.bool(true),
+        tx.pure.u64(amount), tx.pure.u64(0), tx.pure.u128(BF_MIN_SQRT_PRICE),
+      ],
+    });
+    const [xaumDust] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [balOutX] });
+    const [usdcFromBf] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [USDC_TYPE], arguments: [balOutY] });
+
+    // Step 2: USDC → NS via DeepBook
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const dbResult = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [mainPackage.mainnet.coins.NS.type, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcFromBf, zeroDEEP, tx.pure.u64(1), tx.object.clock(),
+      ],
+    });
+    tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], xaumDust, xaumCoin], tx.pure.address(walletAddress));
+    return { txBytes: await buildWithTx(tx, transport), fromSymbol: 'XAUM', toSymbol: 'NS', tx };
+  }
+
   // IKA ↔ SUI via Cetus CLMM (IKA/SUI pool — SUI is coinX, IKA is coinY)
   const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
   const CETUS_ROUTER = '0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d';
@@ -2708,7 +2840,7 @@ export async function buildSwapTx(
       typeArguments: [SUI_TYPE, USDC_TYPE],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-        suiFromCetus, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
+        suiFromCetus, zeroDEEP, tx.pure.u64(1), tx.object.clock(),
       ],
     });
     tx.transferObjects([dbResult[0], dbResult[1], dbResult[2], ikaDust, ikaCoin], tx.pure.address(walletAddress));

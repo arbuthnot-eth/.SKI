@@ -3215,7 +3215,7 @@ function _totalThunderCount(): number {
   for (const d of nsOwnedDomains) {
     if (d.kind !== 'nft') continue;
     const bare = d.name.replace(/\.sui$/, '').toLowerCase();
-    total += _thunderCounts[bare] ?? 0;
+    total += (_thunderCounts[bare] ?? 0) + (_thunderLocalCounts[bare] ?? 0);
   }
   return total;
 }
@@ -3308,6 +3308,7 @@ async function _renderConversation(counterparty: string, force = false) {
     const isOut = e.dir === 'out' || (!e.dir && !e.from && !e.msg.startsWith('\u26a1 from'));
     const sender = isOut ? '' : (e.from || '').replace(/\.sui$/, '');
     const cls = isOut ? 'wk-thunder-bubble--out' : 'wk-thunder-bubble--in';
+    const readCls = isOut && e.read ? ' wk-thunder-bubble--read' : '';
     const selCls = _selectedThunderTs.has(e.ts) ? ' wk-thunder-bubble--selected' : '';
     let msgText = e.msg;
     if (!isOut && !e.dir) {
@@ -3319,7 +3320,7 @@ async function _renderConversation(counterparty: string, force = false) {
       const bare = name.toLowerCase();
       return `<span class="wk-thunder-mention" data-mention="${bare}">@${bare}</span>`;
     });
-    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
+    return `<div class="wk-thunder-bubble ${cls}${readCls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
   }).join('');
 
   const deleteBtn = _selectedThunderTs.size > 0
@@ -3628,6 +3629,7 @@ interface ThunderLogEntry {
   ts: number;
   dir?: 'in' | 'out';
   addr?: string; // counterparty wallet address — groups conversations across names
+  read?: boolean; // secret read receipt — outgoing message was quested by recipient
 }
 
 interface ThunderComposeDraft {
@@ -3764,9 +3766,24 @@ async function _storeThunderLocal(_ownerName: string, recipientName: string, mes
     }
   } catch { /* corrupt or first entry */ }
 
-  // Append new entry (cap at 200 strikes)
-  entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir, ...(counterpartyAddr ? { addr: counterpartyAddr } : {}) });
-  if (entries.length > 200) entries = entries.slice(-200);
+  // Secret read receipt: if incoming message is a receipt (✓ read by ...),
+  // mark all prior outgoing messages to that counterparty as read — don't store the receipt itself
+  const isReceipt = dir === 'in' && /^\u2713 read by /i.test(message);
+  if (isReceipt) {
+    const senderBare = (fromName || '').replace(/\.sui$/i, '').toLowerCase();
+    for (const e of entries) {
+      if (e.dir === 'out' || (!e.dir && !e.from)) {
+        const toBare = (e.to || '').replace(/\.sui$/i, '').toLowerCase();
+        if (toBare === senderBare || (counterpartyAddr && e.addr === counterpartyAddr)) {
+          e.read = true;
+        }
+      }
+    }
+  } else {
+    // Append new entry (cap at 200 strikes)
+    entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir, ...(counterpartyAddr ? { addr: counterpartyAddr } : {}) });
+    if (entries.length > 200) entries = entries.slice(-200);
+  }
 
   // Encrypt and store
   const plaintext = new TextEncoder().encode(JSON.stringify(entries));
@@ -3879,6 +3896,9 @@ async function _removeLastThunderLocal(_senderName: string): Promise<void> {
   } catch { /* corrupt — ignore */ }
 }
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
+const _preRumbledNames = new Set<string>(
+  JSON.parse(localStorage.getItem('ski:pre-rumbled') || '[]'),
+);
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
 let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // on-chain kiosk listing for current label
@@ -4290,11 +4310,13 @@ function _nsRouteHtml(): string {
 }
 
 function _nsOwnedListHtml(): string {
-  // Sort owned: thunder count desc → kiosk first → expiration ascending → no-expiry last
+  // Sort owned: total signal count desc (on-chain + local) → kiosk first → expiration ascending → no-expiry last
   const sorted = [...nsOwnedDomains].sort((a, b) => {
-    const ta = _thunderCounts[a.name.replace(/\.sui$/, '').toLowerCase()] ?? 0;
-    const tb = _thunderCounts[b.name.replace(/\.sui$/, '').toLowerCase()] ?? 0;
-    if (ta !== tb) return tb - ta; // most thunder first
+    const aB = a.name.replace(/\.sui$/, '').toLowerCase();
+    const bB = b.name.replace(/\.sui$/, '').toLowerCase();
+    const ta = (_thunderCounts[aB] ?? 0) + (_thunderLocalCounts[aB] ?? 0);
+    const tb = (_thunderCounts[bB] ?? 0) + (_thunderLocalCounts[bB] ?? 0);
+    if (ta !== tb) return tb - ta; // most signals first
     if (a.inKiosk !== b.inKiosk) return a.inKiosk ? -1 : 1;
     const ea = a.expirationMs ?? Infinity;
     const eb = b.expirationMs ?? Infinity;
@@ -4335,12 +4357,15 @@ function _nsOwnedListHtml(): string {
     if (d.inKiosk) badge = '<span class="wk-ns-owned-kiosk">listed</span>';
     else if (d.kind === 'cap') badge = '<span class="wk-ns-owned-cap">cap</span>';
     let thunderHtml = '';
-    const _tc = _thunderCounts[bare.toLowerCase()] ?? 0;
-    if (_tc > 0) {
-      thunderHtml = `<span class="wk-ns-thunder-badge" data-thunder-count="${_tc}" data-domain="${esc(bare)}">\u26a1${_tc > 1 ? _tc : ''}</span>`;
+    const _tcOn = _thunderCounts[bare.toLowerCase()] ?? 0;
+    const _tcLocal = _thunderLocalCounts[bare.toLowerCase()] ?? 0;
+    const _tcTotal = _tcOn + _tcLocal;
+    if (_tcTotal > 0) {
+      const pulseCls = _tcOn > 0 ? ' wk-ns-thunder-badge--pulse' : '';
+      thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} signal${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
     }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
-    const dimCls = hasFilter && !matches && _tc <= 0 ? ' wk-ns-owned-chip--dim' : '';
+    const dimCls = hasFilter && !matches && _tcTotal <= 0 ? ' wk-ns-owned-chip--dim' : '';
     return {
       html: `<button class="wk-ns-owned-chip${kioskCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}${thunderHtml}</button>`,
       matches,
@@ -4596,10 +4621,10 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   const unquestedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
   const totalCount = _thunderLocalCounts[domainBare.toLowerCase()] ?? 0;
   const questedBadge = totalCount > 0
-    ? `<span class="ski-nft-thunder">\u26c8\ufe0f${totalCount}</span>`
+    ? `<span class="ski-nft-thunder" title="${totalCount} decrypt${totalCount > 1 ? 'ed' : 'ed'} signal${totalCount > 1 ? 's' : ''}">\u26c8\ufe0f${totalCount}</span>`
     : '';
   const unquestedBadge = unquestedCount > 0
-    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested">\u26a1${unquestedCount}</span>`
+    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested" title="${unquestedCount} pending signal${unquestedCount > 1 ? 's' : ''} \u2014 tap to purge">\u26a1${unquestedCount}</span>`
     : '';
   const thunderBadgeHtml = questedBadge + unquestedBadge;
   const thunderCardCls = unquestedCount > 0 ? ' ski-nft-card--thunder' : '';
@@ -4610,7 +4635,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
       <div class="ski-nft-info">
         ${thunderBadgeHtml ? (() => {
     const totalUnquested = Object.values(_thunderCounts).reduce((s, c) => s + c, 0);
-    const sunHtml = `<span class="ski-nft-sun" id="ski-nft-sun" title="Decrypt all">\u2600\ufe0f${totalUnquested > 0 ? totalUnquested : ''}</span>`;
+    const sunHtml = `<span class="ski-nft-sun" id="ski-nft-sun" title="Purge">\u2600\ufe0f${totalUnquested > 0 ? totalUnquested : ''}</span>`;
     return `<div class="ski-nft-badges">${sunHtml}${thunderBadgeHtml}</div>`;
   })() : ''}
         <span class="ski-nft-domain">${esc(domainBare)}<span class="ski-nft-tld">.sui</span></span>
@@ -4618,6 +4643,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
         ${expiryHtml}
       </div>
       <div class="ski-nft-owner">${ownerBadge}</div>
+      <button class="ski-nft-dismiss" id="ski-nft-dismiss" type="button" title="Clear">\u2715</button>
     </div>`;
 
   popover.removeAttribute('hidden');
@@ -4784,6 +4810,16 @@ async function _fetchOwnedDomains() {
     nsOwnedDomains = fresh;
     _cacheOwnedDomains(fetchAddr, fresh);
     _patchNsOwnedList();
+
+    // Auto pre-rumble any owned names not yet provisioned (covers Tradeport buys, gifts, etc.)
+    for (const d of fresh) {
+      if (d.kind !== 'nft') continue;
+      const bare = d.name.replace(/\.sui$/i, '').toLowerCase();
+      if (_preRumbledNames.has(bare)) continue;
+      _preRumbledNames.add(bare);
+      try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
+      window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: bare } }));
+    }
   } catch {
     // Silently fail — cached data (if any) still showing
   }
@@ -7166,6 +7202,7 @@ function renderSkiMenu() {
   document.getElementById('wk-send-clear')?.addEventListener('click', () => {
     const amountInput = document.getElementById('wk-send-amount') as HTMLInputElement | null;
     if (!amountInput) return;
+    _clearNsInput();
     pendingSendAmount = '';
     amountInput.value = '';
     amountInput.classList.remove('wk-send-amount--over');
@@ -8366,6 +8403,8 @@ function renderSkiMenu() {
         renderSkiMenu();
         setTimeout(() => refreshPortfolio(true), 2000);
         // Notify idle overlay to refresh status (TRADE → SUIAMI transition)
+        _preRumbledNames.add(label.toLowerCase());
+        try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
         window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
         showToast(`${label}.sui purchased \u2713`);
       } catch (err) {
@@ -8454,6 +8493,8 @@ function renderSkiMenu() {
           nsOwnedFetchedFor = '';
           _fetchOwnedDomains();
           // Notify idle overlay to refresh status (MINT → SUIAMI transition)
+          _preRumbledNames.add(label.toLowerCase());
+          try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
           window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
           showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
           if (ws2.address) try { localStorage.removeItem(`ski:balances:${ws2.address}`); } catch {}
@@ -8479,42 +8520,10 @@ function renderSkiMenu() {
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
 
-    // iUSD route disabled — ultron needs funding for NS acquisition
-    // TODO: re-enable when ultron has sufficient SUI for swaps
-    let iusdRouteUsed = false;
-    if (false && suiPriceCache?.price) {
-      try {
-        const domainPriceUsd = nsPriceUsd ?? 10;
-        const discountedPrice = domainPriceUsd * 0.75; // 25% NS discount
-        const collateralMist = BigInt(Math.ceil((discountedPrice / suiPriceCache.price) * 1.5 * 1e9)); // 150% collateral
-        const signalId = Date.now() % 1000;
-
-        if (btn) btn.textContent = 'iUSD';
-        const res = await fetch('/api/cache/acquire-ns', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            recipient: ws2.address,
-            collateralValueMist: String(collateralMist),
-            domainPriceUsd: discountedPrice,
-            signalId,
-          }),
-        });
-        const iusdRes = await res.json() as any;
-        if (iusdRes?.nsDigest && !iusdRes.error) {
-          iusdRouteUsed = true;
-          // NS is now in user's wallet — wait briefly for finalization
-          await new Promise(r => setTimeout(r, 2000));
-        }
-      } catch {
-        // iUSD route failed — fall through to standard registration
-      }
-    }
-
     try {
       // Force fresh price — stale localStorage price causes insufficient coin splits
       const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
-      const result = await buildRegisterSplashNsTx(ws2.address, domain, freshPrice, !app.suinsName, iusdRouteUsed ? 'NS' : (selectedCoinSymbol ?? undefined));
+      const result = await buildRegisterSplashNsTx(ws2.address, domain, freshPrice, !app.suinsName, selectedCoinSymbol ?? undefined);
       if (btn) btn.textContent = '\u270f';
       let digest: string;
       if (result.sponsorAddress) {
@@ -8818,7 +8827,7 @@ function renderSkiMenu() {
       let lastSender = '';
       const namesWithThunder = Object.entries(_thunderCounts).filter(([, c]) => c > 0);
       if (namesWithThunder.length === 0) {
-        showToast('\u2600\ufe0f No signals to decrypt');
+        showToast('\u2600\ufe0f Nothing to purge');
       } else {
         for (const [name, count] of namesWithThunder) {
           const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
@@ -8835,7 +8844,7 @@ function renderSkiMenu() {
           totalDecrypted += payloads.length;
           _thunderCounts[name] = 0;
         }
-        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} decrypted`);
+        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
       }
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
@@ -8896,6 +8905,33 @@ function renderSkiMenu() {
       _updateSendBtnMode();
       fetchAndShowNsPrice(domain);
     }
+    _toggleThunderConvo();
+  });
+
+  // Dismiss button on NFT card — clears name, card, thunder input, amount
+  document.getElementById('ski-nft-inline')?.addEventListener('click', (e) => {
+    const dismiss = (e.target as HTMLElement).closest('#ski-nft-dismiss');
+    if (!dismiss) return;
+    e.stopPropagation();
+    _clearNsInput();
+    pendingSendAmount = '';
+    const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
+    if (_ai) { _ai.value = ''; _ai.classList.remove('wk-send-amount--over'); }
+    document.querySelector('.wk-send-dollar')?.classList.remove('wk-send-dollar--over');
+    const _ac = document.getElementById('wk-send-clear');
+    if (_ac) _ac.style.display = 'none';
+    const nsClearBtn = document.getElementById('wk-ns-clear-btn');
+    if (nsClearBtn) nsClearBtn.style.display = 'none';
+    // Clear thunder convo target + input
+    _thunderConvoTarget = '';
+    _thunderConvoOpen = false;
+    const thunderInput = document.getElementById('wk-thunder-reply') as HTMLInputElement | null;
+    if (thunderInput) thunderInput.value = '';
+    _patchNsPrice();
+    _patchNsStatus();
+    _patchNsRoute();
+    _updateSendBtnMode();
+    _syncNftCardToInput();
     _toggleThunderConvo();
   });
 
@@ -9175,7 +9211,17 @@ function bindEvents() {
       // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
       const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
-      const _idleInputVal = nsLabel.trim();
+      // Auto-populate with highest-signal owned name if no active input
+      let _idleInputVal = nsLabel.trim();
+      if (!_idleInputVal && nsOwnedDomains.length > 0) {
+        const topName = [...nsOwnedDomains]
+          .map(d => {
+            const b = d.name.replace(/\.sui$/, '').toLowerCase();
+            return { bare: b, score: (_thunderCounts[b] ?? 0) + (_thunderLocalCounts[b] ?? 0) };
+          })
+          .sort((a, b) => b.score - a.score)[0];
+        if (topName && topName.score > 0) _idleInputVal = topName.bare;
+      }
 
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
@@ -9191,6 +9237,7 @@ function bindEvents() {
             </div>
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
           </div>
+          <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
           <div class="ski-idle-context" id="ski-idle-price" hidden>
             <svg class="ski-idle-context-icon" viewBox="0 0 16 16" width="14" height="14"><rect x="1" y="1" width="14" height="14" rx="2" fill="#4da2ff" stroke="#fff" stroke-width="1.2"/></svg>
             <span class="ski-idle-context-text" id="ski-idle-price-text"></span>
@@ -9198,16 +9245,32 @@ function bindEvents() {
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
           <div id="ski-idle-card" class="ski-idle-card"></div>
           <div id="ski-idle-sol-qr" class="ski-idle-sol-qr" hidden></div>
-          <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
+          <div class="ski-idle-iusd-panel" id="ski-idle-iusd-panel" hidden>
+            <div class="ski-idle-iusd-stats" id="ski-idle-iusd-stats"></div>
+            <div class="ski-idle-iusd-controls">
+              <button class="ski-idle-iusd-action ski-idle-iusd-action--mint" id="ski-idle-iusd-mint" type="button" title="Swap USDC \u2192 iUSD">Buy</button>
+              <button class="ski-idle-iusd-action ski-idle-iusd-action--burn" id="ski-idle-iusd-burn" type="button" title="Burn iUSD \u2014 reduce supply">Burn</button>
+              <button class="ski-idle-iusd-action ski-idle-iusd-action--ignite" id="ski-idle-iusd-ignite" type="button" title="Ignite \u2014 gas on any chain">\u26a1 Ignite</button>
+            </div>
+          </div>
           <div class="ski-idle-thunder-row">
-            <button class="ski-idle-thunder-at" id="ski-idle-thunder-at" type="button" title="Tag a name">@</button>
-            <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="\u2026private thunder" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
-            <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
+            <button class="ski-idle-thunder-at" id="ski-idle-thunder-at" type="button" title="Tag a name">\u25a0</button>
+            <div class="ski-idle-thunder-input-wrap">
+              <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
+              <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green">\u25cf</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Initiate rumble squids" data-action="rumble">\ud83e\udd91</button>
+              </div>
+              <div class="ski-idle-thunder-send-group">
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--iusd" type="button" title="iUSD" data-action="iusd">$</button>
+                <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
+              </div>
+            </div>
           </div>
         </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
-          <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble \u2014 provision all chain wallets">\u26a1 Rumble</button>
+          <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Initiate rumble squids \u2014 provision all chain wallets">\ud83e\udd91 Rumble</button>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
         </div>
       `;
@@ -9410,9 +9473,8 @@ function bindEvents() {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
           if (!primaryName) { card.innerHTML = ''; return; }
           // Show primary name card with SUIAMI balance
-          const primaryThunder = _thunderCounts[primaryName.toLowerCase()] ?? 0;
-          const primaryLocal = _thunderLocalCounts[primaryName.toLowerCase()] ?? 0;
-          const badgeHtml = (primaryLocal > 0 ? `\u26c8\ufe0f${primaryLocal} ` : '') + (primaryThunder > 0 ? `\u26a1${primaryThunder}` : '');
+          const primaryTotal = (_thunderCounts[primaryName.toLowerCase()] ?? 0) + (_thunderLocalCounts[primaryName.toLowerCase()] ?? 0);
+          const badgeHtml = primaryTotal > 0 ? `\u26c8\ufe0f${primaryTotal}` : '';
           const primaryOwned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === primaryName.toLowerCase());
           let primaryExpiryHtml = '';
           if (primaryOwned?.expirationMs) {
@@ -9426,16 +9488,17 @@ function bindEvents() {
           const balHtml = totalUsd >= 0.50 ? `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span></span> ` : '';
           // iUSD badge — shows after SUIAMI is completed (identity verified)
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
-          card.innerHTML = `${balHtml}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${iusdBadge}${primaryExpiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
+          card.innerHTML = `${balHtml}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${iusdBadge}${primaryExpiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<button class="ski-idle-card-dismiss" type="button" title="Clear">\u2715</button>`;
           return;
         }
         // Persist as authoritative domain — drives NS input on refresh and menu open
         _lastNftCardDomain = name;
         try { sessionStorage.setItem('ski:nft-card-domain', name); } catch {}
         try { localStorage.setItem('ski:ns-label', name); } catch {}
-        const thunderCount = _thunderCounts[name.toLowerCase()] ?? 0;
-        const localCount = _thunderLocalCounts[name.toLowerCase()] ?? 0;
-        const badgeHtml = (localCount > 0 ? `\u26c8\ufe0f${localCount} ` : '') + (thunderCount > 0 ? `\u26a1${thunderCount}` : '');
+        const _tcOn = _thunderCounts[name.toLowerCase()] ?? 0;
+        const _tcLocal = _thunderLocalCounts[name.toLowerCase()] ?? 0;
+        const _tcTotal = _tcOn + _tcLocal;
+        const badgeHtml = _tcTotal > 0 ? `\u26c8\ufe0f${_tcTotal}` : '';
         // Expiration days — check owned domains first, then fall back to on-chain record
         const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name.toLowerCase());
         const expMs = ownedEntry?.expirationMs ?? nsExpirationMs;
@@ -9449,7 +9512,7 @@ function bindEvents() {
         } else if (nsGraceEndMs > 0) {
           expiryHtml = ` <span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent">EXPIRED</span>`;
         }
-        card.innerHTML = `<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span><span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${expiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
+        card.innerHTML = `<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span><span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${expiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<button class="ski-idle-card-dismiss" type="button" title="Clear">\u2715</button>`;
         // Fetch resolved address balance
         (async () => {
           try {
@@ -9504,6 +9567,23 @@ function bindEvents() {
       // Click card → populate name input with the card's name
       _idleOverlay.querySelector('#ski-idle-card')?.addEventListener('click', (e) => {
         e.stopPropagation();
+        // Dismiss button — clear everything
+        if ((e.target as HTMLElement).closest('.ski-idle-card-dismiss')) {
+          if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input', { bubbles: true })); }
+          nsLabel = '';
+          const _clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+          if (_clearBtn) _clearBtn.style.display = 'none';
+          const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+          if (mainInput) mainInput.value = '';
+          const thunderInp = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+          if (thunderInp) thunderInp.value = '';
+          const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
+          if (card) card.innerHTML = '';
+          const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (convoEl) convoEl.setAttribute('hidden', '');
+          _updateIdleStatus();
+          return;
+        }
         const nameEl = _idleOverlay?.querySelector('.ski-idle-card-name') as HTMLElement | null;
         if (!nameEl || !_idleNsInput) return;
         const name = nameEl.textContent?.replace(/\.sui$/, '').trim() || '';
@@ -9666,7 +9746,8 @@ function bindEvents() {
             let preSignedBytes: string | null = null;
             let preSignedSig: string | null = null;
             try {
-              const regResult = await buildRegisterSplashNsTx(ws.address, `${label}.sui`, suiPriceCache?.price, true, 'NS');
+              const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
+              const regResult = await buildRegisterSplashNsTx(ws.address, `${label}.sui`, freshPrice, true, 'NS');
               if (regResult) {
                 const bytes = regResult instanceof Uint8Array ? regResult : regResult;
                 const { signature } = await signTransaction(bytes);
@@ -9783,6 +9864,8 @@ function bindEvents() {
                           nsAvail = 'owned';
                           _updateIdleStatus();
                           _updateIdleCard(label);
+                          _preRumbledNames.add(label.toLowerCase());
+                          try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
                           window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
                         }
                       } catch (regErr) {
@@ -10121,8 +10204,136 @@ function bindEvents() {
         }
       });
 
-      // Diamond click → toggle target address row
-      _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', (e) => {
+      // iUSD panel — $ quick button toggles panel, shows treasury stats + mint/burn/ignite
+      _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', async (e) => {
+        const btn = (e.target as HTMLElement).closest('[data-action="iusd"]');
+        if (!btn) return;
+        e.stopPropagation();
+        const panel = _idleOverlay?.querySelector('#ski-idle-iusd-panel') as HTMLElement | null;
+        if (!panel) return;
+        const wasHidden = panel.hasAttribute('hidden');
+        if (wasHidden) {
+          panel.removeAttribute('hidden');
+          // Fetch treasury state
+          const stats = panel.querySelector('#ski-idle-iusd-stats') as HTMLElement;
+          if (stats) stats.innerHTML = '<span style="opacity:0.5">loading\u2026</span>';
+          try {
+            const gql = await fetch('https://graphql.mainnet.sui.io/graphql', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ query: '{ object(address: "0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb") { asMoveObject { contents { json } } } }' }),
+            });
+            const data = await gql.json() as any;
+            const t = data?.data?.object?.asMoveObject?.contents?.json;
+            if (t) {
+              const supply = (Number(t.total_minted) - Number(t.total_burned)) / 1e9;
+              const senior = Number(t.senior_value_mist) / 1e9;
+              const ratio = supply > 0 ? Math.round(senior / supply * 100) : 0;
+              const ratioColor = ratio >= 150 ? '#22c55e' : ratio >= 110 ? '#FFB800' : '#ef4444';
+              stats.innerHTML = `<span style="color:#22c55e">$</span>${supply.toFixed(1)} supply <span style="color:${ratioColor}">${ratio}%</span>`;
+            }
+          } catch { if (stats) stats.innerHTML = '<span style="color:#ef4444">offline</span>'; }
+        } else {
+          panel.setAttribute('hidden', '');
+        }
+      });
+
+      // Buy button — swap USDC → iUSD via DeepBook (1:1 stable pair)
+      _idleOverlay.querySelector('#ski-idle-iusd-mint')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.style.opacity = '0.4';
+        try {
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const addr = normalizeSuiAddress(ws.address);
+          // Find USDC balance
+          const usdcType = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+          const rpc = await fetch('https://sui-rpc.publicnode.com', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, usdcType] }),
+          });
+          const rpcData = await rpc.json() as any;
+          const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
+          if (!coins.length) { showToast('No USDC to swap for iUSD'); return; }
+          const totalUsdc = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+          showToast(`\ud83d\udcb5 Swapping ${(Number(totalUsdc) / 1e6).toFixed(2)} USDC \u2192 iUSD\u2026`);
+          const { buildSwapTx } = await import('./suins.js');
+          const iusdType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+          const result = await buildSwapTx(ws.address, usdcType, iusdType, totalUsdc);
+          await signAndExecuteTransaction(result.txBytes);
+          showToast(`\u2728 ${(Number(totalUsdc) / 1e6).toFixed(2)} iUSD acquired`);
+          refreshPortfolio(true);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Swap failed';
+          if (msg.includes('not supported')) {
+            showToast('iUSD/USDC pool needs liquidity — use Burn to improve ratio');
+          } else if (!msg.toLowerCase().includes('reject')) {
+            showToast(msg);
+          }
+        } finally { btn.style.opacity = ''; }
+      });
+
+      // Burn button — burn user's iUSD to improve collateral ratio
+      _idleOverlay.querySelector('#ski-idle-iusd-burn')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.style.opacity = '0.4';
+        try {
+          // Find user's iUSD coins
+          const iusdType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const addr = normalizeSuiAddress(ws.address);
+          const rpc = await fetch('https://sui-rpc.publicnode.com', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, iusdType] }),
+          });
+          const rpcData = await rpc.json() as any;
+          const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
+          if (!coins.length) { showToast('No iUSD to burn'); return; }
+          const totalBal = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+          showToast(`\ud83d\udd25 Burning ${(Number(totalBal) / 1e9).toFixed(2)} iUSD\u2026`);
+          const { Transaction } = await import('@mysten/sui/transactions');
+          const tx = new Transaction();
+          tx.setSender(addr);
+          const IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9';
+          const TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
+          const TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
+          const primary = tx.object(coins[0].coinObjectId);
+          if (coins.length > 1) tx.mergeCoins(primary, coins.slice(1).map((c: any) => tx.object(c.coinObjectId)));
+          tx.moveCall({
+            package: IUSD_PKG, module: 'iusd', function: 'burn_and_redeem',
+            arguments: [tx.object(TREASURY_CAP), tx.object(TREASURY), primary, tx.object('0x6')],
+          });
+          const bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
+          bytes.tx = tx;
+          await signAndExecuteTransaction(bytes);
+          showToast(`\ud83d\udd25 ${(Number(totalBal) / 1e9).toFixed(2)} iUSD burned — ratio improving`);
+          refreshPortfolio(true);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Burn failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+        } finally { btn.style.opacity = ''; }
+      });
+
+      // Ignite button — placeholder for cross-chain gas
+      _idleOverlay.querySelector('#ski-idle-iusd-ignite')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showToast('\u26a1 Ignite — coming soon. Burn iUSD, get gas on any chain.');
+      });
+
+      // Squid quick-action → triggers Rumble button
+      _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', (e) => {
+        const squid = (e.target as HTMLElement).closest('[data-action="rumble"]');
+        if (!squid) return;
+        e.stopPropagation();
+        (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
+      });
+
+      // Diamond click → toggle target address row (own addresses or Roster lookup for others)
+      _idleOverlay.querySelector('#ski-idle-status')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
         if (!addrRow) return;
@@ -10134,6 +10345,30 @@ function bindEvents() {
         const ws = getState();
         const addr = nsTargetAddress || nsNftOwner || ws.address || '';
         if (!addr) return;
+
+        // Determine if viewing own name or someone else's
+        const viewingName = _idleNsInput?.value?.trim().toLowerCase() || '';
+        const ownName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        const isOwnName = !viewingName || viewingName === ownName || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === viewingName);
+
+        let btc = '', eth = '', sol = '';
+        if (isOwnName) {
+          btc = localStorage.getItem('ski:btc-address') || app.btcAddress || '';
+          eth = localStorage.getItem('ski:eth-address') || app.ethAddress || '';
+          sol = localStorage.getItem('ski:sol-address') || app.solAddress || '';
+        } else if (viewingName) {
+          // Read from SUIAMI Roster for other people's names
+          try {
+            const { readRoster } = await import('./suins.js');
+            const roster = await readRoster(viewingName);
+            if (roster) {
+              btc = roster.btc || '';
+              eth = roster.eth || '';
+              sol = roster.sol || '';
+            }
+          } catch {}
+        }
+
         const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
         const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
         const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
@@ -10141,9 +10376,9 @@ function bindEvents() {
         const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#627eea"/><g transform="translate(10,4) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
 
         const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
-        const btcLine = app.btcAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${app.btcAddress}">${btcIcon} ${app.btcAddress.slice(0, 8)}\u2026${app.btcAddress.slice(-4)}</span>` : '';
-        const solLine = app.solAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${app.solAddress}">${solIcon} ${app.solAddress.slice(0, 6)}\u2026${app.solAddress.slice(-4)}</span>` : '';
-        const ethLine = app.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${app.ethAddress}">${ethIcon} ${app.ethAddress.slice(0, 6)}\u2026${app.ethAddress.slice(-4)}</span>` : '';
+        const btcLine = btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${btc}">${btcIcon} ${btc.slice(0, 8)}\u2026${btc.slice(-4)}</span>` : '';
+        const solLine = sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${sol}">${solIcon} ${sol.slice(0, 6)}\u2026${sol.slice(-4)}</span>` : '';
+        const ethLine = eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${eth}">${ethIcon} ${eth.slice(0, 6)}\u2026${eth.slice(-4)}</span>` : '';
         addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
         addrRow.removeAttribute('hidden');
         _freezeGif();
@@ -10154,23 +10389,238 @@ function bindEvents() {
             navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
           });
         });
+        // Click outside closes the address row
+        const _closeAddr = (ev: Event) => {
+          if (addrRow.contains(ev.target as Node)) return;
+          addrRow.setAttribute('hidden', '');
+          _unfreezeGif();
+          _idleOverlay?.removeEventListener('click', _closeAddr);
+        };
+        setTimeout(() => _idleOverlay?.addEventListener('click', _closeAddr), 50);
       });
 
       // Rumble button → dispatch ski:rumble event
-      _idleOverlay.querySelector('#ski-idle-rumble')?.addEventListener('click', (e) => {
+      _idleOverlay.querySelector('#ski-idle-rumble')?.addEventListener('click', async (e) => {
         e.stopPropagation();
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
-        btn.textContent = '\u26a1 ...';
-        window.dispatchEvent(new Event('ski:rumble'));
-        // Re-enable after rumble completes or times out
-        const onComplete = () => {
-          btn.disabled = false;
-          btn.textContent = '\u26a1 Rumble';
-          window.removeEventListener('ski:rumble-complete', onComplete);
+        btn.innerHTML = '\ud83e\udd91 ...';
+
+        // Show rumble panel in the convo area
+        const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (convoEl) {
+          convoEl.removeAttribute('hidden');
+          convoEl.innerHTML = '<div class="ski-idle-rumble-panel" id="ski-idle-rumble-panel"></div>';
+        }
+        const panel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+
+        const addStep = (label: string, status: 'pending' | 'active' | 'done' | 'skip') => {
+          if (!panel) return;
+          const colors = { pending: 'rgba(255,255,255,0.3)', active: '#FFB800', done: '#22c55e', skip: '#ef4444' };
+          const icons = { pending: '\u25cb', active: '\u26a1', done: '\u2713', skip: '\u2022' };
+          const step = document.createElement('div');
+          step.className = 'ski-idle-rumble-step';
+          step.style.cssText = `color:${colors[status]};font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:0.7rem;font-weight:600;padding:3px 6px;display:flex;align-items:center;gap:6px`;
+          step.innerHTML = `<span style="font-size:0.8rem">${icons[status]}</span> ${label}`;
+          step.dataset.status = status;
+          panel.appendChild(step);
+          if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
+          return step;
         };
-        window.addEventListener('ski:rumble-complete', onComplete);
-        setTimeout(onComplete, 300_000); // 5 min safety timeout
+
+        const updateStep = (step: HTMLElement | undefined, status: 'done' | 'skip' | 'active', newLabel?: string) => {
+          if (!step) return;
+          const colors = { active: '#FFB800', done: '#22c55e', skip: '#ef4444' };
+          const icons = { active: '\u26a1', done: '\u2713', skip: '\u2022' };
+          step.style.color = colors[status];
+          step.dataset.status = status;
+          const iconSpan = step.querySelector('span');
+          if (iconSpan) iconSpan.textContent = icons[status];
+          if (newLabel) {
+            step.innerHTML = `<span style="font-size:0.8rem">${icons[status]}</span> ${newLabel}`;
+          }
+        };
+
+        try {
+          // Check cache first — instant if addresses already known
+          const cachedBtc = localStorage.getItem('ski:btc-address') || app.btcAddress || '';
+          const cachedEth = localStorage.getItem('ski:eth-address') || app.ethAddress || '';
+          const cachedSol = localStorage.getItem('ski:sol-address') || app.solAddress || '';
+
+          // All chains cached → show instantly, no RPC
+          if (cachedBtc && cachedSol) {
+            const status = { btcAddress: cachedBtc, ethAddress: cachedEth, solAddress: cachedSol };
+            // Hide rumble panel, show address row instead
+            if (convoEl) convoEl.setAttribute('hidden', '');
+            const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+            if (addrRow) {
+              if (!addrRow.hasAttribute('hidden')) {
+                addrRow.setAttribute('hidden', '');
+                _unfreezeGif();
+              } else {
+                const addr = nsTargetAddress || nsNftOwner || ws.address || '';
+                const short = `${addr.slice(0, 10)}\u2026${addr.slice(-6)}`;
+                const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
+                const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
+                const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
+                const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#627eea"/><g transform="translate(10,4) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
+                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
+                const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 8)}\u2026${status.btcAddress.slice(-4)}</span>`;
+                const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-4)}</span>`;
+                const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-4)}</span>` : '';
+                addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
+                addrRow.removeAttribute('hidden');
+                _freezeGif();
+                addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
+                  el.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    const full = (el as HTMLElement).title || '';
+                    navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
+                  });
+                });
+                const _closeAddr = (ev: Event) => {
+                  if (addrRow.contains(ev.target as Node)) return;
+                  addrRow.setAttribute('hidden', '');
+                  _unfreezeGif();
+                  _idleOverlay?.removeEventListener('click', _closeAddr);
+                };
+                setTimeout(() => _idleOverlay?.addEventListener('click', _closeAddr), 50);
+              }
+            }
+            btn.disabled = false;
+            btn.innerHTML = '\ud83e\udd91 Rumble';
+            return;
+          }
+
+          // Not all chains cached — RPC check then provision
+          const checkStep = addStep('Checking existing dWallets...', 'active');
+          const { getCrossChainStatus } = await import('./client/ika.js');
+          const status = await getCrossChainStatus(ws.address);
+          updateStep(checkStep, 'done', 'dWallet status loaded');
+
+          // Show what exists
+          const secpStep = addStep(
+            status.btcAddress ? `secp256k1 already active` : 'secp256k1 — needs provisioning',
+            status.btcAddress ? 'skip' : 'pending',
+          );
+          const edStep = addStep(
+            status.solAddress ? `ed25519 already active` : 'ed25519 — needs provisioning',
+            status.solAddress ? 'skip' : 'pending',
+          );
+
+          // Step 2: Provision if needed
+          if (!status.btcAddress || !status.solAddress) {
+            const provStep = addStep('Starting DKG...', 'active');
+            window.dispatchEvent(new Event('ski:rumble'));
+
+            await new Promise<void>((resolve) => {
+              const onProgress = ((ev: CustomEvent) => {
+                const stage = ev.detail as string;
+                if (stage.includes('secp256k1')) updateStep(secpStep, stage.includes('fail') ? 'skip' : 'active', stage);
+                else if (stage.includes('ed25519')) updateStep(edStep, stage.includes('fail') ? 'skip' : 'active', stage);
+                else if (stage === 'Done!') {
+                  updateStep(provStep, 'done', 'DKG complete');
+                }
+              }) as EventListener;
+
+              const onComplete = ((ev: CustomEvent) => {
+                window.removeEventListener('ski:rumble-progress', onProgress);
+                window.removeEventListener('ski:rumble-complete', onComplete as EventListener);
+                const result = ev.detail;
+                if (result?.btcAddress) updateStep(secpStep, 'done', `secp256k1 \u2713 BTC + ETH`);
+                if (result?.solAddress) updateStep(edStep, 'done', `ed25519 \u2713 SOL`);
+                resolve();
+              }) as EventListener;
+
+              window.addEventListener('ski:rumble-progress', onProgress);
+              window.addEventListener('ski:rumble-complete', onComplete as EventListener);
+              setTimeout(() => resolve(), 300_000);
+            });
+          }
+
+          // Step 3: Final summary — expandable chain addresses
+          const final = await getCrossChainStatus(ws.address);
+          const chains: string[] = [];
+          if (final.btcAddress) { chains.push('BTC'); updateStep(secpStep, 'done', `secp256k1 \u2713 BTC + ETH`); }
+          if (final.ethAddress) chains.push('ETH');
+          if (final.solAddress) { chains.push('SOL'); updateStep(edStep, 'done', `ed25519 \u2713 SOL`); }
+
+          const summaryStep = addStep(`Rumble complete \u2014 ${chains.join(' + ') || 'no chains'} ready`, 'done');
+          if (summaryStep) {
+            summaryStep.style.cursor = 'pointer';
+            summaryStep.title = 'Tap to show addresses';
+            summaryStep.addEventListener('click', () => {
+              // Toggle address expansion
+              let addrDiv = panel?.querySelector('.ski-idle-rumble-addrs') as HTMLElement | null;
+              if (addrDiv) { addrDiv.remove(); return; }
+              addrDiv = document.createElement('div');
+              addrDiv.className = 'ski-idle-rumble-addrs';
+              addrDiv.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding:4px 0 2px 20px';
+              // Detect native SOL wallet (Phantom, Backpack, Solflare)
+              const nativeSol = localStorage.getItem('ski:sol-native') || '';
+              const addrs: { chain: string; label: string; addr: string; color: string }[] = [
+                { chain: 'btc', label: 'btc@', addr: final.btcAddress || '', color: '#f7931a' },
+                { chain: 'eth', label: 'eth@', addr: final.ethAddress || '', color: '#818cf8' },
+                { chain: 'sol', label: 'sol@ dWallet', addr: final.solAddress || '', color: '#c084fc' },
+              ];
+              if (nativeSol) {
+                addrs.push({ chain: 'sol', label: 'sol@ native', addr: nativeSol, color: '#14f195' });
+              }
+              for (const a of addrs) {
+                if (!a.addr) continue;
+                const row = document.createElement('div');
+                row.style.cssText = `font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:600;color:${a.color};cursor:pointer;padding:2px 4px;border-radius:3px;border:1px solid ${a.color}33;background:${a.color}15`;
+                row.textContent = `${a.label} ${a.addr.slice(0, 8)}...${a.addr.slice(-6)}`;
+                row.title = a.addr;
+                row.addEventListener('click', (ev) => { ev.stopPropagation(); navigator.clipboard.writeText(a.addr); showToast(`${a.label} copied`); });
+                addrDiv!.appendChild(row);
+              }
+
+              // "Link SOL wallet" button — connect Phantom/Backpack/Solflare
+              if (!nativeSol) {
+                const linkBtn = document.createElement('button');
+                linkBtn.style.cssText = 'font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:700;color:#14f195;cursor:pointer;padding:3px 8px;border-radius:4px;border:1px solid rgba(20,241,149,0.4);background:rgba(20,241,149,0.12);margin-top:2px;align-self:flex-start';
+                linkBtn.textContent = '+ Link SOL wallet';
+                linkBtn.title = 'Connect Phantom, Backpack, or Solflare';
+                linkBtn.addEventListener('click', async (ev) => {
+                  ev.stopPropagation();
+                  try {
+                    // Try Phantom → Backpack → Solflare
+                    const provider = (window as any).phantom?.solana ?? (window as any).solana ?? (window as any).backpack ?? (window as any).solflare;
+                    if (!provider) { showToast('No Solana wallet found \u2014 install Phantom or Backpack'); return; }
+                    linkBtn.textContent = 'Connecting...';
+                    const resp = await provider.connect();
+                    const pubkey = resp?.publicKey?.toString?.() || resp?.publicKey?.toBase58?.() || '';
+                    if (!pubkey) { showToast('Could not get SOL address'); linkBtn.textContent = '+ Link SOL wallet'; return; }
+                    localStorage.setItem('ski:sol-native', pubkey);
+                    showToast(`\u2713 SOL linked: ${pubkey.slice(0, 6)}...${pubkey.slice(-4)}`);
+                    // Add the row inline
+                    const newRow = document.createElement('div');
+                    newRow.style.cssText = 'font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:600;color:#14f195;cursor:pointer;padding:2px 4px;border-radius:3px;border:1px solid rgba(20,241,149,0.2);background:rgba(20,241,149,0.08)';
+                    newRow.textContent = `sol@ native ${pubkey.slice(0, 8)}...${pubkey.slice(-6)}`;
+                    newRow.title = pubkey;
+                    newRow.addEventListener('click', (e2) => { e2.stopPropagation(); navigator.clipboard.writeText(pubkey); showToast('sol@ native copied'); });
+                    linkBtn.replaceWith(newRow);
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : 'SOL connect failed');
+                    linkBtn.textContent = '+ Link SOL wallet';
+                  }
+                });
+                addrDiv.appendChild(linkBtn);
+              }
+
+              summaryStep.after(addrDiv);
+              if (convoEl) convoEl.scrollTop = convoEl.scrollHeight;
+            });
+          }
+        } catch (err) {
+          addStep(`Error: ${err instanceof Error ? err.message : 'unknown'}`, 'skip');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = '\ud83e\udd91 Rumble';
+        }
       });
 
       // Next page → t2000 page
@@ -10301,10 +10751,41 @@ function bindEvents() {
 
             for (const { name, nftId, count } of toQuest) {
               try {
-                const payloads = await decryptAndQuest(ws.address, name, nftId, count, async (txBytes) => {
-                  const { digest, effects } = await signAndExecuteTransaction(txBytes);
-                  return { digest: digest || '', effects };
-                });
+                // Try combined strike + receipt (sends read receipt back to sender)
+                let payloads: import('./client/thunder-types.js').ThunderPayload[];
+                let _usedCombined = false;
+                const _convo = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.replace(/\.sui$/, '').trim() || '';
+                if (_convo && app.suinsName) {
+                  try {
+                    const { buildStrikeWithReceiptTx, lookupRecipientNftId } = await import('./client/thunder.js');
+                    const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
+                    const myName = app.suinsName.replace(/\.sui$/, '');
+                    const targetNftId = await lookupRecipientNftId(_convo);
+                    if (targetNftId) {
+                      const myNft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
+                      if (myNft) {
+                        const raw = buildSuiamiMessage(myName, ws.address, myNft.objectId);
+                        const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
+                        const { signature: suiamiSig } = await signPersonalMessage(msgBytes);
+                        const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), suiamiSig);
+                        const combinedBytes = await buildStrikeWithReceiptTx(
+                          ws.address, name + '.sui', nftId, count,
+                          _convo, targetNftId, `\u2713 read by ${myName}.sui`, proof.token,
+                        );
+                        const result = await signAndExecuteTransaction(combinedBytes);
+                        const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
+                        payloads = await parseAndDecryptQuestfi(result.effects ?? result);
+                        _usedCombined = true;
+                      }
+                    }
+                  } catch { /* fall back to plain quest */ }
+                }
+                if (!_usedCombined) {
+                  payloads = await decryptAndQuest(ws.address, name, nftId, count, async (txBytes) => {
+                    const { digest, effects } = await signAndExecuteTransaction(txBytes);
+                    return { digest: digest || '', effects };
+                  });
+                }
                 for (const p of payloads) {
                   const _pSender = p.sender || p.senderAddress.slice(0, 8);
                   _freshQuestTs.add(Date.now());
@@ -10331,7 +10812,7 @@ function bindEvents() {
             _updateIdleThunderBadge();
             sendBtn.disabled = false;
             _renderThunderComposePreview();
-            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} decrypted`);
+            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
           } catch (err) {
             sendBtn.innerHTML = '\u26c8\ufe0f';
             sendBtn.disabled = false;
@@ -10495,11 +10976,55 @@ function bindEvents() {
         if (!convoEl) return;
         const entries = await _getConversation(counterparty);
         if (!entries.length) { convoEl.setAttribute('hidden', ''); return; }
+
+        // Secret read receipt: check if counterparty has 0 pending signals on-chain.
+        // If we sent them signals and they're gone → they purged them → mark as read.
+        const cBare = counterparty.replace(/\.sui$/, '').toLowerCase();
+        const cPending = _thunderCounts[cBare] ?? 0;
+        const hasUnread = entries.some(e => (e.dir === 'out' || (!e.dir && !e.from)) && !e.read);
+        if (hasUnread && cPending === 0) {
+          // All signals were purged — mark outgoing as read
+          let changed = false;
+          for (const e of entries) {
+            if ((e.dir === 'out' || (!e.dir && !e.from)) && !e.read) {
+              e.read = true;
+              changed = true;
+            }
+          }
+          if (changed) {
+            // Persist the read flags back to encrypted log
+            try {
+              const ws = getState();
+              if (ws.address) {
+                const key = await _deriveThunderKey(ws.address);
+                const all = await _readThunderLog();
+                const cAddr = entries[0]?.addr;
+                for (const entry of all) {
+                  if ((entry.dir === 'out' || (!entry.dir && !entry.from))) {
+                    const toBare = (entry.to || '').replace(/\.sui$/i, '').toLowerCase();
+                    if (toBare === cBare || (cAddr && entry.addr === cAddr)) {
+                      entry.read = true;
+                    }
+                  }
+                }
+                const plaintext = new TextEncoder().encode(JSON.stringify(all));
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
+                localStorage.setItem(`ski:thunder-log:${ws.address}`, JSON.stringify({
+                  ct: btoa(String.fromCharCode(...ct)),
+                  iv: btoa(String.fromCharCode(...iv)),
+                }));
+              }
+            } catch { /* best effort */ }
+          }
+        }
+
         const bubbles = entries.slice(-20).map(e => {
           const isOut = e.dir === 'out' || (!e.dir && !e.from);
           let msgText = e.msg;
           if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+          const readCls = isOut && e.read ? ' ski-idle-bubble--read' : '';
           const freshCls = _freshQuestTs.has(e.ts) ? ' ski-idle-bubble--fresh' : '';
           // Show which SuiNS name sent/received — links to their SUIAMI
           const suiamiName = isOut ? (e.to || '').replace(/\.sui$/, '') : (e.from || '').replace(/\.sui$/, '');
@@ -10511,7 +11036,7 @@ function bindEvents() {
           const nameBadge = nameLabel && suiamiUrl
             ? `<a class="ski-idle-bubble-name" href="${suiamiUrl}" target="_blank" rel="noopener" title="SUIAMI? I AM ${esc(suiamiName)}">${esc(nameLabel)}</a>`
             : nameLabel ? `<span class="ski-idle-bubble-name">${esc(nameLabel)}</span>` : '';
-          return `<div class="ski-idle-bubble ${cls}${freshCls}" data-ts="${e.ts}">${nameBadge}${esc(msgText)}</div>`;
+          return `<div class="ski-idle-bubble ${cls}${readCls}${freshCls}" data-ts="${e.ts}">${nameBadge}${esc(msgText)}</div>`;
         }).join('');
         const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
         const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">\u26a1 <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;

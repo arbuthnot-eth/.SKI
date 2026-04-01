@@ -685,6 +685,19 @@ app.get('/api/tradeport/listing/:label', async (c) => {
     const nft = json?.data?.sui?.nfts?.[0];
     const listing = nft?.listings?.[0];
     if (!nft || !listing) return c.json({ listing: null });
+
+    // QuestFi: pre-rumble listed names so chain addresses are ready before purchase
+    // Fire and forget — don't block the listing response
+    try {
+      const id = c.env.TreasuryAgents.idFromName('treasury');
+      const stub = c.env.TreasuryAgents.get(id);
+      stub.fetch(new Request('https://treasury-do/?pre-rumble', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury', ...cfGeoHeaders(c) },
+        body: JSON.stringify({ name: label, source: 'questfi-snipe' }),
+      })).catch(() => {});
+    } catch {}
+
     return c.json({
       listing: {
         listingId: listing.id,
@@ -1173,6 +1186,103 @@ app.post('/api/cache/create-iusd-pool', async (c) => {
   }
 });
 
+// ── CF geo extraction helper ─────────────────────────────────────────
+function cfGeoHeaders(c: any): Record<string, string> {
+  const cf = (c.req.raw as any)?.cf;
+  const h: Record<string, string> = {};
+  if (cf?.latitude) h['x-cf-lat'] = String(cf.latitude);
+  if (cf?.longitude) h['x-cf-lon'] = String(cf.longitude);
+  if (cf?.city) h['x-cf-city'] = String(cf.city);
+  if (cf?.country) h['x-cf-country'] = String(cf.country);
+  return h;
+}
+
+// ── Pre-Rumble for new name (auto-provision chain addresses) ────────
+app.post('/api/cache/pre-rumble', async (c) => {
+  try {
+    const body = await c.req.json() as { name: string; userAddress: string };
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?pre-rumble', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury', ...cfGeoHeaders(c) },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Squid stats — geo-mapped pre-rumble counter (private) ───────────
+app.get('/api/cache/squid-stats', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 500);
+  // Auth: must sign a recent timestamp (within 60s)
+  const sig = c.req.header('x-ultron-sig');
+  const ts = c.req.header('x-ultron-ts');
+  if (!sig || !ts) return c.json({ error: 'Unauthorized' }, 401);
+  const age = Math.abs(Date.now() - Number(ts));
+  if (age > 60_000) return c.json({ error: 'Timestamp expired' }, 401);
+  try {
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const msgBytes = new TextEncoder().encode(`squid-stats:${ts}`);
+    const expected = await keypair.sign(msgBytes);
+    const { toBase64 } = await import('@mysten/sui/utils');
+    if (toBase64(expected) !== sig) return c.json({ error: 'Invalid signature' }, 403);
+  } catch {
+    return c.json({ error: 'Auth failed' }, 403);
+  }
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?squid-stats', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text)); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Seed iUSD/USDC DeepBook pool ────────────────────────────────────
+app.post('/api/cache/seed-iusd-pool', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?seed-iusd-pool', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({}),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Ignite — cross-chain gas via iUSD burn ──────────────────────────
+app.post('/api/ignite', async (c) => {
+  try {
+    const body = await c.req.json() as { requestId: string; chain: string; encryptedRecipient: string; iusdBurned: number };
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?ignite', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Acquire NS for user (iUSD route via TreasuryAgents) ───────────
 app.post('/api/cache/acquire-ns', async (c) => {
   try {
@@ -1248,6 +1358,58 @@ app.post('/api/cache/quest-bounty', async (c) => {
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); }
     catch { return c.json({ error: text || 'Unknown error' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── OpenCLOB: iUSD SPL on Solana ────────────────────────────────────
+app.post('/api/cache/create-iusd-sol-mint', async (c) => {
+  try {
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: '{}',
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
+  try {
+    const body = await c.req.json() as { recipientSolAddress: string; amount: string };
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Kamino deposit — SOL → Kamino Lend → attest → mint iUSD ─────────
+app.post('/api/cache/kamino-deposit', async (c) => {
+  try {
+    const body = await c.req.json() as { suiAddress: string; amountUsd: number; strategy?: string };
+    const id = c.env.TreasuryAgents.idFromName('treasury');
+    const stub = c.env.TreasuryAgents.get(id);
+    const res = await stub.fetch(new Request('https://treasury-do/?kamino-deposit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

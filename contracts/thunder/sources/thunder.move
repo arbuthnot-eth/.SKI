@@ -71,6 +71,15 @@ public struct FeePaid has copy, drop {
     treasury: address,
 }
 
+/// Emitted on random signal — dice roll 1-6. Neither sender nor recipient
+/// knows the result until the tx is finalized. On-chain verifiable.
+public struct DiceRolled has copy, drop {
+    signal_id: address,
+    recipient: address,
+    roll: u8,
+    timestamp_ms: u64,
+}
+
 // ─── Types ──────────────────────────────────────────────────────────
 
 /// The shared object — always-on infrastructure.
@@ -641,6 +650,47 @@ entry fun signal_v3_private(
     let signal_id = object::id_to_address(&object::id(&sig));
     sui::dynamic_object_field::add(&mut storm.id, RecipientKeyV3 { recipient, idx }, sig);
     event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
+}
+
+/// Random signal — dice roll 1-6. Sends a Thunder signal with on-chain
+/// randomness that neither sender nor recipient can predict or front-run.
+/// The roll is embedded in the entropy field and emitted as a DiceRolled event.
+/// Use for games, random pricing, blind amounts, agent selection.
+entry fun random_signal(
+    storm: &mut Storm, recipient: address, name_hash: vector<u8>,
+    payload: vector<u8>, masked_aes_key: vector<u8>, aes_nonce: vector<u8>,
+    fee: Coin<SUI>, rng: &Random, clock: &Clock, ctx: &mut TxContext,
+) {
+    assert!(fee.value() >= storm.signal_fee_mist, EInsufficientFee);
+    transfer::public_transfer(fee, storm.fee_treasury);
+
+    let timestamp_ms = clock.timestamp_ms();
+    let mut gen = random::new_generator(rng, ctx);
+
+    // Roll 1-6 (inclusive)
+    let roll = (gen.generate_u8() % 6) + 1;
+
+    // Mix roll into entropy so it's recoverable on decrypt
+    let mut raw_entropy = gen.generate_bytes(32);
+    *raw_entropy.borrow_mut(0) = roll;
+    let entropy = xor_bytes(raw_entropy, keccak256(&name_hash));
+
+    let counter_key = recipient;
+    let idx = if (dynamic_field::exists_<address>(&storm.id, counter_key)) {
+        let counter: &mut RecipientCounter = dynamic_field::borrow_mut(&mut storm.id, counter_key);
+        let i = counter.count; counter.count = i + 1; i
+    } else {
+        dynamic_field::add(&mut storm.id, counter_key, RecipientCounter { count: 1 }); 0
+    };
+
+    let sig = SignalV3 {
+        id: object::new(ctx), recipient, name_hash, payload,
+        aes_key: masked_aes_key, aes_nonce, entropy, timestamp_ms,
+    };
+    let signal_id = object::id_to_address(&object::id(&sig));
+    sui::dynamic_object_field::add(&mut storm.id, RecipientKeyV3 { recipient, idx }, sig);
+    event::emit(SignaledV2 { recipient, name_hash, signal_id, idx, timestamp_ms });
+    event::emit(DiceRolled { signal_id, recipient, roll, timestamp_ms });
 }
 
 /// Claim v3 signal — NFT-gated, unmasks entropy, returns decryption keys + raw entropy.

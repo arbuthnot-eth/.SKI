@@ -2135,9 +2135,9 @@ body {
 }
 .wk-thunder-bubble--in {
   align-self: flex-start;
-  background: rgba(15, 15, 25, 0.8);
-  border: 1px solid rgba(255, 184, 0, 0.2);
-  color: #FFB800;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  color: #0a0a0f;
 }
 .wk-thunder-bubble--out {
   align-self: flex-end;
@@ -2146,6 +2146,12 @@ body {
   color: #93c5fd;
   text-align: right;
 }
+.wk-thunder-bubble--read {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(255, 255, 255, 0.6) !important;
+  color: #0a0a0f !important;
+}
+.wk-thunder-bubble--read .wk-thunder-bubble-sender { color: #0a0a0f; }
 .wk-thunder-bubble-sender {
   font-weight: 700;
   margin-right: 4px;
@@ -2669,6 +2675,7 @@ body {
 }
 .ski-nft-inline[hidden] { display: none; }
 .ski-nft-card {
+  position: relative;
   background: #000000;
   border: 1px solid rgba(96, 165, 250, 0.25);
   border-radius: 14px;
@@ -2822,6 +2829,26 @@ body {
   font-weight: 500;
   color: rgba(255, 255, 255, 0.3);
   letter-spacing: 0.02em;
+}
+
+.ski-nft-dismiss {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.75rem;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+.ski-nft-dismiss:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
 }
 
 /* ─── Big Popout (blue-square / SuiNS profile card) ──────────────── */
@@ -3197,40 +3224,37 @@ body {
 .ski-idle-addr-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: flex-end;
+  gap: 1px;
   width: calc(100% - 4px);
-  padding: 6px 0;
+  padding: 4px 2px;
   background: rgba(10, 10, 15, 0.9);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   position: absolute;
-  bottom: 60px;
-  left: 2px;
+  top: calc(27% + 36px);
+  bottom: 70px;
+  left: 0;
   z-index: 3;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.65rem;
-  z-index: 2;
-  position: absolute;
-  top: calc(22% + 28px);
-  left: 0;
 }
 .ski-idle-addr-row[hidden] { display: none; }
 .ski-idle-addr-icon {
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
   vertical-align: middle;
   flex-shrink: 0;
 }
 .ski-idle-addr-icon--inline { display: inline-flex; }
-.ski-idle-addr-icon--inline svg { width: 24px; height: 24px; }
+.ski-idle-addr-icon--inline svg { width: 16px; height: 16px; }
 .ski-idle-addr-line {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 5px;
   cursor: pointer;
   font-weight: 600;
   font-size: 0.7rem;
@@ -3278,6 +3302,24 @@ body {
   border-radius: 6px;
 }
 .ski-idle-card:empty { display: none; }
+.ski-idle-card-dismiss {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.65rem;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  line-height: 1;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+.ski-idle-card-dismiss:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+}
 .ski-idle-card-name { font-weight: 700; font-size: 0.85rem; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; }
 .ski-idle-card-iusd { vertical-align: middle; margin-left: 3px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
 .ski-idle-card-name:hover { opacity: 0.85; }
@@ -3346,10 +3388,10 @@ body {
 .ski-idle-card-expiry { color: rgba(255, 255, 255, 0.4); font-size: 0.6rem; }
 .ski-idle-thunder-convo {
   position: absolute;
-  bottom: 60px;
+  top: calc(27% + 36px);
+  bottom: 70px;
   left: 0;
   right: 0;
-  max-height: 40vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -3399,10 +3441,16 @@ body {
 }
 .ski-idle-bubble--in {
   align-self: flex-start;
-  background: rgba(10, 15, 30, 0.85);
-  border: 1px solid rgba(77, 162, 255, 0.4);
-  color: #93c5fd;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  color: #0a0a0f;
 }
+.ski-idle-bubble--read {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(255, 255, 255, 0.6) !important;
+  color: #0a0a0f !important;
+}
+.ski-idle-bubble--read .ski-idle-bubble-name { color: #0a0a0f; }
 .ski-idle-bubble--fresh {
   background: rgba(255, 255, 255, 0.12) !important;
   border-color: rgba(255, 255, 255, 0.3) !important;
@@ -3435,6 +3483,66 @@ a.ski-idle-bubble-name:hover {
   opacity: 1;
   text-decoration: underline;
 }
+/* iUSD control panel */
+.ski-idle-iusd-panel {
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  background: rgba(10, 10, 15, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 8px 8px 0 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ski-idle-iusd-panel[hidden] { display: none; }
+.ski-idle-iusd-stats {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.8);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.ski-idle-iusd-controls {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+.ski-idle-iusd-action {
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  cursor: pointer;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  transition: background 0.15s;
+}
+.ski-idle-iusd-action--mint {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #22c55e;
+}
+.ski-idle-iusd-action--mint:hover { background: rgba(34, 197, 94, 0.4); }
+.ski-idle-iusd-action--burn {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
+.ski-idle-iusd-action--burn:hover { background: rgba(239, 68, 68, 0.4); }
+.ski-idle-iusd-action--ignite {
+  background: rgba(255, 184, 0, 0.2);
+  border-color: rgba(255, 184, 0, 0.4);
+  color: #FFB800;
+}
+.ski-idle-iusd-action--ignite:hover { background: rgba(255, 184, 0, 0.4); }
+
 .ski-idle-thunder-row {
   display: flex;
   width: 100%;
@@ -3460,8 +3568,13 @@ a.ski-idle-bubble-name:hover {
   transition: opacity 0.15s;
 }
 .ski-idle-thunder-at:hover { opacity: 1; }
-.ski-idle-thunder-input {
+.ski-idle-thunder-input-wrap {
   flex: 1;
+  min-width: 0;
+  position: relative;
+}
+.ski-idle-thunder-input {
+  width: 100%;
   min-width: 0;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -3479,11 +3592,61 @@ a.ski-idle-bubble-name:hover {
 .ski-idle-thunder-input::placeholder { color: rgba(255, 184, 0, 0.4); direction: rtl; }
 .ski-idle-thunder-input:not(:placeholder-shown), .ski-idle-thunder-input:focus { border-color: #FFB800; background: rgba(255, 255, 255, 0.12); text-align: left; }
 .ski-idle-thunder-input:focus::placeholder { color: transparent; }
-.ski-idle-thunder-send {
+/* Quick-action buttons — visible when input is empty */
+.ski-idle-quick-actions {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 5px;
+  pointer-events: auto;
+}
+.ski-idle-thunder-input:not(:placeholder-shown) ~ .ski-idle-quick-actions,
+.ski-idle-thunder-input:focus ~ .ski-idle-quick-actions { display: none; }
+.ski-idle-quick-btn {
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 800;
+  padding: 4px 7px;
+  cursor: pointer;
+  line-height: 1;
+}
+.ski-idle-quick-btn--iusd {
+  background: rgba(34, 197, 94, 0.3);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #22c55e;
+}
+.ski-idle-quick-btn--iusd:hover { background: rgba(34, 197, 94, 0.5); }
+.ski-idle-quick-btn--blue {
+  background: rgba(77, 162, 255, 0.3);
+  border-color: rgba(77, 162, 255, 0.4);
+  color: #4da2ff;
+}
+.ski-idle-quick-btn--blue:hover { background: rgba(77, 162, 255, 0.5); }
+.ski-idle-quick-btn--green {
+  background: rgba(34, 197, 94, 0.3);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #22c55e;
+}
+.ski-idle-quick-btn--green:hover { background: rgba(34, 197, 94, 0.5); }
+.ski-idle-quick-btn--squid {
+  background: rgba(236, 72, 153, 0.3);
+  border-color: rgba(236, 72, 153, 0.4);
+  color: #ec4899;
+}
+.ski-idle-quick-btn--squid:hover { background: rgba(236, 72, 153, 0.5); }
+.ski-idle-thunder-send-group {
   position: absolute;
   right: 4px;
   top: 50%;
   transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.ski-idle-thunder-send {
   background: rgba(255, 184, 0, 0.15);
   border: 1px solid rgba(255, 184, 0, 0.4);
   border-radius: 6px;
@@ -3492,6 +3655,8 @@ a.ski-idle-bubble-name:hover {
   padding: 4px 7px;
   cursor: pointer;
   line-height: 1;
+  position: static;
+  transform: none;
 }
 .ski-idle-thunder-send:hover { background: rgba(255, 184, 0, 0.3); }
 .ski-idle-thunder-send--quest {

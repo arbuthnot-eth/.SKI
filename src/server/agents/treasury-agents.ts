@@ -3587,199 +3587,166 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    * Seeds the iUSD/USDC pool with ultron's existing balances.
    */
   @callable()
-  async seedIusdPool(): Promise<{ digest?: string; balanceManagerId?: string; error?: string }> {
+  async seedIusdPool(): Promise<{ digest?: string; digest2?: string; balanceManagerId?: string; error?: string }> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'No ultron key' };
     try {
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
       const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-      const DB_TYPES_PKG = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
 
-      // Fetch iUSD and USDC coins
-      const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>(
-        'suix_getCoins', [ultronAddr, TreasuryAgents.IUSD_TYPE],
-      );
-      const usdcCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>(
-        'suix_getCoins', [ultronAddr, TreasuryAgents.USDC_TYPE],
-      );
-      const iusdCoins = (iusdCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
-      const usdcCoins = (usdcCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
-      if (!iusdCoins.length && !usdcCoins.length) return { error: 'No iUSD or USDC to seed' };
+      // Check if BalanceManager already exists (from previous partial attempt)
+      const BM_TYPE = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::balance_manager::BalanceManager';
+      const existingBm = await raceJsonRpc<any>('suix_getOwnedObjects', [ultronAddr, { StructType: BM_TYPE }, null, 1, { showType: true }]);
+      let balanceManagerId = existingBm?.data?.[0]?.data?.objectId || '';
+
+      const iusdCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>('suix_getCoins', [ultronAddr, TreasuryAgents.IUSD_TYPE]);
+      const usdcCoinsRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>('suix_getCoins', [ultronAddr, TreasuryAgents.USDC_TYPE]);
+      let iusdCoins = (iusdCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+      let usdcCoins = (usdcCoinsRes?.data ?? []).filter(c => BigInt(c.balance) > 0n);
+
+      // ── Step 0: Withdraw funds from any existing OWNED BalanceManager ──
+      if (balanceManagerId && (!iusdCoins.length || !usdcCoins.length)) {
+        console.log(`[seedIusdPool] Withdrawing from owned BM ${balanceManagerId}...`);
+        // MUST use the types package (0x2c8d) not the entry package (0x337f) — SDK bug with upgraded packages
+        const DB_TYPES_PKG = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
+        for (const coinType of [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE]) {
+          try {
+            const withdrawRes = await raceJsonRpc<any>('unsafe_moveCall', [
+              ultronAddr,
+              DB_TYPES_PKG,
+              'balance_manager', 'withdraw_all',
+              [coinType],
+              [balanceManagerId],
+              null, '10000000',
+            ]);
+            if (withdrawRes?.txBytes) {
+              const wBytes = Uint8Array.from(atob(withdrawRes.txBytes), c => c.charCodeAt(0));
+              const wSig = await keypair.signTransaction(wBytes);
+              const wDigest = await this._submitTx(wBytes, wSig.signature);
+              console.log(`[seedIusdPool] Withdrew ${coinType.split('::').pop()} from BM: ${wDigest}`);
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          } catch (e) { console.warn(`[seedIusdPool] Withdraw ${coinType.split('::').pop()} failed:`, e); }
+        }
+        // Re-fetch coins after withdrawal
+        const freshIusd = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>('suix_getCoins', [ultronAddr, TreasuryAgents.IUSD_TYPE]);
+        const freshUsdc = await raceJsonRpc<{ data: Array<{ coinObjectId: string; balance: string }> }>('suix_getCoins', [ultronAddr, TreasuryAgents.USDC_TYPE]);
+        iusdCoins.length = 0; usdcCoins.length = 0;
+        iusdCoins.push(...(freshIusd?.data ?? []).filter(c => BigInt(c.balance) > 0n));
+        usdcCoins.push(...(freshUsdc?.data ?? []).filter(c => BigInt(c.balance) > 0n));
+      }
 
       const iusdTotal = iusdCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
       const usdcTotal = usdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+      if (!iusdCoins.length && !usdcCoins.length) return { error: 'No iUSD or USDC after withdrawal' };
 
-      const tx = new Transaction();
-      tx.setSender(ultronAddr);
-
-      // Step 1: Create BalanceManager
-      const [balMgr] = tx.moveCall({
-        package: TreasuryAgents.DB_PACKAGE,
-        module: 'balance_manager',
-        function: 'new',
-        arguments: [],
-      });
-
-      // Step 2: Deposit iUSD
-      if (iusdCoins.length > 0) {
-        const iusdPrimary = tx.object(iusdCoins[0].coinObjectId);
-        if (iusdCoins.length > 1) tx.mergeCoins(iusdPrimary, iusdCoins.slice(1).map(c => tx.object(c.coinObjectId)));
-        tx.moveCall({
-          package: TreasuryAgents.DB_PACKAGE,
-          module: 'balance_manager',
-          function: 'deposit',
-          typeArguments: [TreasuryAgents.IUSD_TYPE],
-          arguments: [balMgr, iusdPrimary],
+      // ── TX 1: Create SHARED BalanceManager + deposit ──
+      let digest = '';
+      {
+        const tx1 = new Transaction();
+        tx1.setSender(ultronAddr);
+        const [balMgr] = tx1.moveCall({ package: TreasuryAgents.DB_PACKAGE, module: 'balance_manager', function: 'new', arguments: [] });
+        if (iusdCoins.length > 0) {
+          const iusdPrimary = tx1.object(iusdCoins[0].coinObjectId);
+          if (iusdCoins.length > 1) tx1.mergeCoins(iusdPrimary, iusdCoins.slice(1).map(c => tx1.object(c.coinObjectId)));
+          tx1.moveCall({ package: TreasuryAgents.DB_PACKAGE, module: 'balance_manager', function: 'deposit', typeArguments: [TreasuryAgents.IUSD_TYPE], arguments: [balMgr, iusdPrimary] });
+        }
+        if (usdcCoins.length > 0) {
+          const usdcPrimary = tx1.object(usdcCoins[0].coinObjectId);
+          if (usdcCoins.length > 1) tx1.mergeCoins(usdcPrimary, usdcCoins.slice(1).map(c => tx1.object(c.coinObjectId)));
+          tx1.moveCall({ package: TreasuryAgents.DB_PACKAGE, module: 'balance_manager', function: 'deposit', typeArguments: [TreasuryAgents.USDC_TYPE], arguments: [balMgr, usdcPrimary] });
+        }
+        // Share the BalanceManager (DeepBook v3 expects shared, not owned)
+        const DB_TYPES = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
+        tx1.moveCall({
+          target: '0x2::transfer::public_share_object',
+          arguments: [balMgr],
+          typeArguments: [`${DB_TYPES}::balance_manager::BalanceManager`],
         });
-      }
-
-      // Step 3: Deposit USDC
-      if (usdcCoins.length > 0) {
-        const usdcPrimary = tx.object(usdcCoins[0].coinObjectId);
-        if (usdcCoins.length > 1) tx.mergeCoins(usdcPrimary, usdcCoins.slice(1).map(c => tx.object(c.coinObjectId)));
-        tx.moveCall({
-          package: TreasuryAgents.DB_PACKAGE,
-          module: 'balance_manager',
-          function: 'deposit',
-          typeArguments: [TreasuryAgents.USDC_TYPE],
-          arguments: [balMgr, usdcPrimary],
-        });
-      }
-
-      // Step 3b: Set DEEP price reference (required before any orders)
-      // Points our iUSD/USDC pool at DEEP/USDC pool for fee calculation
-      const DB_DEEP_USDC_POOL = '0xde096bb2c59538a25c89229127fe0bc8b63ecdbe52a3693099cc40a1d8a2cfd4';
-      const DB_DEEP_USDC_ISV = 336155481;
-      tx.moveCall({
-        package: TreasuryAgents.DB_PACKAGE,
-        module: 'pool',
-        function: 'add_deep_price_point',
-        typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE, TreasuryAgents.DB_DEEP_TYPE, TreasuryAgents.USDC_TYPE],
-        arguments: [
-          tx.sharedObjectRef({ objectId: TreasuryAgents.DB_IUSD_USDC_POOL, initialSharedVersion: TreasuryAgents.DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
-          tx.sharedObjectRef({ objectId: DB_DEEP_USDC_POOL, initialSharedVersion: DB_DEEP_USDC_ISV, mutable: false }),
-          tx.object('0x6'),
-        ],
-      });
-
-      // Step 4: Generate TradeProof
-      const [tradeProof] = tx.moveCall({
-        package: TreasuryAgents.DB_PACKAGE,
-        module: 'balance_manager',
-        function: 'generate_proof_as_owner',
-        arguments: [balMgr],
-      });
-
-      const poolRef = tx.sharedObjectRef({
-        objectId: TreasuryAgents.DB_IUSD_USDC_POOL,
-        initialSharedVersion: TreasuryAgents.DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION,
-        mutable: true,
-      });
-
-      console.log(`[seedIusdPool] iUSD: ${iusdTotal}, USDC: ${usdcTotal}, askQty: ${askQty}, bidLots: ${bidLots}, bidQty: ${bidQty}`);
-
-      // iUSD/USDC pool: iUSD is base (9 dec), USDC is quote (6 dec)
-      // tick_size = 1000 → price granularity 0.001 USDC
-      // 1 iUSD = 1 USD → price in USDC terms = 1.0 = 1_000_000 (USDC 6 dec)
-      // DeepBook price = quote_amount_per_base_lot / tick_size
-      // base_lot = 1_000_000_000 (1.0 iUSD), tick = 1000
-      // price for 1:1 = 1_000_000 / 1000 = 1000 ticks? No...
-      // DeepBook v3 price is in ticks: price = quote_per_lot / tick_size
-      // For 1 iUSD lot (1e9) at 1:1 with USDC (6 dec): expected USDC = 1e6
-      // price_ticks = 1e6 / tick_size(1000) = 1000
-
-      // BID: buy iUSD at 0.999 USDC → 999 ticks
-      // ASK: sell iUSD at 1.001 USDC → 1001 ticks
-      // DeepBook v3 price = ticks. price_in_quote = price * tick_size.
-      // For 1 iUSD lot (1e9) at 1:1, USDC per lot = 1_000_000 (1 USDC at 6 dec).
-      // price_ticks = 1_000_000 / tick_size(1000) = 1000
-      // BID at 0.999: 999_000 / 1000 = 999. ASK at 1.001: 1_001_000 / 1000 = 1001
-      // Price must be multiple of 1 tick. 999 and 1001 should be fine.
-      // Try higher quantity — maybe min_size check is failing
-      const BID_PRICE = 999;
-      const ASK_PRICE = 1001;
-      const ORDER_TYPE_LIMIT = 0; // limit order
-      const SELF_MATCHING_ALLOWED = 0;
-
-      // Quantities must be multiples of lot_size (1_000_000_000 = 1.0 iUSD)
-      const LOT_SIZE = 1_000_000_000n;
-      const askQty = (iusdTotal / LOT_SIZE) * LOT_SIZE; // round down to nearest lot
-      // Bid: how many whole iUSD can we buy with our USDC?
-      // 1 iUSD costs ~1 USDC = 1_000_000 (6 dec). At 0.999 price = 999_000 per lot.
-      // But USDC is 6 decimals, so usdcTotal / 1_000_000 = number of whole USDC
-      const bidLots = usdcTotal / 1_000_000n; // each lot costs ~1 USDC
-      const bidQty = bidLots * LOT_SIZE; // in base units (iUSD 9 dec)
-
-      // Place BID (buy iUSD with USDC)
-      if (usdcTotal > 0n && bidQty >= LOT_SIZE) {
-        tx.moveCall({
-          package: TreasuryAgents.DB_PACKAGE,
-          module: 'pool',
-          function: 'place_limit_order',
-          typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
-          arguments: [
-            poolRef,
-            balMgr,
-            tradeProof,
-            tx.pure.u64(1),           // client_order_id
-            tx.pure.u8(ORDER_TYPE_LIMIT),
-            tx.pure.u8(SELF_MATCHING_ALLOWED),
-            tx.pure.u64(BID_PRICE),   // price in ticks
-            tx.pure.u64(bidQty),      // quantity in base lots (aligned)
-            tx.pure.bool(true),       // is_bid
-            tx.pure.bool(false),      // pay_with_deep
-            tx.pure.u64(0),           // expire_timestamp (0 = never)
-            tx.object('0x6'),         // clock
-          ],
-        });
-      }
-
-      // Place ASK (sell iUSD for USDC)
-      if (askQty >= LOT_SIZE) {
-        tx.moveCall({
-          package: TreasuryAgents.DB_PACKAGE,
-          module: 'pool',
-          function: 'place_limit_order',
-          typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
-          arguments: [
-            poolRef,
-            balMgr,
-            tradeProof,
-            tx.pure.u64(2),           // client_order_id
-            tx.pure.u8(ORDER_TYPE_LIMIT),
-            tx.pure.u8(SELF_MATCHING_ALLOWED),
-            tx.pure.u64(ASK_PRICE),   // price in ticks
-            tx.pure.u64(askQty),      // quantity (lot-aligned)
-            tx.pure.bool(false),      // is_bid = false (ask/sell)
-            tx.pure.bool(false),      // pay_with_deep
-            tx.pure.u64(0),           // expire_timestamp
-            tx.object('0x6'),         // clock
-          ],
-        });
-      }
-
-      // Transfer BalanceManager to ultron (owned object for future use)
-      tx.transferObjects([balMgr], tx.pure.address(ultronAddr));
-
-      const txBytes = await tx.build({ client: transport as never });
-      const sig = await keypair.signTransaction(txBytes);
-      const digest = await this._submitTx(txBytes, sig.signature);
-      console.log(`[TreasuryAgents] iUSD/USDC pool seeded: ${digest}, iUSD: ${iusdTotal}, USDC: ${usdcTotal}`);
-
-      // Extract BalanceManager ID
-      let balanceManagerId = '';
-      try {
+        const txBytes1 = await tx1.build({ client: transport as never });
+        const sig1 = await keypair.signTransaction(txBytes1);
+        digest = await this._submitTx(txBytes1, sig1.signature);
+        console.log(`[seedIusdPool] TX1: BalanceManager created: ${digest}`);
         await new Promise(r => setTimeout(r, 3000));
         const txRes = await raceJsonRpc<any>('sui_getTransactionBlock', [digest, { showObjectChanges: true }]);
-        for (const c of (txRes?.objectChanges ?? [])) {
-          if (c.type === 'created' && c.objectType?.includes('BalanceManager')) {
-            balanceManagerId = c.objectId;
-            break;
-          }
+        for (const ch of (txRes?.objectChanges ?? [])) {
+          if (ch.type === 'created' && ch.objectType?.includes('BalanceManager')) { balanceManagerId = ch.objectId; break; }
         }
-      } catch {}
+        if (!balanceManagerId) return { digest, error: 'BalanceManager not found' };
+      }
+      console.log(`[seedIusdPool] BalanceManager: ${balanceManagerId}`);
 
-      return { digest, balanceManagerId };
+      // ── TX 2: Place limit orders via unsafe_moveCall (SDK resolver has type-check bug) ──
+      // Build a PTB using unsafe_moveCall to bypass the SDK's broken type resolver,
+      // then compose into a proper multi-command tx by building manually.
+      const LOT_SIZE = 1_000_000_000n;
+
+      // Step 1: Generate trade proof via unsafe_moveCall
+      const DB_TYPES = '0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809';
+      const proofRes = await raceJsonRpc<any>('unsafe_moveCall', [
+        ultronAddr, DB_TYPES, 'balance_manager', 'generate_proof_as_owner',
+        [], [balanceManagerId], null, '50000000',
+      ]);
+      if (!proofRes?.txBytes) return { digest, error: 'Failed to build proof tx' };
+
+      // Step 2: Build the full PTB with proof + place_limit_order
+      // We need to compose this as a single PTB. Use the SDK but trick the resolver
+      // by using the Transaction's programmatic builder with pre-resolved refs.
+      const tx2 = new Transaction();
+      tx2.setSender(ultronAddr);
+
+      // Create the BalanceManager input as an explicit owned ref (not resolved by SDK)
+      const bmRpc = await raceJsonRpc<any>('sui_getObject', [balanceManagerId, {}]);
+      const bmInput = tx2.objectRef({ objectId: balanceManagerId, version: String(bmRpc?.data?.version), digest: bmRpc?.data?.digest });
+
+      // generate_proof_as_owner — use package that DEFINES the type, not the re-exporter
+      const [proof] = tx2.moveCall({
+        package: DB_TYPES,
+        module: 'balance_manager',
+        function: 'generate_proof_as_owner',
+        arguments: [bmInput],
+      });
+
+      // place_limit_order — ASK 1 iUSD at 1:1
+      const poolRef = tx2.sharedObjectRef({ objectId: TreasuryAgents.DB_IUSD_USDC_POOL, initialSharedVersion: TreasuryAgents.DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true });
+      const clockRef = tx2.sharedObjectRef({ objectId: '0x0000000000000000000000000000000000000000000000000000000000000006', initialSharedVersion: 1, mutable: false });
+      tx2.moveCall({
+        package: TreasuryAgents.DB_PACKAGE,
+        module: 'pool',
+        function: 'place_limit_order',
+        typeArguments: [TreasuryAgents.IUSD_TYPE, TreasuryAgents.USDC_TYPE],
+        arguments: [poolRef, bmInput, proof, tx2.pure.u64(1), tx2.pure.u8(0), tx2.pure.u8(0), tx2.pure.u64(1000), tx2.pure.u64(LOT_SIZE), tx2.pure.bool(false), tx2.pure.bool(false), tx2.pure.u64(0), clockRef],
+      });
+
+      // Gas
+      const gasRes = await raceJsonRpc<{ data: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> }>(
+        'suix_getCoins', [ultronAddr, '0x2::sui::SUI'],
+      );
+      const gasCoins = (gasRes?.data ?? []).filter(c => BigInt(c.balance) > 5_000_000n);
+      if (gasCoins.length > 0) {
+        tx2.setGasPayment([{ objectId: gasCoins[0].coinObjectId, version: gasCoins[0].version, digest: gasCoins[0].digest }]);
+      }
+      tx2.setGasBudget(50_000_000);
+      const refGasRes = await transport.query({ query: '{ epoch { referenceGasPrice } }' });
+      tx2.setGasPrice(Number((refGasRes.data as any)?.epoch?.referenceGasPrice ?? 750));
+
+      // Build WITHOUT client — all refs are explicit, no resolution needed
+      const txBytes2 = await tx2.build();
+      const sig2 = await keypair.signTransaction(txBytes2);
+      // Try submission with full error capture
+      let digest2 = '';
+      try {
+        digest2 = await this._submitTx(txBytes2, sig2.signature);
+      } catch (submitErr) {
+        // Capture all individual backend errors
+        const ae = submitErr as any;
+        const reasons = ae?.errors?.map?.((e: Error) => e.message) ?? [ae?.message ?? String(submitErr)];
+        console.error(`[seedIusdPool] TX2 submission failures:`, reasons);
+        return { digest, balanceManagerId, error: `TX2 submission failed: ${reasons.join(' | ')}` };
+      }
+      console.log(`[seedIusdPool] TX2 done: ${digest2}`);
+
+      return { digest, digest2, balanceManagerId };
     } catch (err) {
       const errStr = err instanceof Error ? err.stack || err.message : String(err);
       console.error('[TreasuryAgents] seedIusdPool error:', errStr);

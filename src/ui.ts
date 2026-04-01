@@ -48,6 +48,17 @@ import SUI_DROP_SVG_TEXT from '../public/assets/sui-drop.svg';
 import SUI_SKI_QR_SVG_TEXT from '../public/assets/sui-ski-qr.svg';
 
 
+// ─── Storage helpers (safe localStorage access) ────────────────────
+function lsGet(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
+function lsSet(key: string, value: string): void { try { localStorage.setItem(key, value); } catch {} }
+function lsRemove(key: string): void { try { localStorage.removeItem(key); } catch {} }
+function ssGet(key: string): string | null { try { return sessionStorage.getItem(key); } catch { return null; } }
+function ssSet(key: string, value: string): void { try { sessionStorage.setItem(key, value); } catch {} }
+function ssRemove(key: string): void { try { sessionStorage.removeItem(key); } catch {} }
+
+/** iUSD has 9 decimals. */
+const IUSD_MIST_PER_USD = 1_000_000_000;
+
 /** Sign a sponsored transaction: user signs, then fetch sponsor sig, submit both.
  *  Falls back to signAndExecuteTransaction for WaaP (signTransaction is broken). */
 async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest: string }> {
@@ -9148,7 +9159,10 @@ function bindEvents() {
   // Track whether the page has focus — ignore the click that restores focus
   let _hadFocus = document.hasFocus();
   window.addEventListener('blur', () => { _hadFocus = false; });
-  window.addEventListener('focus', () => { setTimeout(() => { _hadFocus = true; }, 200); });
+  window.addEventListener('focus', () => {
+    setTimeout(() => { _hadFocus = true; }, 200);
+    if (getState().address) refreshPortfolio(true);
+  });
 
   document.addEventListener('click', (e) => {
     if (!app.skiMenuOpen) return;
@@ -9162,8 +9176,6 @@ function bindEvents() {
     try { localStorage.setItem('ski:lift', '0'); } catch {}
     render();
   });
-
-  window.addEventListener('focus', () => { if (getState().address) refreshPortfolio(true); });
   document.addEventListener('visibilitychange', () => {
     if (getState().address && document.visibilityState === 'visible') refreshPortfolio(true);
   });

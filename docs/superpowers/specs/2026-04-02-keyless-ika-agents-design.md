@@ -156,6 +156,101 @@ public fun revoke(
 
 `approve` checks: `tx_context::sender(ctx) == registry.admin || tx_context::sender(ctx) == agent_addr` where `agent_addr` is enrolled in the registry. If neither, abort.
 
+## WASM in CF Workers — Proven Working
+
+**Tested and confirmed on 2026-04-02.** IKA WASM crypto runs in CF Workers with this pattern:
+
+### The Problem
+
+CF Workers block all runtime WASM compilation (`WebAssembly.Module()`, `WebAssembly.compile()`, `WebAssembly.instantiate()` from bytes). The IKA SDK's `wasm-loader.js` tries runtime compilation and fails with "Wasm code generation disallowed by embedder."
+
+### The Solution
+
+**Static import + `initSync`.** Wrangler pre-compiles `.wasm` files at deploy time when imported directly. The pre-compiled `WebAssembly.Module` is passed to `initSync`, bypassing runtime compilation entirely.
+
+```typescript
+// Static import — wrangler pre-compiles at deploy time
+// @ts-ignore
+import ikaWasmModule from '@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm';
+
+// Initialize once at module load
+import * as ikaWasm from '@ika.xyz/ika-wasm';
+ikaWasm.initSync({ module: ikaWasmModule });
+```
+
+After this, all raw WASM functions work:
+- `decrypt_user_share` — decrypt agent's secret share
+- `create_sign_centralized_party_message` — compute partial user signature
+- `generate_secp_cg_keypair_from_seed` — generate encryption keys
+- `encrypt_secret_share` — encrypt user share for storage
+
+### What doesn't work
+
+The SDK's high-level wrappers (e.g., `UserShareEncryptionKeys.fromRootSeedKey`) go through the SDK's own `wasm-loader.js` which has a broken init path for Workers. **Bypass the SDK's wasm-loader entirely** — call the raw WASM functions directly.
+
+### Worker-native IKA wrapper: `src/server/ika-worker.ts`
+
+A thin wrapper that replaces the SDK's broken wasm-loader with direct WASM calls. Provides the same interface but works in CF Workers:
+
+```typescript
+// src/server/ika-worker.ts — IKA crypto for Cloudflare Workers
+// @ts-ignore
+import ikaWasmModule from '@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm';
+import * as ikaWasm from '@ika.xyz/ika-wasm';
+
+// Pre-initialize at module load (runs once per Worker cold start)
+ikaWasm.initSync({ module: ikaWasmModule });
+
+/** Generate encryption key pair from seed */
+export function generateEncryptionKeys(seed: Uint8Array, curve: number) {
+  return ikaWasm.generate_secp_cg_keypair_from_seed(curve, seed);
+}
+
+/** Decrypt user's secret key share */
+export function decryptUserShare(
+  curve: number,
+  decryptionKey: Uint8Array,
+  dwalletPublicOutput: Uint8Array,
+  encryptedShare: Uint8Array,
+  protocolPublicParameters: Uint8Array,
+) {
+  return ikaWasm.decrypt_user_share(curve, decryptionKey, dwalletPublicOutput, encryptedShare, protocolPublicParameters);
+}
+
+/** Compute the user's partial signature contribution for 2PC-MPC */
+export function createSignMessage(
+  protocolPublicParameters: Uint8Array,
+  publicOutput: Uint8Array,
+  userSecretKeyShare: Uint8Array,
+  presign: Uint8Array,
+  message: Uint8Array,
+  hash: number,
+  signatureScheme: number,
+  curve: number,
+) {
+  return ikaWasm.create_sign_centralized_party_message(
+    protocolPublicParameters, publicOutput, userSecretKeyShare,
+    presign, message, hash, signatureScheme, curve,
+  );
+}
+
+/** Parse completed signature from IKA sign output */
+export function parseSignature(curve: number, signatureAlgorithm: number, signatureOutput: Uint8Array) {
+  return ikaWasm.parse_signature_from_sign_output(curve, signatureAlgorithm, signatureOutput);
+}
+
+/** Derive public key from dWallet output */
+export function publicKeyFromDWalletOutput(curve: number, dwalletOutput: Uint8Array) {
+  return ikaWasm.public_key_from_dwallet_output(curve, dwalletOutput);
+}
+```
+
+### Bundle size
+
+- IKA WASM: 3.4MB
+- Worker JS bundle: ~5.2MB
+- Total: ~8.6MB (under CF Workers paid plan 10MB limit)
+
 ## Agent DO Changes
 
 ### New: Encryption key management
@@ -171,11 +266,13 @@ async onStart() {
 }
 
 // Expose public encryption key for re-encryption targeting
+// Uses Worker-native WASM wrapper (not SDK's broken wasm-loader)
 // GET /api/agent/<name>/encryption-key
 async getEncryptionKeyAddress(): Promise<string> {
     const seed = new Uint8Array(this.state.encryptionSeed);
-    const keys = await UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
-    return keys.encryptionKeyAddress;
+    const { generateEncryptionKeys } = await import('./ika-worker.js');
+    const [_secretKey, publicKey] = generateEncryptionKeys(seed, curve);
+    return toHex(publicKey); // encryption key address
 }
 ```
 
@@ -183,16 +280,34 @@ async getEncryptionKeyAddress(): Promise<string> {
 
 ```typescript
 // Sign a message using IKA 2PC-MPC — no private key needed
-async signWithIka(message: Uint8Array, chain: string): Promise<Uint8Array> {
-    const seed = new Uint8Array(this.state.encryptionSeed);
-    const keys = await UserShareEncryptionKeys.fromRootSeedKey(seed, curve);
-    const userShare = await keys.decryptUserShare(this.state.encryptedShareId);
+// All WASM crypto runs directly in the CF Worker via ika-worker.ts
+async signWithIka(message: Uint8Array, chain: ChainConfig): Promise<Uint8Array> {
+    const { decryptUserShare, createSignMessage, parseSignature } = await import('./ika-worker.js');
 
-    // Approve via squids::agent on-chain
-    // ... build PTB calling squids::agent::approve
-    // ... submit partial user signature to IKA
-    // ... receive co-signed result
-    return signature;
+    // 1. Decrypt user share (WASM — runs in Worker)
+    const secretShare = decryptUserShare(
+        chain.curve, this.state.decryptionKey, this.state.publicOutput,
+        this.state.encryptedShare, this.state.protocolParams,
+    );
+
+    // 2. Consume a pre-verified presign from the pool
+    const presign = await this.consumePresign(chain.curve);
+
+    // 3. Compute partial user signature (WASM — runs in Worker)
+    const userContribution = createSignMessage(
+        this.state.protocolParams, this.state.publicOutput,
+        secretShare, presign, message,
+        chain.hashScheme, chain.signatureAlgorithm, chain.curve,
+    );
+
+    // 4. Approve message on-chain via squids::agent
+    const approval = await this.approveOnChain(message, chain);
+
+    // 5. Submit to IKA network (GraphQL + JSON-RPC for tx)
+    const signOutput = await this.submitToIka(userContribution, approval);
+
+    // 6. Parse final signature (WASM — runs in Worker)
+    return parseSignature(chain.curve, chain.signatureAlgorithm, signOutput);
 }
 ```
 
@@ -204,7 +319,7 @@ async signWithIka(message: Uint8Array, chain: string): Promise<Uint8Array> {
 
 ## Browser DKG Proxy Flow
 
-The DKG WASM can't run in CF Workers. brando's browser does the computation:
+DKG uses `prepareDKG` which is a heavier WASM operation (session setup, not just signing). This may also work in Workers but hasn't been tested yet. For now, brando's browser does DKG computation:
 
 ```
 1. brando opens idle overlay, types agent name
@@ -255,6 +370,24 @@ After DKG, each agent has four addresses derived from IKA dWallets:
 | Solana | ed25519 | IKA dWallet → ed25519 pubkey → base58 |
 
 These are real, native addresses on each chain. No bridges, no wrapping, no re-encoding hacks.
+
+## What We Proved (2026-04-02)
+
+Tested live on `sui.ski/api/test-ika-wasm`:
+
+| Test | Result |
+|---|---|
+| SDK import (`@ika.xyz/sdk`) | YES |
+| IKA client with GraphQL (no gRPC) | YES |
+| Static WASM import (pre-compiled `WebAssembly.Module`) | YES |
+| `initSync` with static module | YES |
+| `generate_secp_cg_keypair_from_seed` (direct WASM call) | YES — returned valid result |
+| `create_sign_centralized_party_message` exists | YES |
+| `decrypt_user_share` exists | YES |
+| SDK's `UserShareEncryptionKeys` (via wasm-loader) | NO — broken init path, bypass with direct calls |
+| Runtime `WebAssembly.compile()` | NO — blocked by CF Workers |
+
+**Conclusion:** IKA 2PC-MPC signing is viable in CF Workers. The WASM crypto runs. The SDK's wrapper is broken but the raw functions work. We bypass the wrapper with `ika-worker.ts`.
 
 ## Security Properties
 

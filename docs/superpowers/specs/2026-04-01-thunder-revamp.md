@@ -140,12 +140,20 @@ await thunder.sendSigningIntent({
 // Result returns as encrypted Thunder to the agent
 ```
 
-### 5. Relayer configuration
+### 5. Thunder Relayer (self-hosted CF Worker)
 
-Upstream provides a relayer service. Thunder can either:
-- **Use Mysten's hosted relayer** (testnet/mainnet when available)
-- **Self-host the relayer** on Cloudflare Workers (the relayer is Rust, but we can proxy)
-- **Use Walrus as backup** for message persistence (already supported upstream)
+The relayer is a Cloudflare Worker — not Mysten's hosted service. This gives us full control over metadata privacy, IKA routing, and agent features.
+
+- **Primary:** Thunder relayer on CF Workers (Durable Objects for group state, KV/R2 for ciphertext, WebSocket for real-time delivery)
+- **Fallback:** Mysten's upstream relayer (if Thunder is down)
+- **Storage:** Walrus for message persistence and archive recovery
+
+Why self-host:
+- Metadata privacy — sender/recipient/timing stays on our infrastructure, not Mysten's
+- IKA integration — cross-chain address resolution and signing intent routing happen in the relayer
+- Chronicom triggers — relayer watches for signing intents and fires IKA co-sign directly
+- Customization — Prism routing, agent priority queues, Sibyl intent matching
+- Branding — "Powered by Thunder" not "Powered by Sui Stack Messaging"
 
 ## Terminology Mapping
 

@@ -1,4 +1,4 @@
-# Keyless IKA-Native Agents — "Rumble Your Squids"
+# Rumble Your Squids — Keyless IKA-Native Agents
 
 **Date:** 2026-04-02
 **Status:** Approved

@@ -65,7 +65,7 @@ app.get('/superteam', (c) => c.html(`<!DOCTYPE html>
 .wrap{max-width:960px;width:100%;padding:16px}video{width:100%;border-radius:12px;box-shadow:0 0 40px rgba(0,200,255,.15)}
 p{color:#888;text-align:center;margin-top:12px;font-size:13px}a{color:#4da2ff}</style>
 </head><body><div class="wrap">
-<video src="${WALRUS_VIDEO_URL}" controls autoplay muted playsinline poster="${POSTER_URL}"></video>
+<video src="${WALRUS_VIDEO_URL}" controls muted playsinline poster="${POSTER_URL}"></video>
 <p>Hosted on <a href="https://walrus.xyz">Walrus</a> — Sui's decentralized storage. <a href="https://sui.ski">sui.ski</a></p>
 </div></body></html>`));
 

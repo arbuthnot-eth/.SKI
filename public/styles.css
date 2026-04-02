@@ -6055,7 +6055,43 @@ a.ski-idle-bubble-name:hover {
 
 .ski-suins-qr-popup[hidden] { display: none; }
 
+/* ── Superteam demo toggle button ─────────────────────────────────── */
+.ski-demo-toggle {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid rgba(77, 162, 255, 0.25);
+  border-radius: 40px;
+  background: rgba(10, 14, 28, 0.85);
+  backdrop-filter: blur(12px);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+  font-family: system-ui, sans-serif;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+.ski-demo-toggle:hover {
+  border-color: rgba(77, 162, 255, 0.5);
+  color: #fff;
+  background: rgba(15, 22, 45, 0.95);
+  box-shadow: 0 4px 20px rgba(77, 162, 255, 0.15);
+  transform: translateY(-1px);
+}
+.ski-demo-toggle--active {
+  border-color: rgba(77, 162, 255, 0.4);
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(20, 30, 60, 0.9);
+}
+
 /* ── Superteam demo card + player ─────────────────────────────────── */
+/* Hidden: gear toggle collapses entire card */
+.ski-demo.ski-demo--hidden { display: none; }
 /* Collapsed: inline row, show QR small, hide addr */
 /* Open: QR + nets row, label below */
 .ski-demo.open .ski-demo-top-row {
@@ -6077,6 +6113,27 @@ a.ski-idle-bubble-name:hover {
 .ski-demo.open .ski-demo-chips { order: 5; }
 .ski-demo.open .ski-demo-play-hint { display: none; }
 /* Player: horizontal expand to the right */
+.ski-demo-player { position: relative; }
+.ski-demo-close {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s;
+}
+.ski-demo-close:hover { background: rgba(255,60,60,0.8); }
+.ski-demo.open .ski-demo-close { display: flex; align-items: center; justify-content: center; }
 .ski-demo.open .ski-demo-player {
   max-width: 100%;
   opacity: 1;

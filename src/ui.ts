@@ -3220,13 +3220,13 @@ let _thunderConvoOpen = (() => {
 
 const _selectedThunderTs = new Set<number>();
 
-/** Aggregate signal count across ALL owned names */
+/** Aggregate pending (on-chain, not yet decrypted) signal count across ALL owned names */
 function _totalThunderCount(): number {
   let total = 0;
   for (const d of nsOwnedDomains) {
     if (d.kind !== 'nft') continue;
     const bare = d.name.replace(/\.sui$/, '').toLowerCase();
-    total += (_thunderCounts[bare] ?? 0) + (_thunderLocalCounts[bare] ?? 0);
+    total += _thunderCounts[bare] ?? 0;
   }
   return total;
 }
@@ -9480,8 +9480,10 @@ function bindEvents() {
         const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
         if (!card) return;
         if (!name && !app.suinsName) { card.innerHTML = ''; return; }
-        // For available names or no status: show user's primary SuiNS name card instead
-        if (!nsAvail || nsAvail === 'available') {
+        // Show primary name card when: no active search, or name is available (unregistered)
+        // Don't fall back to primary while fetching if user typed a different name
+        const isOwnName = name.toLowerCase() === (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase();
+        if (nsAvail === 'available' || (!nsAvail && (!name || isOwnName))) {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
           if (!primaryName) { card.innerHTML = ''; return; }
           // Show primary name card with SUIAMI balance
@@ -9642,19 +9644,28 @@ function bindEvents() {
         const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
         _idleNsInput!.value = val;
         nsLabel = val;
+        try { localStorage.setItem('ski:ns-label', val); } catch {}
         if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
         const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
         if (mainInput) mainInput.value = val;
-        // Reset status while fetching
-        nsAvail = null;
+        // Reset state — mirror main input behavior
+        const validLabel = isValidNsLabel(val);
+        const _inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === val);
+        nsPriceUsd = (validLabel && val.length >= 5 && ns5CharPriceUsd != null && !_inRoster) ? ns5CharPriceUsd : null;
+        nsAvail = _inRoster ? 'owned' : null;
+        nsGraceEndMs = 0;
+        nsTargetAddress = null;
+        nsKioskListing = null; nsTradeportListing = null;
+        nsShadeOrder = null;
         _updateIdleStatus();
+        _updateIdleCard(val);
         _renderThunderComposePreview();
-        // Debounce fetch
+        // Debounce fetch — short delay to batch rapid keystrokes
         if (_idleDebounce) clearTimeout(_idleDebounce);
-        if (val.length >= 3 && isValidNsLabel(val)) {
+        if (val.length >= 3 && validLabel) {
           _idleDebounce = setTimeout(() => {
             fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); _expandIdleConvo(val); });
-          }, 400);
+          }, 150);
         }
       });
 
@@ -11324,14 +11335,8 @@ function bindEvents() {
         nsAvail = 'owned';
         nsKioskListing = null;
         nsTradeportListing = null;
-        // Refresh overlay button and card
-        _updateIdleStatus();
-        _updateIdleCard(name);
-        // Re-fetch owned domains so the roster is current
-        fetchAndShowNsPrice(name).then(() => {
-          _updateIdleStatus();
-          _updateIdleCard(name);
-        });
+        // Full rebuild — colors, shapes, and registration state all change
+        setTimeout(() => window.dispatchEvent(new Event('ski:show-idle')), 600);
       };
       window.addEventListener('ski:name-acquired', _onNameAcquired);
 
@@ -11397,9 +11402,18 @@ function bindEvents() {
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
     document.addEventListener(evt, _resetIdle, { passive: true });
   });
-  // Restore overlay immediately if it was open before refresh
-  if (localStorage.getItem('ski:idle-open') === '1' && getState().address) {
-    _showIdleOverlay();
+  // Restore overlay immediately if it was open before refresh — don't wait for wallet reconnect
+  if (localStorage.getItem('ski:idle-open') === '1') {
+    // If wallet is already connected, show immediately; otherwise wait for connect event
+    if (getState().address) {
+      _showIdleOverlay();
+    } else {
+      const _restoreOnConnect = () => {
+        window.removeEventListener('ski:wallet-connected', _restoreOnConnect);
+        if (!_idleOverlay) _showIdleOverlay();
+      };
+      window.addEventListener('ski:wallet-connected', _restoreOnConnect);
+    }
   } else {
     _resetIdle();
   }

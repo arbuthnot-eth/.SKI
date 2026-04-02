@@ -7,7 +7,7 @@
 
 ## Problem
 
-Thunder v1 is a custom implementation of Seal-encrypted messaging between SuiNS identities. It works — ciphertext on Walrus, Seal key servers for decryption, Thunder signals on-chain — but it's bespoke. Mysten just released the official Sui Stack Messaging SDK (`@mysten/sui-stack-messaging`) which provides the same primitives with a production-grade Satellite, group management, key rotation, and message verification built in.
+Thunder v1 is a custom implementation of Seal-encrypted messaging between SuiNS identities. It works — ciphertext on Walrus, Seal key servers for decryption, Thunder signals on-chain — but it's bespoke. Mysten just released the official Sui Stack Messaging SDK (`@mysten/sui-stack-messaging`) which provides the same primitives with a production-grade satellite, group management, key rotation, and message verification built in.
 
 Meanwhile, Mysten's SDK only supports **Sui wallets**. It has no concept of cross-chain identity or signing. SKI has IKA.
 
@@ -20,7 +20,7 @@ Fork the Sui Stack Messaging SDK as Thunder. Extend it with IKA cross-chain iden
 | Feature | How it works |
 |---|---|
 | **End-to-end encryption** | AES-256-GCM per message, Seal-managed DEKs |
-| **Off-chain Satellite** | Ciphertext delivery without on-chain cost per message |
+| **Off-chain satellite** | Ciphertext delivery without on-chain cost per message |
 | **On-chain groups** | `@mysten/sui-groups` — permissions, membership, key history on Sui |
 | **Key rotation** | Atomic rotation + member removal in one PTB |
 | **Message verification** | Per-message wallet signature, sender verification |
@@ -142,16 +142,16 @@ await thunder.sendSigningIntent({
 
 ### 5. Thunder Relayer (self-hosted CF Worker)
 
-The Satellite is a Cloudflare Worker — not Mysten's hosted service. This gives us full control over metadata privacy, IKA routing, and agent features.
+The satellite is a Cloudflare Worker — not Mysten's hosted service. This gives us full control over metadata privacy, IKA routing, and agent features.
 
-- **Thunder Satellite** on CF Workers (Durable Objects for group state, KV/R2 for ciphertext, WebSocket for real-time delivery)
+- **thunder satellite** — CF Worker (`thunder-satellite`) with Durable Objects for group state, KV/R2 for ciphertext, WebSocket for real-time delivery
+- **Mysten relayer fallback** — basic ciphertext delivery only. No IKA resolution, no signing intents, no Chronicom triggers. Features degrade gracefully — messages still arrive, cross-chain routing falls back to client-side
 - **Storage:** Walrus for message persistence and archive recovery
-- **No upstream fallback** — IKA address resolution, signing intent routing, and Chronicom triggers make the Satellite incompatible with Mysten's upstream relayer. Thunder Satellite is the only relay.
 
 Why:
 - Metadata privacy — sender/recipient/timing stays on our infrastructure
-- IKA integration — cross-chain address resolution and signing intent routing in the Satellite
-- Chronicom triggers — Satellite watches for signing intents and fires IKA co-sign directly
+- IKA integration — cross-chain address resolution and signing intent routing in the satellite
+- Chronicom triggers — satellite watches for signing intents and fires IKA co-sign directly
 - Customization — Prism routing, agent priority queues, Sibyl intent matching
 
 ## Terminology Mapping
@@ -168,7 +168,7 @@ Why:
 
 ## Migration from Thunder v1
 
-Thunder v1 stores ciphertext directly on Walrus with Seal encryption. Thunder v2 (this revamp) uses the Sui Stack Messaging SDK's Satellite for delivery and on-chain groups for permissions.
+Thunder v1 stores ciphertext directly on Walrus with Seal encryption. Thunder v2 (this revamp) uses the Sui Stack Messaging SDK's satellite for delivery and on-chain groups for permissions.
 
 ### What migrates
 - Existing SuiNS-to-SuiNS messaging identity model
@@ -177,7 +177,7 @@ Thunder v1 stores ciphertext directly on Walrus with Seal encryption. Thunder v2
 - Thunder signal concept (encrypted message between identities)
 
 ### What changes
-- Message delivery: on-chain events → off-chain Satellite (cheaper, faster)
+- Message delivery: on-chain events → off-chain satellite (cheaper, faster)
 - Group management: custom → `@mysten/sui-groups` (standard, audited)
 - Key management: manual → SDK-managed rotation + versioning
 - Subscription: polling → AsyncIterable real-time streams
@@ -199,7 +199,7 @@ Thunder v1 stores ciphertext directly on Walrus with Seal encryption. Thunder v2
 - Add cross-chain address resolution (chain address → Sui address via SUIAMI Roster)
 - Add squids::agent Roster as Seal policy source
 - Rename upstream concepts to Thunder terminology
-- Deploy Satellite (self-hosted or Mysten-hosted)
+- Deploy satellite (self-hosted or Mysten-hosted)
 
 ### Phase 2: Agent messaging
 - Integrate `ika-worker.ts` for agent message signing in CF Workers

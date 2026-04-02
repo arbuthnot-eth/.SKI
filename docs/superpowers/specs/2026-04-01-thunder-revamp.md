@@ -144,16 +144,15 @@ await thunder.sendSigningIntent({
 
 The Satellite is a Cloudflare Worker — not Mysten's hosted service. This gives us full control over metadata privacy, IKA routing, and agent features.
 
-- **Primary:** Thunder Satellite on CF Workers (Durable Objects for group state, KV/R2 for ciphertext, WebSocket for real-time delivery)
-- **Fallback:** Mysten's upstream Satellite (if Thunder is down)
+- **Thunder Satellite** on CF Workers (Durable Objects for group state, KV/R2 for ciphertext, WebSocket for real-time delivery)
 - **Storage:** Walrus for message persistence and archive recovery
+- **No upstream fallback** — IKA address resolution, signing intent routing, and Chronicom triggers make the Satellite incompatible with Mysten's upstream relayer. Thunder Satellite is the only relay.
 
-Why self-host:
-- Metadata privacy — sender/recipient/timing stays on our infrastructure, not Mysten's
-- IKA integration — cross-chain address resolution and signing intent routing happen in the Satellite
+Why:
+- Metadata privacy — sender/recipient/timing stays on our infrastructure
+- IKA integration — cross-chain address resolution and signing intent routing in the Satellite
 - Chronicom triggers — Satellite watches for signing intents and fires IKA co-sign directly
 - Customization — Prism routing, agent priority queues, Sibyl intent matching
-- Branding — "Powered by Thunder" not "Powered by Sui Stack Messaging"
 
 ## Terminology Mapping
 

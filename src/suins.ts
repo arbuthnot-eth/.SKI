@@ -965,6 +965,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // Return NS remainder to wallet
     tx.transferObjects([nsCoin], tx.pure.address(walletAddress));
 
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
+
     return buildWithTx(tx, transport);
   };
 
@@ -1005,6 +1008,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     tx.transferObjects([nsCoin], tx.pure.address('0x0'));
     tx.transferObjects([usdcSwapChange, usdcCoin, deepChange], tx.pure.address(walletAddress));
+
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
 
     return buildWithTx(tx, transport);
   };
@@ -1220,6 +1226,9 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Return USDC/DEEP dust
     tx.transferObjects([usdcChange, deepChange], tx.pure.address(walletAddress));
+
+    // 5% of full price → iUSD treasury
+    addRegistrationFee(tx, basePriceUsd, suiPrice);
 
     return buildWithTx(tx, transport);
   };

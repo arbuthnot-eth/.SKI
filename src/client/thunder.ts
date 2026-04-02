@@ -469,6 +469,7 @@ export async function buildBatchQuestTx(
       arguments: [
         tx.object(STORM_ID),
         tx.pure.vector('u8', Array.from(ns)),
+        tx.pure.u64(i),
         tx.object(nftObjectId),
         tx.object('0x6'),
       ],

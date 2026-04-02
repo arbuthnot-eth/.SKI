@@ -1,6 +1,6 @@
 # Rumble Your Squids — Keyless IKA-Native Agents
 
-**Date:** 2026-04-02
+**Date:** 2026-04-01
 **Status:** Approved
 **Package:** `squids::agent`
 

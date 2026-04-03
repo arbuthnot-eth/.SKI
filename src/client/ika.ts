@@ -776,6 +776,29 @@ export async function rumble(
     targetOwner,
   };
 
+  // Step 0: Check SuiNS name requirement before starting
+  log('Checking SuiNS name...');
+  try {
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    const gql = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+    const { SuinsClient } = await import('@mysten/suins');
+    const suins = new SuinsClient({ client: gql as never, network: 'mainnet' });
+    const defaultName = await suins.getName(address);
+    if (!defaultName) {
+      // Check owned names (including subnames)
+      const owned = await suins.getOwnedNames(address, { limit: 1 });
+      if (!owned || owned.length === 0) {
+        log('Failed — SuiNS name or subname required');
+        return {
+          addresses: [], btcAddress: '', ethAddress: '', solAddress: '',
+          dwalletCaps: [], dwalletId: '', error: 'SuiNS name or subname required to Rumble',
+        } as RumbleResult;
+      }
+    }
+  } catch (err) {
+    console.warn('[rumble] SuiNS check failed, proceeding anyway:', err);
+  }
+
   // Step 1: Check what already exists
   log('Checking existing dWallets...');
   let status = await getCrossChainStatus(address);
@@ -836,7 +859,8 @@ export async function rumble(
     }
   } catch {}
 
-  log('Done!');
+  const anyChain = !!(final.btcAddress || final.solAddress);
+  log(anyChain ? 'Done!' : 'Failed \u2014 no chains provisioned');
   return {
     addresses: final.addresses,
     btcAddress: final.btcAddress,

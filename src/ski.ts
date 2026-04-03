@@ -448,7 +448,15 @@ window.addEventListener('ski:rumble', async (e) => {
 
   // targetRumble: if set, DWalletCap goes to this address instead of the connected wallet
   const targetRumble = (e as CustomEvent).detail?.targetRumble as string | undefined;
-  const targetLabel = targetRumble ? ` → ${targetRumble.slice(0, 8)}…` : '';
+
+  // Check SuiNS name requirement before starting — fail fast, no DKG spam
+  if (!app.suinsName) {
+    showToast('Rumble failed \u2014 SuiNS name/subname required');
+    window.dispatchEvent(new CustomEvent('ski:rumble-complete', { detail: { btcAddress: '', ethAddress: '', solAddress: '', error: 'SuiNS name required' } }));
+    return;
+  }
+
+  const targetLabel = targetRumble ? ` \u2192 ${targetRumble.slice(0, 8)}\u2026` : '';
   showToast(`Rumble starting${targetLabel} \u2014 provisioning all chains...`);
 
   try {
@@ -457,7 +465,8 @@ window.addEventListener('ski:rumble', async (e) => {
       ws.address,
       (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
       (stage: string) => {
-        showToast(`Rumble: ${stage}`);
+        // Only toast failures and key milestones — progress shows in idle overlay panel
+        if (stage.includes('failed') || stage.includes('Failed')) showToast(`Rumble: ${stage}`);
         window.dispatchEvent(new CustomEvent('ski:rumble-progress', { detail: stage }));
       },
       targetRumble,
@@ -473,12 +482,16 @@ window.addEventListener('ski:rumble', async (e) => {
 
     // Chain addresses stored in app state — queried from on-chain, no localStorage
 
-    // Summary toast
+    // Summary toast — show success or failure clearly
     const chains: string[] = [];
     if (result.btcAddress) chains.push('BTC');
     if (result.ethAddress) chains.push('ETH');
     if (result.solAddress) chains.push('SOL');
-    showToast(`Rumble complete \u2014 ${chains.join(' + ') || 'no chains'} ready`);
+    if (chains.length > 0) {
+      showToast(`Rumble complete \u2014 ${chains.join(' + ')} ready`);
+    } else {
+      showToast(`Rumble failed \u2014 no chains provisioned. ${result.error || 'SuiNS name may be required.'}`);
+    }
 
     // Dispatch result for UI / Roster consumers
     window.dispatchEvent(new CustomEvent('ski:rumble-complete', { detail: result }));

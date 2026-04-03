@@ -4207,7 +4207,7 @@ a.ski-idle-bubble-name:hover {
 
 .app-toast-root {
   position: fixed;
-  right: 14px;
+  left: 14px;
   bottom: 14px;
   z-index: 2147483000;
   display: flex;

@@ -3250,13 +3250,20 @@ let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
 let nsLabel = (() => {
   try {
-    // Prefer user's primary SuiNS name, fall back to saved label, default to 'iusd'
+    // Prefer user's primary SuiNS name
     const ws = getState();
     if (ws.address) {
       const cached = localStorage.getItem(`ski:suins:${ws.address}`);
       if (cached) return cached.replace(/\.sui$/, '');
     }
-    return localStorage.getItem('ski:ns-label') || 'iusd';
+    // Fall back to saved label — but only if it was a taken/owned name, not a mintable one
+    const saved = localStorage.getItem('ski:ns-label') || '';
+    const savedAvail = sessionStorage.getItem('ski:ns-resolve');
+    const wasAvailable = savedAvail ? JSON.parse(savedAvail)?.avail === 'available' : false;
+    if (saved && !wasAvailable) return saved;
+    // No primary name → default based on wallet type
+    if (ws.walletName && /waap/i.test(ws.walletName)) return 'waap';
+    return 'iusd';
   } catch { return 'iusd'; }
 })();
 let nsPriceUsd: number | null = null;
@@ -9433,10 +9440,12 @@ function bindEvents() {
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
         const label = nsLabel.trim();
-        const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
-        const hasListing = !!(nsKioskListing || nsTradeportListing);
-        // Orange triangle for listings, blue square for taken/owned, green for available
-        const variant: SkiDotVariant = (hasListing && !isOwned) ? 'orange-triangle'
+        const validLabel = isValidNsLabel(label);
+        const isOwned = validLabel && nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        const hasListing = validLabel && !!(nsKioskListing || nsTradeportListing);
+        // Invalid label → black diamond, no action
+        const variant: SkiDotVariant = !validLabel ? 'black-diamond'
+          : (hasListing && !isOwned) ? 'orange-triangle'
           : (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square'
           : nsAvail === 'available' ? 'green-circle'
           : nsAvail === 'grace' ? 'red-hexagon'
@@ -9444,7 +9453,7 @@ function bindEvents() {
         _idleStatusEl.innerHTML = _nsStatusSvg(variant);
 
         const _iamName = label || app.suinsName?.replace(/\.sui$/, '') || 'you';
-        if (!label) {
+        if (!label || !validLabel) {
           _idleActionBtn.textContent = 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
           _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
@@ -9757,9 +9766,20 @@ function bindEvents() {
         fetchAndShowNsPrice(name).then(() => { _updateIdleStatus(); _updateIdleCard(name); _expandIdleConvo(name); });
       });
 
-      _idleNsInput?.addEventListener('click', (e) => e.stopPropagation());
+      _idleNsInput?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (_idleNsInput?.value) {
+          const len = _idleNsInput.value.length;
+          _idleNsInput.setSelectionRange(len, len);
+        }
+      });
       _idleNsInput?.addEventListener('keydown', (e) => e.stopPropagation());
-      _idleNsInput?.addEventListener('focus', _freezeGif);
+      _idleNsInput?.addEventListener('focus', () => {
+        if (_idleNsInput?.value.trim()) {
+          const _vid = _idleOverlay?.querySelector('.ski-idle-img') as HTMLVideoElement | null;
+          if (_vid) try { _vid.pause(); } catch {}
+        }
+      });
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
 
       const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
@@ -9787,6 +9807,9 @@ function bindEvents() {
         nsLabel = val;
         try { localStorage.setItem('ski:ns-label', val); } catch {}
         if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
+        // Pause video when typing, resume when empty
+        const _vid = _idleOverlay?.querySelector('.ski-idle-img') as HTMLVideoElement | null;
+        if (_vid) { if (val) try { _vid.pause(); } catch {} else try { _vid.play(); } catch {} }
         const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
         if (mainInput) mainInput.value = val;
         // Reset state — mirror main input behavior
@@ -9822,6 +9845,8 @@ function bindEvents() {
         if (_idleClearBtn) _idleClearBtn.style.display = 'none';
         _updateIdleStatus();
         _renderThunderComposePreview();
+        const _vid2 = _idleOverlay?.querySelector('.ski-idle-img') as HTMLVideoElement | null;
+        if (_vid2) try { _vid2.play(); } catch {}
         _idleNsInput?.focus();
       });
 
@@ -10701,16 +10726,26 @@ function bindEvents() {
               const _resolved = nsTargetAddress || nsNftOwner;
               if (_resolved) targetRumble = _resolved;
             }
-            const provStep = addStep(targetRumble ? `Starting DKG → ${_cardName}.sui...` : 'Starting DKG...', 'active');
-            window.dispatchEvent(new CustomEvent('ski:rumble', { detail: { targetRumble } }));
+            // Fast-fail: check SuiNS name before starting Rumble
+            if (!app.suinsName) {
+              addStep('\u2715 Rumble failed \u2014 SuiNS name/subname required', 'skip');
+              btn.disabled = false;
+              btn.innerHTML = '\ud83e\udd91 Rumble';
+              return;
+            }
 
+            const provStep = addStep(targetRumble ? `Rumble → ${_cardName}.sui...` : 'Rumble starting...', 'active');
+
+            // Register listeners BEFORE dispatching — ski:rumble may resolve synchronously
             await new Promise<void>((resolve) => {
               const onProgress = ((ev: CustomEvent) => {
                 const stage = ev.detail as string;
                 if (stage.includes('secp256k1')) updateStep(secpStep, stage.includes('fail') ? 'skip' : 'active', stage);
                 else if (stage.includes('ed25519')) updateStep(edStep, stage.includes('fail') ? 'skip' : 'active', stage);
                 else if (stage === 'Done!') {
-                  updateStep(provStep, 'done', 'DKG complete');
+                  updateStep(provStep, 'done', 'Rumble complete');
+                } else if (stage.includes('Failed') || stage.includes('failed')) {
+                  updateStep(provStep, 'skip', stage);
                 }
               }) as EventListener;
 
@@ -10718,13 +10753,20 @@ function bindEvents() {
                 window.removeEventListener('ski:rumble-progress', onProgress);
                 window.removeEventListener('ski:rumble-complete', onComplete as EventListener);
                 const result = ev.detail;
-                if (result?.btcAddress) updateStep(secpStep, 'done', `secp256k1 \u2713 BTC + ETH`);
-                if (result?.solAddress) updateStep(edStep, 'done', `ed25519 \u2713 SOL`);
+                if (result?.error) {
+                  updateStep(provStep, 'skip', result.error);
+                } else {
+                  if (result?.btcAddress) updateStep(secpStep, 'done', `secp256k1 \u2713 BTC + ETH`);
+                  if (result?.solAddress) updateStep(edStep, 'done', `ed25519 \u2713 SOL`);
+                  if (!result?.btcAddress && !result?.solAddress) updateStep(provStep, 'skip', 'Rumble failed \u2014 no chains provisioned');
+                }
                 resolve();
               }) as EventListener;
 
               window.addEventListener('ski:rumble-progress', onProgress);
               window.addEventListener('ski:rumble-complete', onComplete as EventListener);
+              // Dispatch AFTER listeners are registered — ski:rumble may resolve synchronously
+              window.dispatchEvent(new CustomEvent('ski:rumble', { detail: { targetRumble } }));
               setTimeout(() => resolve(), 300_000);
             });
           }
@@ -10899,9 +10941,7 @@ function bindEvents() {
       // GIF click triggers SUIAMI (overlay stays), but not on iUSD button or focus-restore
       _idleOverlay.querySelector('.ski-idle-media')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        if ((e.target as HTMLElement).closest('#ski-idle-iusd')) return; // handled by iUSD button
-        if (!_hadFocus) return; // first click is just restoring window focus
-        _triggerSuiami();
+        // Media area clicks do nothing — no accidental SUIAMI triggers
       });
       // Thunder input — doesn't dismiss, Enter confirms then sends
       const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session

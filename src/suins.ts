@@ -767,10 +767,12 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
       tx.pure.string(fullDomain),
     ],
   });
+  // Don't attach .tx — SuiNS SDK intents can't be resolved by WaaP's v1 client.
+  // Pass pre-built bytes so WaaP signs them as-is.
   try {
-    return await buildWithTx(tx, grpcClient);
+    return await tx.build({ client: grpcClient as never });
   } catch {
-    return buildWithTx(tx, transport);
+    return tx.build({ client: transport as never });
   }
 }
 

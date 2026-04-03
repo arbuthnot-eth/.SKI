@@ -2282,17 +2282,18 @@ async function tryWaapProofConnect(wallet: Wallet): Promise<void> {
         return;
       }
 
-      // Path 2: Don't restore old OAuth snapshot — it causes session conflation
-      // (e.g., user picks "email" but gets logged into old X account).
-      // Always show fresh auth modal so user can pick their method.
+      // Path 2: Restore OAuth snapshot so WaaP can find its session for signing
+      if (proof.oauthSnapshot) {
+        restoreWaapOAuth(proof.oauthSnapshot);
+      }
       closeModal();
       deactivateCurrent();
       try {
-        await connect(wallet, { skipSilent: true });
+        await connect(wallet);
         return;
       } catch (err) {
         showToast('Reconnecting: ' + _errMsg(err));
-        // Connect failed — fall through to OAuth modal
+        // Silent connect failed — fall through to OAuth modal
       }
     }
   } catch { /* fingerprint or import failure — fall through */ }

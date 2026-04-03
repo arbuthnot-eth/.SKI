@@ -394,9 +394,12 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
       return normalizeTxResult(r);
     }
 
-    // WaaP: pass unbuilt Transaction so WaaP builds server-side with its own v1 SDK.
-    // Passing pre-built v2 bytes causes v1/v2 BCS mismatch → invalid signature.
-    // Falls back to augmented bytes if no unbuilt Transaction is attached.
+    // WaaP: pass pre-built bytes directly. WaaP SDK 1.2.4's resolveTransactionBytes
+    // returns Uint8Array as-is (no re-serialization), so exact bytes reach the iframe.
+    // Previously passed unbuilt Transaction so WaaP would rebuild with its v1 SDK,
+    // but this causes WaaP to create a v1 SuiClient and call v2 Transaction.build()
+    // which can diverge from the original bytes in edge cases. Passing exact bytes
+    // is safer: the iframe signs the same bytes we built.
     if (/waap/i.test(wallet.name)) {
       const chain = account.chains.find((c) => c.startsWith('sui:')) ?? 'sui:mainnet';
 
@@ -404,13 +407,24 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
         const execFeat = wallet.features['sui:signAndExecuteTransaction'] as {
           signAndExecuteTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string; options?: { showEffects?: boolean } }) => Promise<{ digest: string; effects?: unknown }>;
         };
-        // Pass unbuilt Transaction so WaaP builds server-side with its own v1 SDK.
-        const tx = (transaction as { tx?: unknown }).tx ?? transaction;
-        const r = await execFeat.signAndExecuteTransaction({
-          transaction: tx instanceof Uint8Array ? augmentBytes(tx) : tx, account, chain, options: { showEffects: true },
-        });
-        // WaaP may return empty digest even on success — treat as success
-        return { digest: r.digest || '', effects: r.effects };
+        // Pass bytes directly — WaaP SDK 1.2.4 resolveTransactionBytes returns
+        // Uint8Array as-is, so exact pre-built bytes reach the iframe for signing.
+        try {
+          const r = await execFeat.signAndExecuteTransaction({
+            transaction: transaction instanceof Uint8Array ? augmentBytes(transaction) : transaction,
+            account, chain, options: { showEffects: true },
+          });
+          // WaaP may return empty digest even on success — treat as success
+          return { digest: r.digest || '', effects: r.effects };
+        } catch (waapErr: unknown) {
+          const msg = waapErr instanceof Error ? waapErr.message : String(waapErr);
+          // Surface WaaP-specific errors with actionable context
+          if (msg.includes('Invalid') && msg.includes('signature')) {
+            console.error('[.SKI] WaaP signing failed — likely a WaaP server-side session issue.', msg);
+            console.error('[.SKI] Try: disconnect wallet, clear WaaP cookies, and reconnect.');
+          }
+          throw waapErr;
+        }
       }
 
       throw new Error('WaaP transaction failed');
@@ -593,7 +607,18 @@ export async function autoReconnect(): Promise<boolean> {
     match = real;
   }
 
-  // WaaP OAuth snapshot restoration removed — causes connection issues
+  // Restore WaaP OAuth snapshot for auto-reconnect so signing context is preserved
+  if (/waap/i.test(match.name)) {
+    try {
+      const [{ getDeviceId }, { getWaapProof, restoreWaapOAuth }] = await Promise.all([
+        import('./fingerprint.js') as Promise<{ getDeviceId: () => Promise<{ visitorId: string }> }>,
+        import('./waap-proof.js') as Promise<{ getWaapProof: (id: string) => Promise<{ oauthSnapshot?: Record<string, string> } | null>; restoreWaapOAuth: (snap: Record<string, string>) => void }>,
+      ]);
+      const { visitorId } = await getDeviceId();
+      const proof = await getWaapProof(visitorId);
+      if (proof?.oauthSnapshot) restoreWaapOAuth(proof.oauthSnapshot);
+    } catch { /* non-fatal */ }
+  }
 
   try {
     await connect(match);

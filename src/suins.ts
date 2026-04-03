@@ -82,11 +82,8 @@ export function maybeAppendRoster(
 
   const chains: [string, string][] = [['sui', addr]];
   if (crossChain?.btc) chains.push(['btc', crossChain.btc]);
-  else { try { const b = localStorage.getItem('ski:btc-address'); if (b) chains.push(['btc', b]); } catch {} }
   if (crossChain?.eth) chains.push(['eth', crossChain.eth]);
-  else { try { const e = localStorage.getItem('ski:eth-address'); if (e) chains.push(['eth', e]); } catch {} }
   if (crossChain?.sol) chains.push(['sol', crossChain.sol]);
-  else { try { const s = localStorage.getItem('ski:sol-address'); if (s) chains.push(['sol', s]); } catch {} }
 
   // Skip if unchanged since last write
   const rosterKey = `ski:roster:${addr}`;

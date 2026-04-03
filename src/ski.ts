@@ -471,12 +471,7 @@ window.addEventListener('ski:rumble', async (e) => {
       solAddress: result.solAddress,
     });
 
-    // Store chain addresses for Roster writes
-    try {
-      if (result.btcAddress) localStorage.setItem('ski:btc-address', result.btcAddress);
-      if (result.ethAddress) localStorage.setItem('ski:eth-address', result.ethAddress);
-      if (result.solAddress) localStorage.setItem('ski:sol-address', result.solAddress);
-    } catch {}
+    // Chain addresses stored in app state — queried from on-chain, no localStorage
 
     // Summary toast
     const chains: string[] = [];

@@ -2994,16 +2994,7 @@ function _renderProfileEl(el: HTMLElement) {
     iconHtml = `<span class="wk-widget-icon-wrap"><span class="wk-widget-method-icon${social || isWaap ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${badge}</span>`;
   }
 
-  // Eagerly restore IKA cache so squid shows from the first render frame
-  if (!app.ikaWalletId && ws.address) {
-    try {
-      const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
-      if (ikaCached) {
-        const c = JSON.parse(ikaCached) as { btc: string; eth: string; sol?: string; id: string };
-        if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; app.solAddress = c.sol ?? ''; }
-      }
-    } catch {}
-  }
+  // IKA status populated from on-chain query, not localStorage
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
   const innerHtml = `${iconHtml}
@@ -5838,17 +5829,7 @@ function renderSkiMenu() {
     return;
   }
 
-  // Restore cached dWallet addresses instantly (no RPC wait)
-  if ((!app.btcAddress || !app.solAddress) && ws.address) {
-    try {
-      const cached = localStorage.getItem(`ski:ika:${ws.address}`);
-      if (cached) {
-        const c = JSON.parse(cached) as { btc: string; eth: string; sol?: string; id: string };
-        if (c.btc) { app.btcAddress = c.btc; app.ethAddress = c.eth; app.ikaWalletId = c.id; }
-        if (c.sol) { app.solAddress = c.sol; }
-      }
-    } catch {}
-  }
+  // dWallet addresses populated from on-chain query below — no localStorage cache
 
   // Auto-detect dWallet on menu render (non-blocking, updates cache)
   if ((!app.btcAddress || !app.solAddress) && ws.address && !_dwalletCheckInFlight) {
@@ -5869,7 +5850,6 @@ function renderSkiMenu() {
         changed = true;
       }
       if (changed) {
-        try { localStorage.setItem(`ski:ika:${ws.address}`, JSON.stringify({ btc: status.btcAddress, eth: status.ethAddress, sol: status.solAddress, id: status.dwalletId })); } catch {}
         render();
       }
     }).catch(() => { _dwalletCheckInFlight = false; });
@@ -9390,7 +9370,7 @@ function bindEvents() {
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <span class="ski-idle-version">v3.1</span>
-          <img src="/assets/ski-idle.gif" class="ski-idle-img" alt="SKI — once, everywhere">
+          <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"><source src="/assets/ski-idle.webm" type="video/webm"><source src="/assets/ski-idle.mp4" type="video/mp4"></video>
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
             <span class="wk-ns-status" id="ski-idle-status" title="Identity status — click to show address" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
@@ -9613,26 +9593,15 @@ function bindEvents() {
       };
 
       // Pause GIF while typing, resume on blur
-      const _gifImg = _idleOverlay.querySelector('.ski-idle-img') as HTMLImageElement | null;
-      const _pauseGif = () => { if (_gifImg) _gifImg.style.animationPlayState = 'paused'; };
-      const _resumeGif = () => { if (_gifImg) _gifImg.style.animationPlayState = ''; };
+      const _gifImg = _idleOverlay.querySelector('.ski-idle-img') as HTMLVideoElement | null;
+      const _pauseGif = () => { if (_gifImg) try { _gifImg.pause(); } catch {} };
+      const _resumeGif = () => { if (_gifImg) try { _gifImg.play(); } catch {} };
       const _freezeGif = () => {
-        if (!_gifImg) return;
-        const canvas = document.createElement('canvas');
-        canvas.width = _gifImg.naturalWidth || _gifImg.width;
-        canvas.height = _gifImg.naturalHeight || _gifImg.height;
-        const ctx2d = canvas.getContext('2d');
-        if (ctx2d) {
-          ctx2d.drawImage(_gifImg, 0, 0);
-          _gifImg.dataset.gifSrc = _gifImg.src;
-          _gifImg.src = canvas.toDataURL();
-        }
+        if (_gifImg) try { _gifImg.pause(); } catch {}
         _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.add('ski-idle-thunder-convo--frozen');
       };
       const _unfreezeGif = () => {
-        if (!_gifImg || !_gifImg.dataset.gifSrc) return;
-        _gifImg.src = _gifImg.dataset.gifSrc;
-        delete _gifImg.dataset.gifSrc;
+        if (_gifImg) try { _gifImg.play(); } catch {}
         _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.remove('ski-idle-thunder-convo--frozen');
       };
 
@@ -10551,9 +10520,23 @@ function bindEvents() {
 
         let btc = '', eth = '', sol = '';
         if (isOwnName) {
-          btc = localStorage.getItem('ski:btc-address') || app.btcAddress || '';
-          eth = localStorage.getItem('ski:eth-address') || app.ethAddress || '';
-          sol = localStorage.getItem('ski:sol-address') || app.solAddress || '';
+          // Use app state first (populated from per-address cache on connect)
+          btc = app.btcAddress || '';
+          eth = app.ethAddress || '';
+          sol = app.solAddress || '';
+          // If empty, try fetching from on-chain dWallet caps
+          if (!btc && !sol && ws.address) {
+            try {
+              const { getCrossChainStatus } = await import('./client/ika.js');
+              const status = await getCrossChainStatus(ws.address);
+              if (status.btcAddress) { btc = status.btcAddress; app.btcAddress = btc; }
+              if (status.ethAddress) { eth = status.ethAddress; app.ethAddress = eth; }
+              if (status.solAddress) { sol = status.solAddress; app.solAddress = sol; }
+              // Cache for next time
+              if (btc || sol) {
+              }
+            } catch {}
+          }
         } else if (viewingName) {
           // Read from SUIAMI Roster for other people's names
           try {
@@ -10643,9 +10626,9 @@ function bindEvents() {
 
         try {
           // Check cache first — instant if addresses already known
-          const cachedBtc = localStorage.getItem('ski:btc-address') || app.btcAddress || '';
-          const cachedEth = localStorage.getItem('ski:eth-address') || app.ethAddress || '';
-          const cachedSol = localStorage.getItem('ski:sol-address') || app.solAddress || '';
+          const cachedBtc = app.btcAddress || '';
+          const cachedEth = app.ethAddress || '';
+          const cachedSol = app.solAddress || '';
 
           // All chains cached → show instantly, no RPC
           if (cachedBtc && cachedSol) {
@@ -11702,21 +11685,18 @@ export function initUI() {
           }
         }
       }
-      // Always clear first so a previously connected wallet's name never bleeds through
+      // Always clear first so a previously connected wallet's data never bleeds through
       app.suinsName = '';
+      app.ikaWalletId = '';
+      app.btcAddress = '';
+      app.ethAddress = '';
+      app.solAddress = '';
       // Restore this address's cached SuiNS name instantly (will refresh from network)
       try {
         const cached = localStorage.getItem(`ski:suins:${ws.address}`);
         if (cached) app.suinsName = cached;
       } catch {}
-      // Restore cached IKA dWallet status instantly (squid emoji, BTC address)
-      try {
-        const ikaCached = localStorage.getItem(`ski:ika:${ws.address}`);
-        if (ikaCached) {
-          const c = JSON.parse(ikaCached) as { btc: string; eth: string; sol?: string; id: string };
-          if (c.id) { app.ikaWalletId = c.id; app.btcAddress = c.btc; app.ethAddress = c.eth; app.solAddress = c.sol ?? ''; }
-        }
-      } catch {}
+      // IKA dWallet addresses queried from on-chain — no localStorage cache
 
       startPolling();
       refreshPortfolio(true);

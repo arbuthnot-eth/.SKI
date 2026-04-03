@@ -3083,6 +3083,35 @@ function _renderDotBtnEl(el: HTMLElement) {
   el.innerHTML = modalOpen ? _shapeWithDropSvg(variant, 31) : _shapeOnlySvg(variant, 31);
 }
 
+/**
+ * Measure header buttons BEFORE compact is applied, decide once, latch.
+ * Removes compact first so we measure at full size, then re-applies if needed.
+ * Only re-measures on resize — never on render (avoids feedback loop).
+ */
+let _compactLatched: boolean | null = null;
+function _measureCompact() {
+  const header = document.querySelector('.ski-header') as HTMLElement | null;
+  const wallet = document.getElementById('ski-wallet');
+  if (!header || !wallet) return;
+  // Remove compact to measure at full size
+  header.classList.remove('ski-header--compact');
+  requestAnimationFrame(() => {
+    // Measure just the 3 buttons (dot + profile + balance) inside ski-wallet
+    const btns = wallet.querySelectorAll('.ski-btn, .wk-widget');
+    let totalW = 0;
+    for (const btn of btns) {
+      const r = btn.getBoundingClientRect();
+      if (r.width > 0) totalW += r.width;
+    }
+    const gap = parseFloat(getComputedStyle(wallet).gap || '0');
+    const visible = Array.from(btns).filter(b => b.getBoundingClientRect().width > 0).length;
+    totalW += gap * Math.max(0, visible - 1);
+    _compactLatched = window.innerWidth < totalW * 1.3;
+    header.classList.toggle('ski-header--compact', _compactLatched);
+  });
+}
+window.addEventListener('resize', _measureCompact);
+
 function renderSkiBtn() {
   if (els.skiBtn) {
     els.skiBtn.style.display = '';
@@ -3097,6 +3126,12 @@ function renderSkiBtn() {
     if (document.contains(el)) _renderDotBtnEl(el);
     else externalDotBtns.delete(el);
   });
+  // Measure once on first render, then only on resize
+  if (_compactLatched === null) _measureCompact();
+  else {
+    const header = document.querySelector('.ski-header');
+    header?.classList.toggle('ski-header--compact', _compactLatched);
+  }
 }
 
 /**

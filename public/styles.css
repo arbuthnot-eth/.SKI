@@ -37,8 +37,8 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
-  padding: 2px 8px;
-  gap: 8px;
+  padding: 2px 6px;
+  gap: 4px;
   position: fixed;
   top: 0;
   right: 0;
@@ -404,7 +404,7 @@ body {
 
 .ski-wallet {
   display: flex;
-  gap: 10px;
+  gap: 4px;
   align-items: center;
   position: relative;
 }
@@ -416,6 +416,16 @@ body {
 .ski-header:has(.ski-modal-active) {
   z-index: 13002;
 }
+/* Compact header: applied by JS when screen < 1.3x header buttons width */
+.ski-header.ski-header--compact { gap: 3px; padding: 2px 3px; }
+.ski-header--compact .ski-wallet { gap: 2px; }
+.ski-header--compact .ski-btn.ski-dot { min-width: 22px; padding: 2px; min-height: 28px; }
+.ski-header--compact .ski-btn:not(.ski-dot) { padding: 2px 5px; }
+.ski-header--compact .wk-widget-btn.connected { padding: 4px 8px; gap: 3px; min-height: 28px; }
+.ski-header--compact .wk-widget-btn.connected .wk-widget-method-icon,
+.ski-header--compact .wk-widget-btn.connected .wk-widget-method-icon img { width: 22px; height: 22px; }
+.ski-header--compact .wk-widget-title { font-size: 0.78rem; }
+.ski-header--compact .ski-waap-x { font-size: 0.5rem; }
 
 .wk-widget {
   position: relative;
@@ -4069,7 +4079,7 @@ a.ski-idle-bubble-name:hover {
 .ski-dot {
   padding: 3px;
   min-width: 30px;
-  margin-right: 15px;
+  min-height: 38px;
 }
 /* Dot close-modal hover: show X overlay */
 .ski-dot.ski-dot--modal-open {

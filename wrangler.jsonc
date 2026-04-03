@@ -6,15 +6,14 @@
 
   // Custom domain
   "routes": [
-    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" },
-    { "pattern": "ar.superteam.sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
+    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
   ],
 
   // Serve public/ as static assets
   "assets": {
     "directory": "public",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/agents/*", "/api/*", "/squids", "/superteam", "/superteam/embed", "/ar.superteam", "/ar.superteam/*"]
+    "run_worker_first": ["/agents/*", "/api/*", "/squids"]
   },
 
   // Durable Objects

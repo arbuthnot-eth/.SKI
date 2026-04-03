@@ -2945,8 +2945,8 @@ function _renderProfileEl(el: HTMLElement) {
   let iconHtml = '';
   if (ws.walletIcon) {
     const social = socialIconSvg(ws.walletName);
-    const xBadge = social ? `<span class="ski-waap-x wk-widget-social-badge">𝕏</span>` : '';
-    iconHtml = `<span class="wk-widget-method-icon${social ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${xBadge}`;
+    const xBadge = social ? `<span class="ski-waap-x">𝕏</span>` : '';
+    iconHtml = `<span class="wk-widget-icon-wrap"><span class="wk-widget-method-icon${social ? ' wk-widget-method-icon--social' : ''}"><img src="${esc(ws.walletIcon)}" alt="${esc(ws.walletName)}"></span>${xBadge}</span>`;
   }
 
   // Eagerly restore IKA cache so squid shows from the first render frame

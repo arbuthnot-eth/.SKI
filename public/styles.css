@@ -2919,13 +2919,13 @@ body {
 }
 .ski-idle-addr-row[hidden] { display: none; }
 .ski-idle-addr-icon {
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   vertical-align: middle;
   flex-shrink: 0;
 }
 .ski-idle-addr-icon--inline { display: inline-flex; }
-.ski-idle-addr-icon--inline svg { width: 16px; height: 16px; }
+.ski-idle-addr-icon--inline svg { width: 24px; height: 24px; }
 .ski-idle-addr-line {
   display: flex;
   align-items: center;
@@ -2934,12 +2934,15 @@ body {
   border-radius: 5px;
   cursor: pointer;
   font-weight: 600;
-  font-size: 0.7rem;
+  font-size: 1.05rem;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid;
   transition: background 0.15s, border-color 0.15s;
 }
 .ski-idle-addr-line:hover { background: rgba(255, 255, 255, 0.06); }
+.ski-idle-addr-line[data-addr-selected="1"] { background: var(--addr-sel-bg) !important; border-color: var(--addr-sel-color) !important; }
+.ski-idle-addr-line[data-addr-selected="1"]:hover { background: var(--addr-sel-bg) !important; border-color: var(--addr-sel-color) !important; }
+[data-addr-selected="1"] { background: var(--addr-sel-bg) !important; border-color: var(--addr-sel-color) !important; }
 .ski-idle-addr-line--sui {
   color: #4da2ff;
   border-color: rgba(77, 162, 255, 0.35);

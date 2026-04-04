@@ -96,7 +96,7 @@ async function signAndExecuteSponsoredTx(txBytes: Uint8Array): Promise<{ digest:
 // ─── Assets ──────────────────────────────────────────────────────────
 
 export const SUI_DROP_URI = `data:image/svg+xml,${encodeURIComponent(SUI_DROP_SVG_TEXT)}`;
-const BTC_ICON_SVG = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#f7931a" stroke="white" stroke-width="3"/><text x="20" y="21" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">\u20BF</text></svg>`;
+const BTC_ICON_SVG = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#f7931a" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">\u20BF</text></svg>`;
 const BTC_ICON_URI = `data:image/svg+xml,${encodeURIComponent(BTC_ICON_SVG)}`;
 const SKI_SVG_URI     = `data:image/svg+xml,${encodeURIComponent(SKI_SVG_TEXT)}`;
 const SUI_SKI_QR_URI  = `data:image/svg+xml,${encodeURIComponent(SUI_SKI_QR_SVG_TEXT)}`;
@@ -320,6 +320,36 @@ export function showToast(msg: string, isHtml = false) {
   } else {
     showCopyableToast(text, text);
   }
+}
+
+/** Toggle-select an address row: highlight with chain color, deselect others, copy + flash "Copied ✓". */
+function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
+  const isSelected = el.getAttribute('data-addr-selected') === '1';
+  // Deselect all siblings in the same container
+  const parent = el.parentElement;
+  if (parent) {
+    parent.querySelectorAll('[data-addr-selected="1"]').forEach(sib => {
+      (sib as HTMLElement).style.removeProperty('--addr-sel-bg');
+      (sib as HTMLElement).style.removeProperty('--addr-sel-color');
+      sib.removeAttribute('data-addr-selected');
+    });
+  }
+  if (isSelected) return; // was selected → now deselected
+  // Select this row
+  el.setAttribute('data-addr-selected', '1');
+  el.style.setProperty('--addr-sel-bg', `${color}25`);
+  el.style.setProperty('--addr-sel-color', color);
+  navigator.clipboard.writeText(fullAddr).catch(() => {});
+  // Flash "Copied ✓" then restore
+  const origHtml = el.innerHTML;
+  const iconEl = el.querySelector('img, .ski-idle-addr-icon, .ski-idle-addr-icon--inline');
+  if (iconEl) {
+    el.innerHTML = `${(iconEl as HTMLElement).outerHTML} Copied <span style="color:${color}">\u2713</span>`;
+  } else {
+    const label = (el.textContent || '').split(' ')[0] || '';
+    el.innerHTML = `${label} Copied <span style="color:${color}">\u2713</span>`;
+  }
+  setTimeout(() => { el.innerHTML = origHtml; }, 1200);
 }
 
 function showCopyableToast(display: string, fullText: string, durationMs = 8000) {
@@ -2636,7 +2666,7 @@ let networkView: 'sui' | 'btc' | 'sol' = (() => {
 let _networkSelectOpen = false;
 const _NETWORK_ICON_SUI = `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17" fill="#4da2ff" stroke="white" stroke-width="3"/><g transform="translate(20,20) scale(0.065)" fill="white"><path d="M-85-85C-50-130 0-100 0-70C0-40-50-50-50-20C-50 10 0 0 40-30" stroke="white" stroke-width="30" fill="none" stroke-linecap="round"/></g></svg>`;
 const _NETWORK_ICON_BTC = BTC_ICON_SVG;
-const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#0B1022"/><g transform="translate(-1,1) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sol1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol3)"/></g><defs><linearGradient id="sol1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
+const SOL_ICON_SVG = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#0B1022" stroke="white" stroke-width="2.5"/><g transform="translate(-0.5,0.5) scale(0.85)"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#sol1)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol2)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#sol3)"/></g><defs><linearGradient id="sol1" x1="28.4" y1="8.49" x2="14.03" y2="35.32" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol2" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient><linearGradient id="sol3" x1="28.4" y1="8.51" x2="14.14" y2="35.27" gradientUnits="userSpaceOnUse"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs></svg>`;
 const _NETWORK_OPTIONS: Array<{ key: 'sui' | 'btc' | 'sol'; label: string; icon: string }> = [
   { key: 'sui', label: 'Sui', icon: `<img src="${SUI_DROP_URI}" class="wk-dd-address-network-icon" alt="Sui">` },
   { key: 'btc', label: 'Bitcoin', icon: `<img src="${BTC_ICON_URI}" class="wk-dd-address-network-icon" alt="BTC">` },
@@ -10589,7 +10619,7 @@ function bindEvents() {
         const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
         const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
         const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
-        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#627eea"/><g transform="translate(10,4) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
+        const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
 
         const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
         const btcLine = btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${btc}">${btcIcon} ${btc.slice(0, 8)}\u2026${btc.slice(-4)}</span>` : '';
@@ -10601,8 +10631,10 @@ function bindEvents() {
         addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
           el.addEventListener('click', (ev) => {
             ev.stopPropagation();
-            const full = (el as HTMLElement).title || addr;
-            navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
+            const h = el as HTMLElement;
+            const full = h.title || addr;
+            const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : '#4da2ff';
+            toggleAddrRow(h, full, c);
           });
         });
         // Click outside closes the address row
@@ -10681,7 +10713,7 @@ function bindEvents() {
                 const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
                 const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
                 const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
-                const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="18.5" fill="#627eea"/><g transform="translate(10,4) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
+                const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
                 const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}</span>`;
                 const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 8)}\u2026${status.btcAddress.slice(-4)}</span>`;
                 const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-4)}</span>`;
@@ -10692,8 +10724,10 @@ function bindEvents() {
                 addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
                   el.addEventListener('click', (ev) => {
                     ev.stopPropagation();
-                    const full = (el as HTMLElement).title || '';
-                    navigator.clipboard.writeText(full).then(() => showToast('Copied')).catch(() => {});
+                    const h = el as HTMLElement;
+                    const full = h.title || '';
+                    const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : '#4da2ff';
+                    toggleAddrRow(h, full, c);
                   });
                 });
                 const _closeAddr = (ev: Event) => {
@@ -10815,7 +10849,7 @@ function bindEvents() {
                 row.style.cssText = `font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:600;color:${a.color};cursor:pointer;padding:2px 4px;border-radius:3px;border:1px solid ${a.color}33;background:${a.color}15`;
                 row.textContent = `${a.label} ${a.addr.slice(0, 8)}...${a.addr.slice(-6)}`;
                 row.title = a.addr;
-                row.addEventListener('click', (ev) => { ev.stopPropagation(); navigator.clipboard.writeText(a.addr); showToast(`${a.label} copied`); });
+                row.addEventListener('click', (ev) => { ev.stopPropagation(); toggleAddrRow(row, a.addr, a.color); });
                 addrDiv!.appendChild(row);
               }
 
@@ -10842,7 +10876,7 @@ function bindEvents() {
                     newRow.style.cssText = 'font-family:ui-monospace,monospace;font-size:0.6rem;font-weight:600;color:#14f195;cursor:pointer;padding:2px 4px;border-radius:3px;border:1px solid rgba(20,241,149,0.2);background:rgba(20,241,149,0.08)';
                     newRow.textContent = `sol@ native ${pubkey.slice(0, 8)}...${pubkey.slice(-6)}`;
                     newRow.title = pubkey;
-                    newRow.addEventListener('click', (e2) => { e2.stopPropagation(); navigator.clipboard.writeText(pubkey); showToast('sol@ native copied'); });
+                    newRow.addEventListener('click', (e2) => { e2.stopPropagation(); toggleAddrRow(newRow, pubkey, '#14f195'); });
                     linkBtn.replaceWith(newRow);
                   } catch (err) {
                     showToast(err instanceof Error ? err.message : 'SOL connect failed');

@@ -9220,6 +9220,8 @@ function render() {
 // ─── Global event bindings ───────────────────────────────────────────
 
 let _idleOverlay: HTMLElement | null = null;
+let _idleOverlayClickFn: ((e: Event) => void) | null = null;
+let _idleDocClickFn: ((e: Event) => void) | null = null;
 let _idleVideoBlobUrl: string | null = null;
 
 function bindEvents() {
@@ -10691,7 +10693,7 @@ function bindEvents() {
         e.stopPropagation();
         _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
         const ws = getState();
-        if (!ws.address) { showToast('Connect wallet first'); return; }
+        if (!ws.address) { showToast('Connect wallet first'); _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
         btn.innerHTML = '\ud83e\udd91 ...';
@@ -11646,9 +11648,12 @@ function bindEvents() {
         }
         _sendIdleThunder();
       });
+      // Clean up previous listeners (prevents accumulation on overlay recreate)
+      if (_idleOverlayClickFn && _idleOverlay) _idleOverlay.removeEventListener('click', _idleOverlayClickFn);
+      if (_idleDocClickFn) document.removeEventListener('click', _idleDocClickFn);
       // Nothing in the overlay dismisses it — only successful action or header button
       // Unfreeze GIF if click lands outside any input
-      _idleOverlay.addEventListener('click', (e) => {
+      _idleOverlayClickFn = (e: Event) => {
         e.stopPropagation();
         const t = e.target as HTMLElement;
         if (!t.closest('input') && !t.closest('button') && !t.closest('.ski-idle-at-dropdown')) {
@@ -11663,9 +11668,10 @@ function bindEvents() {
             _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
           }
         }
-      });
+      };
+      _idleOverlay.addEventListener('click', _idleOverlayClickFn);
       // Click outside the idle overlay entirely → collapse rumble section
-      document.addEventListener('click', (e) => {
+      _idleDocClickFn = (e: Event) => {
         if (!_idleOverlay) return;
         if (_idleOverlay.contains(e.target as Node)) return;
         const convo = _idleOverlay.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
@@ -11674,7 +11680,8 @@ function bindEvents() {
           convo.setAttribute('hidden', ''); convo.innerHTML = '';
           _idleOverlay.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
         }
-      });
+      };
+      document.addEventListener('click', _idleDocClickFn);
       // Global Enter key → trigger action button from anywhere while overlay is open
       const _idleGlobalEnter = (e: Event) => {
         if (!_idleOverlay) return; // overlay gone — no-op

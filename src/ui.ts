@@ -9217,6 +9217,8 @@ function render() {
 
 let _idleOverlay: HTMLElement | null = null;
 let _idleVideoBlobUrl: string | null = null;
+let _idleOverlayClickHandler: ((e: Event) => void) | null = null;
+let _idleDocClickHandler: ((e: Event) => void) | null = null;
 
 function bindEvents() {
   els.skiDot?.addEventListener('click', (e) => {
@@ -10573,13 +10575,11 @@ function bindEvents() {
         showToast('\u26a1 Ignite — coming soon. Burn iUSD, get gas on any chain.');
       });
 
-      // Squid quick-action → triggers Rumble button + toggles active state
+      // Squid quick-action → triggers Rumble button (which manages its own active state)
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', (e) => {
         const squid = (e.target as HTMLElement).closest('[data-action="rumble"]');
         if (!squid) return;
         e.stopPropagation();
-        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
-        squidBtn?.classList.toggle('ski-idle-quick-btn--active');
         (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
       });
 
@@ -10687,7 +10687,11 @@ function bindEvents() {
         e.stopPropagation();
         _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
         const ws = getState();
-        if (!ws.address) { showToast('Connect wallet first'); return; }
+        if (!ws.address) {
+          showToast('Connect wallet first');
+          _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+          return;
+        }
         const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
         btn.innerHTML = '\ud83e\udd91 ...';
@@ -10945,6 +10949,12 @@ function bindEvents() {
         } finally {
           btn.disabled = false;
           btn.innerHTML = '\ud83e\udd91 Rumble';
+          // Remove --active if rumble panel is empty or closed
+          const finalPanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+          const finalConvo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (!finalPanel || !finalConvo || finalConvo.hasAttribute('hidden') || !finalPanel.children.length) {
+            _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+          }
         }
       });
 
@@ -11644,7 +11654,11 @@ function bindEvents() {
       });
       // Nothing in the overlay dismisses it — only successful action or header button
       // Unfreeze GIF if click lands outside any input
-      _idleOverlay.addEventListener('click', (e) => {
+      // Remove previous listeners to prevent accumulation across re-renders
+      if (_idleOverlayClickHandler) _idleOverlay.removeEventListener('click', _idleOverlayClickHandler);
+      if (_idleDocClickHandler) document.removeEventListener('click', _idleDocClickHandler);
+
+      _idleOverlayClickHandler = (e: Event) => {
         e.stopPropagation();
         const t = e.target as HTMLElement;
         if (!t.closest('input') && !t.closest('button') && !t.closest('.ski-idle-at-dropdown')) {
@@ -11659,9 +11673,11 @@ function bindEvents() {
             _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
           }
         }
-      });
+      };
+      _idleOverlay.addEventListener('click', _idleOverlayClickHandler);
+
       // Click outside the idle overlay entirely → collapse rumble section
-      document.addEventListener('click', (e) => {
+      _idleDocClickHandler = (e: Event) => {
         if (!_idleOverlay) return;
         if (_idleOverlay.contains(e.target as Node)) return;
         const convo = _idleOverlay.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
@@ -11670,7 +11686,8 @@ function bindEvents() {
           convo.setAttribute('hidden', ''); convo.innerHTML = '';
           _idleOverlay.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
         }
-      });
+      };
+      document.addEventListener('click', _idleDocClickHandler);
       // Global Enter key → trigger action button from anywhere while overlay is open
       const _idleGlobalEnter = (e: Event) => {
         if (!_idleOverlay) return; // overlay gone — no-op

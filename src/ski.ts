@@ -155,7 +155,7 @@ async function establishSession(address: string, signature: string, bytes: strin
     try {
       const status = await getCrossChainStatus(address);
       if (status.ika) {
-        updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress, ethAddress: status.ethAddress });
+        updateAppState({ ikaWalletId: status.dwalletId, btcAddress: status.btcAddress, ethAddress: status.ethAddress, solAddress: status.solAddress });
       }
     } catch {}
   }).catch(() => {});

@@ -2563,6 +2563,9 @@ function _updateSwapEstimates() {
 function _usdToTokenAmount(usdVal: number): number {
   const sym = selectedCoinSymbol ?? 'SUI';
   if (sym === 'USD' || sym === 'USDC') return usdVal;
+  // Any stable coin (iUSD, AUSD, etc.) is 1:1 with USD
+  const coin = walletCoins.find(c => c.symbol === sym);
+  if (coin?.isStable) return usdVal;
   if (sym === 'SUI') {
     const p = suiPriceCache?.price ?? 0;
     return p > 0 ? usdVal / p : 0;

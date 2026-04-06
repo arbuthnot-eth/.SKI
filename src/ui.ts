@@ -10725,9 +10725,14 @@ function bindEvents() {
         // Show QR for SUI address by default
         const qrSlot = addrRow.querySelector('#ski-idle-addr-qr') as HTMLElement | null;
         let _qrCurrentSvg = '';
+        const _makeTransparentQr = (svg: string) =>
+          svg.replace(/fill="#ffffff"/g, 'fill="transparent"')
+             .replace(/fill="white"/g, 'fill="transparent"')
+             .replace(/width="[^"]*"/, '')
+             .replace(/height="[^"]*"/, '');
         if (qrSlot) {
           _getAddrQrSvg(addr, 'sui').then(svg => {
-            _qrCurrentSvg = svg.replace(/fill="#ffffff"/g, 'fill="transparent"').replace(/fill="white"/g, 'fill="transparent"');
+            _qrCurrentSvg = _makeTransparentQr(svg);
             qrSlot.innerHTML = _qrCurrentSvg;
           }).catch(() => {});
           // Click to expand QR fullscreen
@@ -10755,7 +10760,8 @@ function bindEvents() {
                 : h.classList.contains('ski-idle-addr-line--eth') ? 'bw' as const
                 : 'sui' as const;
               _getAddrQrSvg(full, mode).then(svg => {
-                qrSlot.innerHTML = svg.replace(/fill="#ffffff"/g, 'fill="transparent"').replace(/fill="white"/g, 'fill="transparent"');
+                _qrCurrentSvg = _makeTransparentQr(svg);
+                qrSlot.innerHTML = _qrCurrentSvg;
               }).catch(() => {});
             }
           });
@@ -11938,6 +11944,10 @@ export function initUI() {
     localStorage.removeItem('ski:shell');           // v1 shell cache — superseded by ski:shell:v2
     localStorage.removeItem('ski:thunder-card-open');
     localStorage.removeItem('ski:thunder-counts');  // thunder polling disabled (#63)
+    // Clear cached addr QR SVGs (had white background, now transparent)
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k?.startsWith('ski:qr:addr:')) keys.push(k); }
+    for (const k of keys) localStorage.removeItem(k);
   } catch {}
 
   bindEvents();

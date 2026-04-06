@@ -4308,11 +4308,13 @@ async function fetchAndShowNsPrice(label: string) {
     nsExpirationMs = sr?.expirationMs ?? 0;
     nsTargetAddress = sr?.targetAddress ?? null;
     nsNftOwner = sr?.nftOwner ?? null;
-    // If domain is in our owned roster, override 'taken' → 'owned'
+    // If domain is owned by connected wallet, override 'taken' → 'owned'
     if (nsAvail === 'taken') {
       const bareLabel = (nsPriceFetchFor ?? '').toLowerCase();
       const inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
-      if (inRoster) nsAvail = 'owned';
+      const ws = getState();
+      const ownerMatch = sr?.nftOwner && ws.address && normalizeSuiAddress(sr.nftOwner) === normalizeSuiAddress(ws.address);
+      if (inRoster || ownerMatch) nsAvail = 'owned';
     }
     nsKioskListing = sr?.kioskId
       ? { kioskId: sr.kioskId, nftId: sr.kioskNftId!, priceMist: sr.kioskListingPriceMist! }
@@ -9572,7 +9574,11 @@ function bindEvents() {
         if (!_idleStatusEl || !_idleActionBtn) return;
         const label = nsLabel.trim();
         const validLabel = isValidNsLabel(label);
-        const isOwned = validLabel && nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        const ws = getState();
+        const inRoster = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === label);
+        // Also detect ownership via resolved NFT owner matching connected wallet
+        const ownerMatch = nsNftOwner && ws.address && normalizeSuiAddress(nsNftOwner) === normalizeSuiAddress(ws.address);
+        const isOwned = validLabel && (inRoster || ownerMatch || nsAvail === 'owned');
         const hasListing = validLabel && !!(nsKioskListing || nsTradeportListing);
         // Invalid label → black diamond, no action
         const variant: SkiDotVariant = !validLabel ? 'black-diamond'

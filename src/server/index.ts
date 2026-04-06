@@ -17,6 +17,30 @@ interface Env {
 
 const app = new Hono<{ Bindings: Env }>();
 
+// ── Security headers middleware ─────────────────────────────────────────
+app.use('*', async (c, next) => {
+  await next();
+  // Skip WebSocket upgrades and agent routes (handled by agents middleware)
+  if (c.req.header('upgrade') === 'websocket') return;
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('X-Frame-Options', 'SAMEORIGIN');
+  // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page
+  c.header('Content-Security-Policy', [
+    "default-src 'self'",
+    // Inline script in index.html for shell restore — nonce would be ideal but
+    // requires templating; unsafe-inline scoped to script-src is the pragmatic
+    // first step (still blocks eval, data: URIs, and remote script injection).
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+    "img-src 'self' data: https:",
+    "connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space https://fpcdn.io https://api.fpjs.io",
+    "frame-ancestors 'self' https://*.sui.ski",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+});
+
 /** Get the singleton TreasuryAgents DO stub. */
 const treasuryStub = (c: { env: Env }) => {
   return c.env.TreasuryAgents.get(c.env.TreasuryAgents.idFromName('treasury'));

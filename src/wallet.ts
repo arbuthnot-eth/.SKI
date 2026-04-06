@@ -277,8 +277,13 @@ function cacheWalletIcon(walletName: string, icon: string): void {
       localStorage.setItem(`ski:wallet-icon:${walletName}`, icon);
       return;
     }
-    // Remote URL — fetch and convert to data URI in the background
-    localStorage.setItem(`ski:wallet-icon:${walletName}`, icon); // store URL as fallback immediately
+    // Remote URL — fetch and convert to data URI in the background.
+    // Don't overwrite an existing data URI with a remote URL — it would
+    // cause a flash on the next hard refresh until the fetch completes.
+    const existing = localStorage.getItem(`ski:wallet-icon:${walletName}`);
+    if (!existing || !existing.startsWith('data:')) {
+      localStorage.setItem(`ski:wallet-icon:${walletName}`, icon);
+    }
     fetch(icon)
       .then(r => r.blob())
       .then(blob => {

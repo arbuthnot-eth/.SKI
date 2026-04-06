@@ -349,18 +349,24 @@ export function showToast(msg: string, isHtml = false) {
   }
 }
 
-let _addrRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+const _addrRestoreTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 /** Toggle-select an address row: highlight with chain color, deselect others, copy + flash "Copied ✓". */
 function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
   const isSelected = el.getAttribute('data-addr-selected') === '1';
-  // Deselect all siblings in the same container
+  // Deselect all siblings — restore any stuck "Copied ✓" immediately
   const parent = el.parentElement;
   if (parent) {
     parent.querySelectorAll('[data-addr-selected="1"]').forEach(sib => {
-      (sib as HTMLElement).style.removeProperty('--addr-sel-bg');
-      (sib as HTMLElement).style.removeProperty('--addr-sel-color');
-      sib.removeAttribute('data-addr-selected');
+      const s = sib as HTMLElement;
+      s.style.removeProperty('--addr-sel-bg');
+      s.style.removeProperty('--addr-sel-color');
+      s.removeAttribute('data-addr-selected');
+      // Restore original HTML if it was showing "Copied ✓"
+      const orig = s.getAttribute('data-orig-html');
+      if (orig) { s.innerHTML = orig; s.removeAttribute('data-orig-html'); }
+      const timer = _addrRestoreTimers.get(s);
+      if (timer) { clearTimeout(timer); _addrRestoreTimers.delete(s); }
     });
   }
   if (isSelected) return; // was selected → now deselected
@@ -370,8 +376,6 @@ function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
   el.style.setProperty('--addr-sel-color', color);
   navigator.clipboard.writeText(fullAddr).catch(() => {});
   // Flash "Copied ✓" then restore
-  if (_addrRestoreTimer) clearTimeout(_addrRestoreTimer);
-  // Only save origHtml if not already showing "Copied ✓"
   const origHtml = el.getAttribute('data-orig-html') || el.innerHTML;
   el.setAttribute('data-orig-html', origHtml);
   const iconEl = el.querySelector('img, .ski-idle-addr-icon, .ski-idle-addr-icon--inline');
@@ -381,11 +385,11 @@ function toggleAddrRow(el: HTMLElement, fullAddr: string, color: string) {
     const label = (el.textContent || '').split(' ')[0] || '';
     el.innerHTML = `${label} Copied <span style="color:${color}">\u2713</span>`;
   }
-  _addrRestoreTimer = setTimeout(() => {
+  _addrRestoreTimers.set(el, setTimeout(() => {
     el.innerHTML = origHtml;
     el.removeAttribute('data-orig-html');
-    _addrRestoreTimer = null;
-  }, ADDR_RESTORE_MS);
+    _addrRestoreTimers.delete(el);
+  }, ADDR_RESTORE_MS));
 }
 
 function showCopyableToast(display: string, fullText: string, durationMs = 8000) {

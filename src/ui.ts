@@ -11648,7 +11648,11 @@ function bindEvents() {
             nsAvail = null;
             _updateIdleStatus();
             if (latest.length >= 3 && isValidNsLabel(latest)) {
-              fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
+              // Debounce — 800ms to avoid SuiNS rate limits during @tag typing
+              if (_idleDebounce) clearTimeout(_idleDebounce);
+              _idleDebounce = setTimeout(() => {
+                fetchAndShowNsPrice(latest).then(() => { _updateIdleStatus(); _updateIdleCard(latest); });
+              }, 800);
             }
           }
           const mainNsInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;

@@ -4305,6 +4305,20 @@ async function fetchAndShowNsPrice(label: string) {
     _patchNsPrice();
     _patchNsStatus();
     _patchNsRoute();
+    // Auto-expand target row when user owns the name
+    if (nsAvail === 'owned' || nsAvail === 'taken') {
+      const ws = getState();
+      const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === (nsLabel || '').toLowerCase()) ||
+        (nsTargetAddress && ws.address && nsTargetAddress.toLowerCase() === ws.address.toLowerCase());
+      if (isOwned) {
+        const routeEl = document.getElementById('wk-ns-route');
+        if (routeEl && routeEl.classList.contains('wk-ns-route-wrap--hidden')) {
+          nsRouteOpen = true;
+          _persistRouteOpen();
+          routeEl.classList.remove('wk-ns-route-wrap--hidden');
+        }
+      }
+    }
     _syncNftCardToInput();
   };
 
@@ -4460,8 +4474,11 @@ function _nsRouteHtml(): string {
   const rowCls = isDim ? 'wk-ns-target-row--toggle' : 'wk-ns-target-row--copy';
   const rowTitle = isDim ? 'Show names' : `Copy Target ${shortAddr}`;
   const transferBtn = canEditTarget ? `<button id="wk-ns-transfer-btn" class="wk-ns-transfer-btn" type="button" title="Transfer ${esc(nsLabel)}.sui NFT">\u27a4</button>` : '';
-  const setTargetBtn = canEditTarget ? `<button id="wk-ns-set-target-btn" class="wk-ns-set-target-btn" type="button" title="Set target address">\u25ce</button>` : '';
-  return `<div class="wk-ns-target-row ${colorClass} ${rowCls}"${isDim ? '' : ` data-copy-target="${esc(displayAddr)}"`} title="${rowTitle}"><span class="wk-ns-target-icon${canEditTarget ? ' wk-ns-target-icon--editable' : ''}"${iconId}${iconTitle}>\u25ce</span><span class="wk-ns-target-addr">${shortAddr}</span>${extra}${setTargetBtn}${transferBtn}</div>`;
+  // When owned, the leading icon becomes the yellow set-target button (no separate setTargetBtn needed)
+  const leadingIcon = canEditTarget
+    ? `<button id="wk-ns-set-target-btn" class="wk-ns-set-target-btn" type="button" title="Change target address">\u25ce</button>`
+    : `<span class="wk-ns-target-icon">\u25ce</span>`;
+  return `<div class="wk-ns-target-row ${colorClass} ${rowCls}"${isDim ? '' : ` data-copy-target="${esc(displayAddr)}"`} title="${rowTitle}">${leadingIcon}<span class="wk-ns-target-addr">${shortAddr}</span>${extra}${transferBtn}</div>`;
 }
 
 function _nsOwnedListHtml(): string {

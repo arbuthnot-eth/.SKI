@@ -8,7 +8,7 @@
         "@7kprotocol/sdk-ts": "^4.0.0",
         "@bluefin-exchange/bluefin7k-aggregator-sdk": "^5.5.1",
         "@fingerprintjs/fingerprintjs": "^5.1.0",
-        "@human.tech/waap-sdk": "1.2.4",
+        "@human.tech/waap-sdk": "1.3.0",
         "@ika.xyz/sdk": "0.3.1",
         "@mysten/dapp-kit-core": "^1.2.1",
         "@mysten/deepbook": "^0.9.12",
@@ -198,9 +198,9 @@
 
     "@human.tech/waap-constants": ["@human.tech/waap-constants@0.1.2", "", { "dependencies": { "@human.tech/waap-interface-core": "0.3.0" } }, "sha512-8F/WzXqn31CqQ3OUmrQRuPk4CgDXMFIZu5rpRd2dD1i/aSlz2WSRwmwVKCbym3lh1YQ/tOB25rxx/nVco5DxYw=="],
 
-    "@human.tech/waap-interface-core": ["@human.tech/waap-interface-core@0.2.1", "", { "dependencies": { "crypto-js": "^4.2.0" } }, "sha512-KzrmfoL8Uc2gLoRMrMsoGbYsXiJrHyM7Sshi6Gnukv+1H8tz9K0nQX2UDzNP5QUrEv+cPz0pKPYvPvLMSDzxTA=="],
+    "@human.tech/waap-interface-core": ["@human.tech/waap-interface-core@0.3.0", "", { "dependencies": { "crypto-js": "^4.2.0" } }, "sha512-RDJ/7bGoIrpG4n56ZpIFkz0JAIt7YQElldcgnKPalMrPaNa34G8DLHmZg62KZlMEqi8XS+mEf1+6Fs7LgS3bmA=="],
 
-    "@human.tech/waap-sdk": ["@human.tech/waap-sdk@1.2.4", "", { "dependencies": { "@human.tech/waap-constants": "^0.1.1", "@human.tech/waap-interface-core": "^0.2.1", "@metamask/rpc-errors": "^5.1.1", "@mysten/sui": "^1.45.2", "@mysten/wallet-standard": "^0.13.0", "@reown/appkit": "^1.8.17", "@reown/appkit-adapter-ethers": "^1.8.17", "ethers": "^6.16.0", "events": "^3.3.0", "pino-pretty": "^10.2.0", "zod": "^3.21.4", "zod-validation-error": "^1.3.0" }, "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-ExEBrejbckLyv6ZDu6xP5C8rCdIaf7xxdZh001iwngn0+v3oegxbu2EnAB1yWzEwMSWS2reFTyYYJY4UpuffHQ=="],
+    "@human.tech/waap-sdk": ["@human.tech/waap-sdk@1.3.0", "", { "dependencies": { "@human.tech/waap-constants": "0.1.2", "@human.tech/waap-interface-core": "0.3.0", "@metamask/rpc-errors": "^5.1.1", "@mysten/sui": "^1.45.2", "@mysten/wallet-standard": "^0.13.0", "@reown/appkit": "^1.8.17", "@reown/appkit-adapter-ethers": "^1.8.17", "ethers": "^6.16.0", "events": "^3.3.0", "pino-pretty": "^10.2.0", "zod": "^3.21.4", "zod-validation-error": "^1.3.0" }, "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-ge3xd5TaYvGveNQ6f/2SSR1mLtknNxdsH95inGhCllhbZ8FT3WRvl818GDpQFuqf8ljL9J1wk7/1NObeZkDxmA=="],
 
     "@ika.xyz/ika-wasm": ["@ika.xyz/ika-wasm@0.2.1", "", {}, "sha512-Zq528aTdAHA7mW4+vqUoc/fhornMo8EHcS8hKJx1ZBs9tAepWw07ZReMsZuCtQRmpi1vmYh2mIi2PhZRV0M4dA=="],
 
@@ -1527,8 +1527,6 @@
     "@flowx-finance/sdk/@mysten/sui": ["@mysten/sui@1.45.2", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.2.0", "@mysten/bcs": "1.9.2", "@mysten/utils": "0.2.0", "@noble/curves": "=1.9.4", "@noble/hashes": "^1.8.0", "@protobuf-ts/grpcweb-transport": "^2.11.1", "@protobuf-ts/runtime": "^2.11.1", "@protobuf-ts/runtime-rpc": "^2.11.1", "@scure/base": "^1.2.6", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "gql.tada": "^1.8.13", "graphql": "^16.11.0", "poseidon-lite": "0.2.1", "valibot": "^1.2.0" } }, "sha512-gftf7fNpFSiXyfXpbtP2afVEnhc7p2m/MEYc/SO5pov92dacGKOpQIF7etZsGDI1Wvhv+dpph+ulRNpnYSs7Bg=="],
 
     "@flowx-finance/sdk/aftermath-ts-sdk": ["aftermath-ts-sdk@1.3.29", "", { "dependencies": { "bn.js": "^5.2.2", "dayjs": "^1.11.7", "node-fetch": "^3.3.1", "priority-queue-typescript": "^1.0.1" }, "peerDependencies": { "@mysten/sui": "1.45.2" } }, "sha512-YjsY8zfBajCeGcKrk7bW2exJKdzC5MW6iFFyJ+igpF9dt7cUoT/vjKU6ZlojtBSAN3zE77GRJGUWoEcyvCsxOw=="],
-
-    "@human.tech/waap-constants/@human.tech/waap-interface-core": ["@human.tech/waap-interface-core@0.3.0", "", { "dependencies": { "crypto-js": "^4.2.0" } }, "sha512-RDJ/7bGoIrpG4n56ZpIFkz0JAIt7YQElldcgnKPalMrPaNa34G8DLHmZg62KZlMEqi8XS+mEf1+6Fs7LgS3bmA=="],
 
     "@human.tech/waap-sdk/@mysten/sui": ["@mysten/sui@1.45.2", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.2.0", "@mysten/bcs": "1.9.2", "@mysten/utils": "0.2.0", "@noble/curves": "=1.9.4", "@noble/hashes": "^1.8.0", "@protobuf-ts/grpcweb-transport": "^2.11.1", "@protobuf-ts/runtime": "^2.11.1", "@protobuf-ts/runtime-rpc": "^2.11.1", "@scure/base": "^1.2.6", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "gql.tada": "^1.8.13", "graphql": "^16.11.0", "poseidon-lite": "0.2.1", "valibot": "^1.2.0" } }, "sha512-gftf7fNpFSiXyfXpbtP2afVEnhc7p2m/MEYc/SO5pov92dacGKOpQIF7etZsGDI1Wvhv+dpph+ulRNpnYSs7Bg=="],
 

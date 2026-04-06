@@ -1668,6 +1668,12 @@ body {
   border: 1px solid rgba(168, 85, 247, 0.18);
   background: rgba(168, 85, 247, 0.06);
 }
+/* Black input style only when editing target or transferring */
+.wk-ns-target-row--transfer-input {
+  border: 1px solid rgba(255, 255, 255, 0.45) !important;
+  background: rgba(1, 1, 1, 0.88) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
 .wk-ns-target-row--purple .wk-ns-target-icon { color: rgba(192, 132, 252, 0.7); }
 .wk-ns-target-row--purple .wk-ns-target-addr { color: rgba(192, 132, 252, 0.85); }
 /* Blue — taken by someone else */
@@ -1686,8 +1692,8 @@ body {
 .wk-ns-target-row--green .wk-ns-target-addr { color: rgba(34, 197, 94, 0.85); }
 /* Transfer button — green arrow on owned name target row */
 .wk-ns-transfer-btn {
-  background: rgba(34, 197, 94, 0.15);
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  background: transparent;
+  border: 1px solid transparent;
   color: rgba(34, 197, 94, 0.9);
   border-radius: 6px;
   padding: 2px 8px;
@@ -1698,12 +1704,16 @@ body {
   transition: all 0.15s;
 }
 .wk-ns-transfer-btn:hover {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.wk-ns-transfer-btn:active {
   background: rgba(34, 197, 94, 0.25);
   border-color: rgba(34, 197, 94, 0.5);
 }
 .wk-ns-set-target-btn {
-  background: rgba(255, 184, 0, 0.15);
-  border: 1px solid rgba(255, 184, 0, 0.3);
+  background: transparent;
+  border: 1px solid transparent;
   color: #FFB800;
   border-radius: 6px;
   padding: 2px 8px;
@@ -1713,6 +1723,10 @@ body {
   transition: all 0.15s;
 }
 .wk-ns-set-target-btn:hover {
+  background: rgba(255, 184, 0, 0.15);
+  border-color: rgba(255, 184, 0, 0.3);
+}
+.wk-ns-set-target-btn:active, .wk-ns-set-target-btn--active {
   background: rgba(255, 184, 0, 0.25);
   border-color: rgba(255, 184, 0, 0.5);
 }

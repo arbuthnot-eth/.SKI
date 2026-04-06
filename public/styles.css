@@ -2938,6 +2938,40 @@ body {
   font-size: 0.65rem;
 }
 .ski-idle-addr-row[hidden] { display: none; }
+.ski-idle-addr-qr {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+}
+.ski-idle-addr-qr { cursor: pointer; }
+.ski-idle-addr-qr svg {
+  width: 100%;
+  height: 100%;
+  max-width: 160px;
+  max-height: 160px;
+  object-fit: contain;
+}
+.ski-idle-addr-qr-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  cursor: pointer;
+}
+.ski-idle-addr-qr-expanded svg {
+  width: 80vmin;
+  height: 80vmin;
+  max-width: 400px;
+  max-height: 400px;
+}
 .ski-idle-addr-icon {
   width: 24px;
   height: 24px;

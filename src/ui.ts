@@ -5180,9 +5180,9 @@ function _shapeOnlySvg(variant: SkiDotVariant, sizePx = 22): string {
     }).join(' ');
     return `<svg ${base}><polygon points="${pts}" fill="#ef4444" stroke="white" stroke-width="${sw}"/></svg>`;
   }
-  // black-diamond: true black fill, white outline — forced even in dark mode
+  // black-diamond: dark fill with white outline — visible on both dark and light backgrounds
   const dPath = `M${half},${pad} L${s - pad},${half} L${half},${s - pad} L${pad},${half}Z`;
-  return `<svg ${base} style="forced-color-adjust:none;-webkit-forced-color-adjust:none"><path d="${dPath}" fill="#000000" stroke="#ffffff" stroke-width="${sw}"/></svg>`;
+  return `<svg ${base}><path d="${dPath}" fill="#1a1a2e" stroke="#ffffff" stroke-width="${sw}"/></svg>`;
 }
 
 function _nsStatusSvg(variant: SkiDotVariant): string {
@@ -9526,10 +9526,7 @@ function bindEvents() {
       const headerEl = document.querySelector('.ski-header') as HTMLElement;
       (headerEl || document.body).appendChild(_idleOverlay);
 
-      // Fire name lookup async — runs in parallel with event binding below
-      if (_idleInputVal && _idleInputVal.length >= 3 && isValidNsLabel(_idleInputVal)) {
-        fetchAndShowNsPrice(_idleInputVal).catch(() => {});
-      }
+      // Name lookup fires after event binding (line ~10275) so _updateIdleStatus is in scope
 
       // NS input on idle — full SKI menu behavior
       const _idleNsInput = _idleOverlay.querySelector('#ski-idle-ns') as HTMLInputElement | null;
@@ -10268,10 +10265,13 @@ function bindEvents() {
 
       _updateIdleStatus();
       // Always update card + fetch availability + Tradeport listing when overlay opens with a name
+      _updateIdleStatus(); // immediate render from cached state
       const _initLabel = nsLabel.trim();
       if (_initLabel.length >= 3 && isValidNsLabel(_initLabel)) {
         // Show card immediately from cached state
         if (nsAvail) _updateIdleCard(_initLabel);
+        // Force re-fetch even if cached — ensures _updateIdleStatus sees fresh ownership
+        nsPriceFetchFor = '';
         fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
         // Auto-open conversation if there are pending signals or local history
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
@@ -10718,10 +10718,29 @@ function bindEvents() {
         const btcLine = btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${btc}">${btcIcon} ${btc.slice(0, 6)}\u2026${btc.slice(-6)}</span>` : '';
         const solLine = sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${sol}">${solIcon} ${sol.slice(0, 6)}\u2026${sol.slice(-6)}</span>` : '';
         const ethLine = eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${eth}">${ethIcon} ${eth.slice(0, 6)}\u2026${eth.slice(-6)}</span>` : '';
-        addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}`;
+        addrRow.innerHTML = `<div class="ski-idle-addr-qr" id="ski-idle-addr-qr"></div>${suiLine}${btcLine}${solLine}${ethLine}`;
         addrRow.removeAttribute('hidden');
         squidBtn?.classList.add('ski-idle-quick-btn--active');
         _freezeGif();
+        // Show QR for SUI address by default
+        const qrSlot = addrRow.querySelector('#ski-idle-addr-qr') as HTMLElement | null;
+        let _qrCurrentSvg = '';
+        if (qrSlot) {
+          _getAddrQrSvg(addr, 'sui').then(svg => {
+            _qrCurrentSvg = svg.replace(/fill="#ffffff"/g, 'fill="transparent"').replace(/fill="white"/g, 'fill="transparent"');
+            qrSlot.innerHTML = _qrCurrentSvg;
+          }).catch(() => {});
+          // Click to expand QR fullscreen
+          qrSlot.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (!_qrCurrentSvg) return;
+            const overlay = document.createElement('div');
+            overlay.className = 'ski-idle-addr-qr-expanded';
+            overlay.innerHTML = _qrCurrentSvg;
+            overlay.addEventListener('click', () => overlay.remove());
+            document.body.appendChild(overlay);
+          });
+        }
         addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
           el.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -10729,6 +10748,16 @@ function bindEvents() {
             const full = h.title || addr;
             const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : '#4da2ff';
             toggleAddrRow(h, full, c);
+            // Update QR to show the selected address in its chain color
+            if (qrSlot) {
+              const mode = h.classList.contains('ski-idle-addr-line--btc') ? 'btc' as const
+                : h.classList.contains('ski-idle-addr-line--sol') ? 'sol' as const
+                : h.classList.contains('ski-idle-addr-line--eth') ? 'bw' as const
+                : 'sui' as const;
+              _getAddrQrSvg(full, mode).then(svg => {
+                qrSlot.innerHTML = svg.replace(/fill="#ffffff"/g, 'fill="transparent"').replace(/fill="white"/g, 'fill="transparent"');
+              }).catch(() => {});
+            }
           });
         });
         // Click outside closes the squids rows (both inside overlay and document-level)

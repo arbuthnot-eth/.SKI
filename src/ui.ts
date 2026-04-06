@@ -7741,17 +7741,17 @@ function renderSkiMenu() {
     const btn = document.getElementById('wk-dd-ns-register') as HTMLButtonElement | null;
     if (btn) btn.title = !validLabel && val ? 'Invalid SuiNS name' : val ? `Mint ${val}.sui` : 'Mint .sui';
     if (nsPriceDebounce) clearTimeout(nsPriceDebounce);
-    if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 400);
+    if (validLabel) nsPriceDebounce = setTimeout(() => fetchAndShowNsPrice(val), 800);
   });
 
-  // Periodic validity recheck — refresh price/availability every 7 seconds for the active label
+  // Periodic validity recheck — refresh price/availability every 15 seconds for the active label
   if (_nsValidityInterval) clearInterval(_nsValidityInterval);
   _nsValidityInterval = setInterval(() => {
     const label = nsLabel.trim().toLowerCase();
     if (label && isValidNsLabel(label) && !nsSubnameParent) {
       fetchAndShowNsPrice(label);
     }
-  }, 7000);
+  }, 15_000);
 
   // Toggle roster visibility when clicking domain-row outside the input/buttons
   document.querySelector('.wk-dd-ns-domain-row')?.addEventListener('click', (e) => {

@@ -1946,8 +1946,8 @@ async function lockInIdentity(): Promise<void> {
     };
     try { localStorage.setItem('ski:session', JSON.stringify(proof)); } catch {}
     if (waapProvider) storeWaapProvider(ws.address, waapProvider);
-    // Decrypt conversations now that we have the key
-    _refreshThunderLocalCounts().then(() => _syncNftCardToInput());
+    // Decrypt conversations now that we have the key (card stays closed until clicked)
+    _refreshThunderLocalCounts();
     showToast(`Locked in as ${esc(name)}`);
     render();
   } catch (err) {
@@ -3379,11 +3379,8 @@ let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
 let _thunderConvoOpen = (() => {
-  // On hard refresh: if unquested signals exist, auto-open; else recall last state
+  // Default closed — only open when user explicitly clicks Thunder
   try {
-    const counts: Record<string, number> = JSON.parse(localStorage.getItem('ski:thunder-counts') || '{}');
-    const hasUnqueued = Object.values(counts).some(c => c > 0);
-    if (hasUnqueued) return true;
     return localStorage.getItem('ski:thunder-card-open') === '1';
   } catch { return false; }
 })();
@@ -3515,16 +3512,9 @@ async function _renderConversation(counterparty: string, force = false) {
   const replyWrap = document.getElementById('wk-thunder-reply-wrap');
   const _questDomain = document.getElementById('ski-nft-inline')?.dataset.domain?.toLowerCase() || bare;
   const unquestedCount = _thunderCounts[_questDomain] ?? 0;
-  if (unquestedEl && replyWrap) {
-    if (unquestedCount > 0) {
-      unquestedEl.innerHTML = `<button class="wk-thunder-quest-btn" id="wk-thunder-quest" type="button">Strike</button> \u2014 <span class="wk-thunder-unquested-count">\u26a1${unquestedCount}</span>`;
-      unquestedEl.removeAttribute('hidden');
-      replyWrap.setAttribute('hidden', '');
-    } else {
-      unquestedEl.setAttribute('hidden', '');
-      replyWrap.removeAttribute('hidden');
-    }
-  }
+  // Strike is disabled pending Thunder v4 migration (#63) — always show reply input
+  if (unquestedEl) unquestedEl.setAttribute('hidden', '');
+  if (replyWrap) replyWrap.removeAttribute('hidden');
 
   _thunderConvoTarget = bare;
   try { localStorage.setItem('ski:thunder-card-open', '1'); } catch {}
@@ -4872,7 +4862,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 
 /** Sync NFT card to the input box value; fall back to most-thundered chip.
  *  Also manages conversation open/closed state on hard refresh. */
-function _syncNftCardToInput() {
+function _syncNftCardToInput(forceShow = false) {
   const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
   let domain = '';
   if (inputBare) {
@@ -4881,14 +4871,8 @@ function _syncNftCardToInput() {
     const isOwned = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === inputBare);
     if (isResolved || isOwned) domain = inputBare;
   }
-  if (!domain) {
-    // Fall back to most-thundered name
-    const top = Object.entries(_thunderCounts)
-      .filter(([, c]) => c > 0)
-      .sort(([, a], [, b]) => b - a)[0];
-    if (top) domain = top[0];
-  }
-  if (!domain) domain = _lastNftCardDomain;
+  // Don't auto-show card on background syncs — only on explicit user interaction
+  if (!domain && !forceShow) { _hideNftPopover(true); return; }
   if (domain) {
     // Try to find the chip, but show card even without one
     const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
@@ -4903,9 +4887,8 @@ function _syncNftCardToInput() {
   const convoEl = document.getElementById('wk-thunder-convo');
   if (!convoEl || !domain) return;
   const quickBtn = document.getElementById('wk-thunder-quick');
-  const hasUnqueued = Object.values(_thunderCounts).some(c => c > 0);
-  if (hasUnqueued && !_thunderConvoOpen) {
-    // Auto-open on hard refresh when unquested signals exist
+  if (false) {
+    // Auto-open disabled — Thunder defaults to closed (#63)
     _thunderConvoOpen = true;
     convoEl.removeAttribute('hidden');
     quickBtn?.classList.add('wk-thunder-quick--active');

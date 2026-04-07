@@ -2921,7 +2921,7 @@ body {
 .ski-idle-addr-row {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 1px;
   width: calc(100% - 4px);
   padding: 4px 2px;
@@ -2942,23 +2942,16 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
-  flex: 1;
-  min-height: 0;
-  padding: 4px;
-}
-.ski-idle-addr-qr {
-  cursor: pointer;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 80px;
   padding: 8px;
+  cursor: pointer;
 }
+.ski-idle-addr-qr:empty { display: none; }
 .ski-idle-addr-qr svg {
   width: auto;
   height: 100%;
-  max-height: 140px;
+  max-height: 160px;
   border-radius: 8px;
 }
 .ski-idle-addr-qr-expanded {

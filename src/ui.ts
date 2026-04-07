@@ -10737,10 +10737,10 @@ function bindEvents() {
           document.body.appendChild(overlay);
         };
         if (qrSlot) {
-          _getAddrQrSvg(addr, 'sui').then(svg => {
+          getQrSvg(addr, '#4da2ff').then(svg => {
             _qrCurrentSvg = _stripQrDims(svg);
             qrSlot.innerHTML = _qrCurrentSvg;
-          }).catch(() => {});
+          }).catch((err) => { qrSlot.textContent = 'QR failed'; console.error('[idle-qr]', err); });
           qrSlot.addEventListener('click', (ev) => { ev.stopPropagation(); _showQrExpanded(); });
         }
         addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
@@ -10756,7 +10756,8 @@ function bindEvents() {
               : h.classList.contains('ski-idle-addr-line--eth') ? 'bw' as const
               : 'sui' as const;
             if (qrSlot) {
-              _getAddrQrSvg(full, mode).then(svg => {
+              const qrColor = c;
+              getQrSvg(full, qrColor).then(svg => {
                 _qrCurrentSvg = _stripQrDims(svg);
                 qrSlot.innerHTML = _qrCurrentSvg;
                 _showQrExpanded();

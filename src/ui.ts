@@ -8955,15 +8955,9 @@ function renderSkiMenu() {
     _thunderDecryptBusy = true;
     (sunEl as HTMLElement).style.opacity = '0.4';
     try {
-      const { getThunders, getThunderCountsBatch } = await import('./client/thunder.js');
+      const { getThunders } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      // Fresh on-chain scan — list all storms on Storm via gRPC (legacy counting)
-      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
-      const freshCounts = await getThunderCountsBatch(nftNames);
-      for (const [bare, count] of Object.entries(freshCounts)) {
-        _thunderCounts[bare] = count;
-      }
       const _myLog = app.suinsName || ws.address;
       let totalDecrypted = 0;
       let lastSender = '';
@@ -11062,7 +11056,7 @@ function bindEvents() {
           try {
             const ws = getState();
             if (!ws.address) return;
-            const { getThunders, getThunderCountsBatch } = await import('./client/thunder.js');
+            const { getThunders } = await import('./client/thunder.js');
 
             // Build list of all names with pending signals
             const toQuest: { name: string; count: number }[] = [];
@@ -11101,11 +11095,9 @@ function bindEvents() {
               }
             }
 
-            // Refresh all counts
-            const allNames = toQuest.map(q => q.name);
-            const freshCounts = await getThunderCountsBatch(allNames);
-            for (const [bare, count] of Object.entries(freshCounts)) {
-              _thunderCounts[bare] = count;
+            // Zero out counts for quested names
+            for (const { name } of toQuest) {
+              _thunderCounts[name] = 0;
             }
             try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
             await _refreshThunderLocalCounts();
@@ -11442,9 +11434,7 @@ function bindEvents() {
                 }
 
                 // Update counts
-                const { getThunderCountsBatch } = await import('./client/thunder.js');
-                const freshCounts = await getThunderCountsBatch([bare]);
-                _thunderCounts[bare] = freshCounts[bare] ?? 0;
+                _thunderCounts[bare] = 0;
                 try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
 
                 showToast(`\u26a1 ${strikeCount} struck \u2014 rebate \u2192 treasury`);

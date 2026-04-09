@@ -162,8 +162,6 @@ export async function lookupRecipientAddress(name: string): Promise<string | nul
   } catch { return null; }
 }
 
-// ─── Legacy compat re-exports ───────────────────────────────────────
-export { nameHash } from './thunder-legacy.js';
 
 // Re-export types
 export type { DecryptedMessage, GroupRef, RelayerTransport };

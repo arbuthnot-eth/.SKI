@@ -16,15 +16,9 @@ export {
   subscribeThunders,
   createTimestream,
   lookupRecipientAddress,
-  nameHash,
   type DecryptedMessage,
   type GroupRef,
   type RelayerTransport,
   type ThunderClientOptions,
 } from './thunder-stack.js';
 
-// ─── Legacy (Chronicom signal counting + treasury strike relay) ─────
-export {
-  getThunderCountsBatch,
-  lookupRecipientNftId,
-} from './thunder-legacy.js';

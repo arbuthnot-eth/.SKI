@@ -9649,13 +9649,11 @@ function bindEvents() {
             _idleThunderSend.innerHTML = _curHasStorm ? '\u26a1' : '\u26c8\ufe0f';
             _idleThunderSend.title = _curHasStorm ? 'Open Storm' : `Create Storm`;
             _idleThunderSend.disabled = false;
-            // Disable input + hide quick-actions until Storm exists
+            // Input always enabled — $ transfers don't need a Storm
             if (_idleThunderInput) {
-              _idleThunderInput.disabled = !_curHasStorm;
+              _idleThunderInput.disabled = false;
               _idleThunderInput.placeholder = '';
             }
-            const _qaEl = _idleOverlay?.querySelector('#ski-idle-quick-actions') as HTMLElement | null;
-            if (_qaEl) _qaEl.style.display = _curHasStorm ? '' : 'none';
           }
           return;
         }
@@ -10688,15 +10686,22 @@ function bindEvents() {
         e.stopPropagation();
         if (!_idleThunderInputEl) return;
         const val = _idleThunderInputEl.value;
-        // Find last @name tag and insert $ right after it
-        const match = val.match(/^(.*@\S+)\s*/);
-        if (match) {
-          _idleThunderInputEl.value = match[1] + '$';
-          _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
+        const targetName = (nsLabel || '').trim().toLowerCase();
+        if (!val && targetName) {
+          // Empty input + name loaded — insert @name$
+          _idleThunderInputEl.value = `@${targetName}$`;
         } else {
-          _idleThunderInputEl.value = val.trimEnd() + '$';
-          _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
+          // Append $ after last @name tag
+          const match = val.match(/^(.*@\S+)\s*/);
+          if (match) {
+            _idleThunderInputEl.value = match[1] + '$';
+          } else if (targetName) {
+            _idleThunderInputEl.value = `@${targetName}$`;
+          } else {
+            _idleThunderInputEl.value = val.trimEnd() + '$';
+          }
         }
+        _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
         _idleThunderInputEl.focus();
         _idleThunderInputEl.dispatchEvent(new Event('input'));
       });

@@ -219,33 +219,57 @@ class TimestreamRelayer {
 // ─── High-level API ─────────────────────────────────────────────────
 
 /**
- * Send a Seal-encrypted Thunder signal.
- * Auto-creates the on-chain Storm if it doesn't exist yet.
- * SDK handles: AES-256-GCM envelope encryption + Seal threshold key management.
+ * Send a Thunder signal. Two modes:
+ *
+ * 1. **Amount transfer** (@name$5): Pure PTB — splitCoins + transferObjects.
+ *    No Storm needed. Records the transfer as a private Thunder in the DO.
+ *
+ * 2. **Message** (@name hello): Seal-encrypted via SDK. Requires Storm.
+ *    Auto-creates Storm on-chain if it doesn't exist.
  */
 export async function sendThunder(opts: {
   groupRef: GroupRef;
   text: string;
   recipientAddress?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
-  /** Sign and execute a transaction (for Storm creation + token transfers).
-   *  Accepts Uint8Array (pre-built) or Transaction object (WaaP compat). */
+  /** Sign and execute a transaction (PTB for transfers + Storm creation) */
   signAndExecute?: (tx: Uint8Array | Transaction) => Promise<any>;
 }): Promise<{ messageId: string }> {
-  const client = getThunderClient();
+  const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
-  // Execute token transfer as separate on-chain tx
+  // ─── Amount transfer: pure PTB, no Storm needed ───────────────
   if (opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute) {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
     const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer.amountMist)]);
     tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer.recipientAddress)));
-    const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
-    const bytes = await tx.build({ client: gql as never });
-    await opts.signAndExecute(bytes as Uint8Array);
+    await opts.signAndExecute(tx);
+
+    // Record the transfer as a private Thunder in the Timestream DO
+    const amtSui = Number(opts.transfer.amountMist) / 1e9;
+    const transferNote = `\u26a1 $${opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || amtSui.toFixed(2)} sent`;
+    await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        groupId,
+        encryptedText: btoa(transferNote),
+        nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
+        keyVersion: '0',
+        senderAddress: _address,
+      }),
+    });
+
+    // If there's no message text beyond the amount, we're done
+    const textWithoutAmount = opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim();
+    if (!textWithoutAmount) {
+      return { messageId: 'transfer' };
+    }
   }
 
-  // Try to send — if Storm doesn't exist, create it first
+  // ─── Message: Seal-encrypted, needs Storm ─────────────────────
+  const client = getThunderClient();
+
   try {
     return await client.messaging.sendMessage({
       signer: _signer!,
@@ -256,19 +280,15 @@ export async function sendThunder(opts: {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Storm not found — auto-create on-chain and retry
     if (errMsg.includes('not found') || errMsg.includes('Object') || errMsg.includes('null')) {
-      if (!opts.signAndExecute) throw new Error('Storm does not exist and no signAndExecute provided to create it');
-      const uuid = 'uuid' in opts.groupRef ? opts.groupRef.uuid : undefined;
+      if (!opts.signAndExecute) throw new Error('Storm does not exist — create one first');
       const members = opts.recipientAddress ? [opts.recipientAddress] : [];
-      // Use tx.* to get a Transaction object — pass directly for WaaP compat
       const stormTx = client.messaging.tx.createAndShareGroup({
-        name: uuid || 'thunder-storm',
+        name: groupId || 'thunder-storm',
         initialMembers: members,
       });
       stormTx.setSender(normalizeSuiAddress(_address));
       await opts.signAndExecute(stormTx);
-      // Wait for indexing
       await new Promise(r => setTimeout(r, 2000));
-      // Retry send after Storm creation
       return client.messaging.sendMessage({
         signer: _signer!,
         groupRef: opts.groupRef,

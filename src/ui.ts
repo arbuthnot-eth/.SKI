@@ -9657,7 +9657,7 @@ function bindEvents() {
           const amtLabel = draft.amount !== undefined ? ` $${draft.amount}` : '';
           if (!hasStorm && !stormChecking && groupId && _stormExistsCache[groupId] === false) {
             // No Storm exists — show Storm creation button
-            _idleThunderSend.innerHTML = '\u26c8\ufe0f Storm';
+            _idleThunderSend.innerHTML = '\u26c8\ufe0f';
             _idleThunderSend.title = 'Create a Storm with ' + firstRecip + '.sui to start messaging';
             _idleThunderSend.disabled = !!draft.error;
           } else if (_thunderComposeStage === 'confirmed') {

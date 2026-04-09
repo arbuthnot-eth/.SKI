@@ -11178,10 +11178,12 @@ function bindEvents() {
               }
               if (_cancelled) break;
               const groupUuid = `thunder-${[senderName, recip].sort().join('-')}`;
+              // Resolve recipient address for group creation
+              const recipAddr = transfer?.recipientAddress || await lookupRecipientAddress(recip);
               await sendThunder({
-  
                 groupRef: { uuid: groupUuid },
                 text: msgText,
+                recipientAddress: recipAddr || undefined,
                 transfer,
                 executeTransfer: transfer ? (bytes: Uint8Array) => signAndExecuteTransaction(bytes) : undefined,
               });

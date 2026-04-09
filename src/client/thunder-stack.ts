@@ -218,11 +218,13 @@ class TimestreamRelayer {
 
 /**
  * Send a Seal-encrypted Thunder signal.
+ * Auto-creates the on-chain group if it doesn't exist yet.
  * SDK handles: AES-256-GCM envelope encryption + Seal threshold key management.
  */
 export async function sendThunder(opts: {
   groupRef: GroupRef;
   text: string;
+  recipientAddress?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
   executeTransfer?: (txBytes: Uint8Array) => Promise<any>;
 }): Promise<{ messageId: string }> {
@@ -239,12 +241,33 @@ export async function sendThunder(opts: {
     await opts.executeTransfer(bytes as Uint8Array);
   }
 
-  // Send Seal-encrypted message via SDK
-  return client.messaging.sendMessage({
-    signer: _signer!,
-    groupRef: opts.groupRef,
-    text: opts.text,
-  });
+  // Try to send — if group doesn't exist, create it first
+  try {
+    return await client.messaging.sendMessage({
+      signer: _signer!,
+      groupRef: opts.groupRef,
+      text: opts.text,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Group not found — auto-create and retry
+    if (msg.includes('not found') || msg.includes('Object') || msg.includes('null')) {
+      const members = opts.recipientAddress ? [opts.recipientAddress] : [];
+      const uuid = 'uuid' in opts.groupRef ? opts.groupRef.uuid : undefined;
+      await client.messaging.createAndShareGroup({
+        signer: _signer!,
+        name: uuid || 'thunder',
+        initialMembers: members,
+      });
+      // Retry send after group creation
+      return client.messaging.sendMessage({
+        signer: _signer!,
+        groupRef: opts.groupRef,
+        text: opts.text,
+      });
+    }
+    throw err;
+  }
 }
 
 /**

@@ -8,7 +8,7 @@ export {
   sendThunder,
   getThunders,
   subscribeThunders,
-  createTimestream,
+  createStorm,
   lookupRecipientAddress,
   type ThunderMessage,
   type ThunderClientOptions,

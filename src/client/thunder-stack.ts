@@ -4,7 +4,7 @@
  * Uses @mysten/sui-stack-messaging SDK with:
  * - Seal 2-of-3 threshold encryption (Overclock, NodeInfra, Studio Mirai)
  * - TimestreamAgent DO as transport backend
- * - On-chain group management via PermissionedGroup<Messaging>
+ * - On-chain Storms (PermissionedGroup<Messaging>) for Seal key management
  */
 import {
   createSuiStackMessagingClient,
@@ -218,7 +218,7 @@ class TimestreamRelayer {
 
 /**
  * Send a Seal-encrypted Thunder signal.
- * Auto-creates the on-chain group if it doesn't exist yet.
+ * Auto-creates the on-chain Storm if it doesn't exist yet.
  * SDK handles: AES-256-GCM envelope encryption + Seal threshold key management.
  */
 export async function sendThunder(opts: {
@@ -250,7 +250,7 @@ export async function sendThunder(opts: {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Group not found — auto-create and retry
+    // Storm not found — auto-create and retry
     if (msg.includes('not found') || msg.includes('Object') || msg.includes('null')) {
       const members = opts.recipientAddress ? [opts.recipientAddress] : [];
       const uuid = 'uuid' in opts.groupRef ? opts.groupRef.uuid : undefined;
@@ -259,7 +259,7 @@ export async function sendThunder(opts: {
         name: uuid || 'thunder',
         initialMembers: members,
       });
-      // Retry send after group creation
+      // Retry send after Storm creation
       return client.messaging.sendMessage({
         signer: _signer!,
         groupRef: opts.groupRef,
@@ -333,10 +333,10 @@ export async function* subscribeThunders(opts: {
 }
 
 /**
- * Create a new Timestream (on-chain messaging group).
- * Required before first Seal-encrypted message in a conversation.
+ * Create a new Storm (on-chain messaging group for Seal key management).
+ * Auto-called on first message to a new conversation.
  */
-export async function createTimestream(opts: {
+export async function createStorm(opts: {
   name: string;
   members: string[];
   transaction?: Transaction;

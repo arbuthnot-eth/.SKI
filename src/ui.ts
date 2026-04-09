@@ -11907,11 +11907,11 @@ export function initUI() {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
 
-      // Initialize Thunder Timestream client
+      // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO)
       import('./client/thunder.js').then(({ initThunderClient }) => {
         initThunderClient({
           address: ws.address,
-          signPersonalMessage: (msg: Uint8Array) => signPersonalMessage(msg),
+          signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
         });
       }).catch(() => {});
 

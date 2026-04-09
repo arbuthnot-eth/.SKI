@@ -1,23 +1,30 @@
 /**
- * Thunder Timestream — encrypted messaging between SuiNS identities.
+ * Thunder Timestream — Seal-encrypted messaging between SuiNS identities.
  *
- * Minimal working flow:
- * - AES-256-GCM client-side encryption
- * - TimestreamAgent DO stores encrypted blobs per group
- * - Groups auto-created on first message (keyed by groupId)
- * - Seal 2-of-3 threshold encryption upgrade path ready
- *
- * Seal mainnet key servers (for future upgrade):
- * - Overclock: 0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6
- * - NodeInfra: 0x1afb3a57211ceff8f6781757821847e3ddae73f64e78ec8cd9349914ad985475
- * - Studio Mirai: 0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10
+ * Uses @mysten/sui-stack-messaging SDK with:
+ * - Seal 2-of-3 threshold encryption (Overclock, NodeInfra, Studio Mirai)
+ * - TimestreamAgent DO as transport backend
+ * - On-chain group management via PermissionedGroup<Messaging>
  */
+import {
+  createSuiStackMessagingClient,
+  type DecryptedMessage,
+  type GroupRef,
+} from '@mysten/sui-stack-messaging';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { DappKitSigner, type SignPersonalMessageFn } from './dapp-kit-signer.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
+
+// Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
+const SEAL_SERVERS = [
+  { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
+  { objectId: '0x1afb3a57211ceff8f6781757821847e3ddae73f64e78ec8cd9349914ad985475', weight: 1 }, // NodeInfra
+  { objectId: '0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10', weight: 1 }, // Studio Mirai
+];
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -31,60 +38,71 @@ export interface ThunderMessage {
   updatedAt: number;
   isEdited: boolean;
   isDeleted: boolean;
-}
-
-export interface GroupRef {
-  uuid: string;
+  senderVerified: boolean;
 }
 
 export interface ThunderClientOptions {
   address: string;
-  signPersonalMessage: (msg: Uint8Array) => Promise<{ signature: string }>;
+  signPersonalMessage: SignPersonalMessageFn;
 }
 
 // ─── Client state ───────────────────────────────────────────────────
 
-let _address = '';
-let _signPersonalMessage: ThunderClientOptions['signPersonalMessage'] | null = null;
+type MessagingClient = ReturnType<typeof createSuiStackMessagingClient>;
 
+let _client: MessagingClient | null = null;
+let _signer: DappKitSigner | null = null;
+let _address = '';
+
+/**
+ * Initialize the Thunder Timestream client with Seal encryption.
+ * Called on wallet connect.
+ */
 export function initThunderClient(opts: ThunderClientOptions) {
   _address = opts.address;
-  _signPersonalMessage = opts.signPersonalMessage;
+
+  _signer = new DappKitSigner({
+    address: opts.address,
+    signPersonalMessage: (args) => opts.signPersonalMessage(args.message),
+  });
+
+  const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+  _client = createSuiStackMessagingClient(gqlClient as any, {
+    seal: { serverConfigs: SEAL_SERVERS },
+    encryption: {
+      sessionKey: {
+        address: opts.address,
+        onSign: async (message: Uint8Array) => {
+          const { signature } = await opts.signPersonalMessage(message);
+          return signature;
+        },
+      },
+    },
+    relayer: {
+      transport: new TimestreamRelayer(),
+    },
+  });
+
+  return _client;
+}
+
+export function getThunderClient(): MessagingClient {
+  if (!_client) throw new Error('Thunder client not initialized');
+  return _client;
 }
 
 export function resetThunderClient() {
+  if (_client) {
+    try { _client.messaging.disconnect(); } catch {}
+  }
+  _client = null;
+  _signer = null;
   _address = '';
-  _signPersonalMessage = null;
 }
 
-function getAddress(): string {
-  if (!_address) throw new Error('Thunder client not initialized');
-  return _address;
-}
-
-// ─── AES-256-GCM ───────────────────────────────────────────────────
-
-async function deriveKey(groupId: string): Promise<CryptoKey> {
-  // Deterministic key from groupId — both parties in the conversation derive the same key
-  // groupId format: thunder-{sender}-{recipient} (names are sorted for consistency)
-  const material = new TextEncoder().encode(`thunder:${groupId}`);
-  const hash = await crypto.subtle.digest('SHA-256', material);
-  return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-}
-
-async function encrypt(text: string, groupId: string): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array }> {
-  const key = await deriveKey(groupId);
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const data = new TextEncoder().encode(text);
-  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, data));
-  return { ciphertext: encrypted, nonce };
-}
-
-async function decrypt(ciphertext: Uint8Array, nonce: Uint8Array, groupId: string): Promise<string> {
-  const key = await deriveKey(groupId);
-  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, key, ciphertext);
-  return new TextDecoder().decode(decrypted);
-}
+// ─── Timestream DO transport ────────────────────────────────────────
+// Implements RelayerTransport inline — talks to /api/timestream/:groupId/*
 
 function toB64(data: Uint8Array): string {
   return btoa(String.fromCharCode(...data));
@@ -94,39 +112,113 @@ function fromB64(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 }
 
-// ─── Timestream DO transport ────────────────────────────────────────
+class TimestreamRelayer {
+  async sendMessage(params: any) {
+    const res = await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        groupId: params.groupId,
+        encryptedText: toB64(params.encryptedText),
+        nonce: toB64(params.nonce),
+        keyVersion: params.keyVersion.toString(),
+        senderAddress: params.signer.toSuiAddress(),
+        signature: params.messageSignature || '',
+      }),
+    });
+    if (!res.ok) throw new Error(`Send failed: ${res.status}`);
+    return res.json() as Promise<{ messageId: string }>;
+  }
 
-async function doSend(groupId: string, ciphertext: Uint8Array, nonce: Uint8Array): Promise<string> {
-  const res = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      groupId,
-      encryptedText: toB64(ciphertext),
-      nonce: toB64(nonce),
-      keyVersion: '0',
-      senderAddress: getAddress(),
-    }),
-  });
-  if (!res.ok) throw new Error(`Send failed: ${res.status}`);
-  const data = await res.json() as { messageId: string };
-  return data.messageId;
-}
+  async fetchMessages(params: any) {
+    const res = await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/fetch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        afterOrder: params.afterOrder,
+        beforeOrder: params.beforeOrder,
+        limit: params.limit,
+      }),
+    });
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+    const data = await res.json() as { messages: any[]; hasNext: boolean };
+    return {
+      messages: data.messages.map((m: any) => ({
+        ...m,
+        encryptedText: fromB64(m.encryptedText),
+        nonce: fromB64(m.nonce),
+        keyVersion: BigInt(m.keyVersion),
+        attachments: [],
+      })),
+      hasNext: data.hasNext,
+    };
+  }
 
-async function doFetch(groupId: string, afterOrder?: number, limit?: number): Promise<{ messages: any[]; hasNext: boolean }> {
-  const res = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ afterOrder, limit }),
-  });
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
-  return res.json() as Promise<{ messages: any[]; hasNext: boolean }>;
+  async fetchMessage(params: any) {
+    const res = await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/fetch-one`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messageId: params.messageId }),
+    });
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+    const m = await res.json() as any;
+    return { ...m, encryptedText: fromB64(m.encryptedText), nonce: fromB64(m.nonce), keyVersion: BigInt(m.keyVersion), attachments: [] };
+  }
+
+  async updateMessage(params: any) {
+    await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messageId: params.messageId,
+        senderAddress: params.signer.toSuiAddress(),
+        encryptedText: toB64(params.encryptedText),
+        nonce: toB64(params.nonce),
+        keyVersion: params.keyVersion.toString(),
+        signature: params.messageSignature || '',
+      }),
+    });
+  }
+
+  async deleteMessage(params: any) {
+    await fetch(`/api/timestream/${encodeURIComponent(params.groupId)}/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messageId: params.messageId,
+        senderAddress: params.signer.toSuiAddress(),
+      }),
+    });
+  }
+
+  async *subscribe(params: any): AsyncIterable<any> {
+    let afterOrder = params.afterOrder ?? 0;
+    while (!params.signal?.aborted) {
+      const { messages } = await this.fetchMessages({
+        signer: params.signer,
+        groupId: params.groupId,
+        afterOrder,
+        limit: params.limit ?? 20,
+      });
+      for (const msg of messages) {
+        yield msg;
+        afterOrder = msg.order;
+      }
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 3000);
+        params.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+      });
+    }
+  }
+
+  disconnect() {}
 }
 
 // ─── High-level API ─────────────────────────────────────────────────
 
 /**
- * Send an encrypted Thunder signal.
+ * Send a Seal-encrypted Thunder signal.
+ * SDK handles: AES-256-GCM envelope encryption + Seal threshold key management.
  */
 export async function sendThunder(opts: {
   groupRef: GroupRef;
@@ -134,10 +226,12 @@ export async function sendThunder(opts: {
   transfer?: { recipientAddress: string; amountMist: bigint };
   executeTransfer?: (txBytes: Uint8Array) => Promise<any>;
 }): Promise<{ messageId: string }> {
+  const client = getThunderClient();
+
   // Execute token transfer as separate on-chain tx
   if (opts.transfer && opts.transfer.amountMist > 0n && opts.executeTransfer) {
     const tx = new Transaction();
-    tx.setSender(normalizeSuiAddress(getAddress()));
+    tx.setSender(normalizeSuiAddress(_address));
     const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer.amountMist)]);
     tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer.recipientAddress)));
     const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
@@ -145,66 +239,92 @@ export async function sendThunder(opts: {
     await opts.executeTransfer(bytes as Uint8Array);
   }
 
-  // Encrypt and send via Timestream DO
-  const { ciphertext, nonce } = await encrypt(opts.text, opts.groupRef.uuid);
-  const messageId = await doSend(opts.groupRef.uuid, ciphertext, nonce);
-  return { messageId };
+  // Send Seal-encrypted message via SDK
+  return client.messaging.sendMessage({
+    signer: _signer!,
+    groupRef: opts.groupRef,
+    text: opts.text,
+  });
 }
 
 /**
  * Fetch and decrypt messages from a Timestream.
+ * SDK handles: Seal decryption via key server dry-run.
  */
 export async function getThunders(opts: {
   groupRef: GroupRef;
   afterOrder?: number;
   limit?: number;
 }): Promise<{ messages: ThunderMessage[]; hasNext: boolean }> {
-  const { messages: raw, hasNext } = await doFetch(opts.groupRef.uuid, opts.afterOrder, opts.limit);
+  const client = getThunderClient();
+  const result = await client.messaging.getMessages({
+    signer: _signer!,
+    groupRef: opts.groupRef,
+    afterOrder: opts.afterOrder,
+    limit: opts.limit,
+  });
 
-  const messages: ThunderMessage[] = [];
-  for (const m of raw) {
-    let text: string;
-    try {
-      text = await decrypt(fromB64(m.encryptedText), fromB64(m.nonce), opts.groupRef.uuid);
-    } catch {
-      // Fallback: plaintext (ultron notifications sent without encryption)
-      try { text = atob(m.encryptedText); } catch { text = '[decrypt failed]'; }
-    }
-    messages.push({
+  return {
+    messages: result.messages.map(m => ({
       messageId: m.messageId,
       groupId: m.groupId,
       order: m.order,
-      text,
+      text: m.text,
       senderAddress: m.senderAddress,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
-      isEdited: m.isEdited ?? false,
-      isDeleted: m.isDeleted ?? false,
-    });
-  }
-
-  return { messages, hasNext };
+      isEdited: m.isEdited,
+      isDeleted: m.isDeleted,
+      senderVerified: m.senderVerified,
+    })),
+    hasNext: result.hasNext,
+  };
 }
 
 /**
- * Subscribe to real-time Thunder signals (polls every 3s).
+ * Subscribe to real-time Thunder signals.
  */
 export async function* subscribeThunders(opts: {
   groupRef: GroupRef;
   signal?: AbortSignal;
 }): AsyncGenerator<ThunderMessage> {
-  let afterOrder = 0;
-  while (!opts.signal?.aborted) {
-    const { messages } = await getThunders({ groupRef: opts.groupRef, afterOrder, limit: 20 });
-    for (const msg of messages) {
-      yield msg;
-      afterOrder = msg.order;
-    }
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 3000);
-      opts.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
-    });
+  const client = getThunderClient();
+  for await (const m of client.messaging.subscribe({
+    signer: _signer!,
+    groupRef: opts.groupRef,
+    signal: opts.signal,
+  })) {
+    yield {
+      messageId: m.messageId,
+      groupId: m.groupId,
+      order: m.order,
+      text: m.text,
+      senderAddress: m.senderAddress,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+      isEdited: m.isEdited,
+      isDeleted: m.isDeleted,
+      senderVerified: m.senderVerified,
+    };
   }
+}
+
+/**
+ * Create a new Timestream (on-chain messaging group).
+ * Required before first Seal-encrypted message in a conversation.
+ */
+export async function createTimestream(opts: {
+  name: string;
+  members: string[];
+  transaction?: Transaction;
+}) {
+  const client = getThunderClient();
+  return client.messaging.createAndShareGroup({
+    signer: _signer!,
+    name: opts.name,
+    initialMembers: opts.members,
+    transaction: opts.transaction,
+  });
 }
 
 // ─── SuiNS resolution ───────────────────────────────────────────────
@@ -219,3 +339,6 @@ export async function lookupRecipientAddress(name: string): Promise<string | nul
     return record?.targetAddress ?? null;
   } catch { return null; }
 }
+
+// Re-export types
+export type { DecryptedMessage, GroupRef, SignPersonalMessageFn };

@@ -9569,9 +9569,10 @@ function bindEvents() {
           if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
           _idleActionBtn.textContent = _hasStorm ? 'Thunder' : 'Storm';
           _idleActionBtn.className = _hasStorm ? 'ski-idle-ns-action ski-idle-ns-action--thunder' : 'ski-idle-ns-action ski-idle-ns-action--storm';
+          const _myLabel = (app.suinsName || '').replace(/\.sui$/, '');
           _idleActionBtn.title = _hasStorm
             ? `Thunder \u2014 encrypt a signal to ${label}.sui`
-            : `Storm \u2014 create an encrypt channel with ${label}.sui`;
+            : `Encrypt a Storm between ${label} and ${_myLabel}`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
           _idleActionBtn.textContent = 'SUIAMI';
@@ -9667,7 +9668,8 @@ function bindEvents() {
           if (!hasStorm && !stormChecking && groupId && _stormExistsCache[groupId] === false) {
             // No Storm exists — show Storm creation button
             _idleThunderSend.innerHTML = '\u26c8\ufe0f';
-            _idleThunderSend.title = 'Create a Storm with ' + firstRecip + '.sui to start messaging';
+            const _myN = (app.suinsName || '').replace(/\.sui$/, '');
+            _idleThunderSend.title = `Encrypt a Storm between ${firstRecip} and ${_myN}`;
             _idleThunderSend.disabled = !!draft.error;
           } else if (_thunderComposeStage === 'confirmed') {
             _idleThunderSend.innerHTML = draft.amount !== undefined

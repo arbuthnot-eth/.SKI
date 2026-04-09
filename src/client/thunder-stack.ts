@@ -237,17 +237,46 @@ export async function sendThunder(opts: {
 }): Promise<{ messageId: string }> {
   const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
-  // ─── Amount transfer: pure PTB, no Storm needed ───────────────
-  if (opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute) {
+  const client = getThunderClient();
+  const hasTransfer = opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute;
+
+  // Check if Storm exists
+  let needsStorm = false;
+  try {
+    await client.messaging.view.getCurrentKeyVersion({ uuid: groupId });
+  } catch {
+    needsStorm = true;
+  }
+
+  // ─── Build single PTB: transfer + Storm creation (if needed) ──
+  if (hasTransfer) {
+    // Start with the transfer
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
-    const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer.amountMist)]);
-    tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer.recipientAddress)));
-    await opts.signAndExecute(tx);
+    const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+    tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
+
+    // Compose Storm creation into the same PTB if needed
+    if (needsStorm) {
+      const members = opts.recipientAddress ? [opts.recipientAddress] : [];
+      client.messaging.tx.createAndShareGroup({
+        name: groupId || 'thunder-storm',
+        initialMembers: members,
+        transaction: tx,
+      });
+    }
+
+    // One signature for both transfer + Storm creation
+    await opts.signAndExecute!(tx);
+
+    if (needsStorm) {
+      // Wait for Storm indexing
+      await new Promise(r => setTimeout(r, 2000));
+    }
 
     // Record the transfer as a private Thunder in the Timestream DO
-    const amtSui = Number(opts.transfer.amountMist) / 1e9;
-    const transferNote = `\u26a1 $${opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || amtSui.toFixed(2)} sent`;
+    const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+    const transferNote = `\u26a1 $${amtLabel} sent`;
     await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -268,35 +297,24 @@ export async function sendThunder(opts: {
   }
 
   // ─── Message: Seal-encrypted, needs Storm ─────────────────────
-  const client = getThunderClient();
-
-  try {
-    return await client.messaging.sendMessage({
-      signer: _signer!,
-      groupRef: opts.groupRef,
-      text: opts.text,
+  if (needsStorm && !hasTransfer) {
+    // Storm wasn't created by transfer flow — create it standalone
+    if (!opts.signAndExecute) throw new Error('Storm does not exist — create one first');
+    const members = opts.recipientAddress ? [opts.recipientAddress] : [];
+    const stormTx = client.messaging.tx.createAndShareGroup({
+      name: groupId || 'thunder-storm',
+      initialMembers: members,
     });
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    // Storm not found — auto-create on-chain and retry
-    if (errMsg.includes('not found') || errMsg.includes('Object') || errMsg.includes('null')) {
-      if (!opts.signAndExecute) throw new Error('Storm does not exist — create one first');
-      const members = opts.recipientAddress ? [opts.recipientAddress] : [];
-      const stormTx = client.messaging.tx.createAndShareGroup({
-        name: groupId || 'thunder-storm',
-        initialMembers: members,
-      });
-      stormTx.setSender(normalizeSuiAddress(_address));
-      await opts.signAndExecute(stormTx);
-      await new Promise(r => setTimeout(r, 2000));
-      return client.messaging.sendMessage({
-        signer: _signer!,
-        groupRef: opts.groupRef,
-        text: opts.text,
-      });
-    }
-    throw err;
+    stormTx.setSender(normalizeSuiAddress(_address));
+    await opts.signAndExecute(stormTx);
+    await new Promise(r => setTimeout(r, 2000));
   }
+
+  return client.messaging.sendMessage({
+    signer: _signer!,
+    groupRef: opts.groupRef,
+    text: opts.text,
+  });
 }
 
 /**

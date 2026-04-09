@@ -2944,16 +2944,23 @@ body {
 }
 .ski-idle-addr-row[hidden] { display: none; }
 .ski-idle-roster-panel {
+  position: absolute;
+  bottom: 80px;
+  left: 4px;
+  right: 4px;
+  z-index: 50;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px;
-  background: rgba(10, 10, 15, 0.92);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border-radius: 6px;
+  padding: 10px;
+  background: rgba(10, 10, 15, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   max-height: 200px;
   overflow-y: auto;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.6);
 }
 .ski-idle-roster-panel[hidden] { display: none; }
 .ski-idle-roster-item {

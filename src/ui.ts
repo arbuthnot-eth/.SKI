@@ -9616,58 +9616,55 @@ function bindEvents() {
         rosterPanel.innerHTML = '<div class="ski-idle-roster-empty" style="opacity:0.4">\u2026</div>';
         rosterPanel.removeAttribute('hidden');
 
-        let targetNames: Array<{ name: string; kind: string }> = [];
+        let targetNames: Array<{ name: string; expirationMs: number }> = [];
         if (targetAddr) {
           try {
             const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ query: `{ address(address: "${targetAddr}") { suinsRegistrations { nodes { domain } } } }` }),
+              body: JSON.stringify({ query: `{ address(address: "${targetAddr}") { suinsRegistrations { nodes { domain expirationTimestampMs } } } }` }),
             });
             const gql = await res.json() as any;
             const nodes = gql?.data?.address?.suinsRegistrations?.nodes ?? [];
             for (const n of nodes) {
               const bare = (n.domain || '').replace(/\.sui$/, '').toLowerCase();
-              if (bare) targetNames.push({ name: bare, kind: bare.length <= 4 ? 'short' : 'normal' });
+              const expMs = parseInt(n.expirationTimestampMs || '0', 10);
+              if (bare) targetNames.push({ name: bare, expirationMs: expMs });
             }
+            targetNames.sort((a, b) => a.name.localeCompare(b.name));
           } catch {}
         }
 
-        // Also add connected wallet's owned names
-        const myNames: Array<{ name: string; kind: string }> = [];
-        for (const d of nsOwnedDomains) {
-          const bare = d.name.replace(/\.sui$/, '').toLowerCase();
-          if (bare) myNames.push({ name: bare, kind: 'owned' });
-        }
-
-        const allNames = [...targetNames, ...myNames];
-        if (allNames.length === 0) {
+        if (targetNames.length === 0) {
           rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No names found</div>';
         } else {
-          rosterPanel.innerHTML = allNames.map(({ name, kind }) => {
-            // Assign shape by name characteristics
-            const variant: SkiDotVariant = kind === 'owned' ? 'blue-square'
-              : kind === 'short' ? 'orange-triangle'
-              : 'green-circle';
-            const shape = _shapeOnlySvg(variant, 16);
-            const cls = kind === 'owned' ? 'ski-idle-roster-item--owned' : '';
-            return `<button class="ski-idle-roster-item ${cls}" data-name="${esc(name)}" type="button">${shape} ${esc(name)}<span class="ski-idle-roster-tld">.sui</span></button>`;
+          rosterPanel.innerHTML = targetNames.map(({ name, expirationMs }) => {
+            const shape = _shapeOnlySvg('blue-square', 14);
+            let expiryTag = '';
+            if (expirationMs > 0) {
+              const daysLeft = Math.max(0, Math.ceil((expirationMs - Date.now()) / 86_400_000));
+              const cls = daysLeft <= 30 ? 'ski-idle-roster-expiry--urgent' : daysLeft <= 90 ? 'ski-idle-roster-expiry--warn' : '';
+              expiryTag = `<span class="ski-idle-roster-expiry ${cls}">${daysLeft}D</span>`;
+            }
+            return `<button class="ski-idle-roster-item" data-name="${esc(name)}" type="button">${shape} ${esc(name)}<span class="ski-idle-roster-tld">.sui</span>${expiryTag}</button>`;
           }).join('');
         }
 
-        // Click a name → insert @name in thunder input
+        // Click a name → populate the NS input and navigate to that name
         rosterPanel.querySelectorAll('.ski-idle-roster-item').forEach(btn => {
           btn.addEventListener('click', (ev) => {
             ev.stopPropagation();
             const name = (btn as HTMLElement).dataset.name || '';
-            if (!name || !_idleThunderInputEl) return;
-            const val = _idleThunderInputEl.value;
-            _idleThunderInputEl.value = val ? `${val.trimEnd()} @${name} ` : `@${name} `;
-            _idleThunderInputEl.focus();
-            _idleThunderInputEl.setSelectionRange(_idleThunderInputEl.value.length, _idleThunderInputEl.value.length);
-            _idleThunderInputEl.dispatchEvent(new Event('input'));
+            if (!name) return;
+            // Populate the idle NS input
+            if (_idleNsInput) {
+              _idleNsInput.value = name;
+              _idleNsInput.dispatchEvent(new Event('input'));
+            }
             rosterPanel.setAttribute('hidden', '');
             _unfreezeGif();
+            // Navigate to the name
+            fetchAndShowNsPrice(name);
           });
         });
       });

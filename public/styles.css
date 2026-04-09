@@ -2996,6 +2996,14 @@ body {
   opacity: 0.4;
   font-weight: 400;
 }
+.ski-idle-roster-expiry {
+  font-size: 0.65rem;
+  font-weight: 700;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+.ski-idle-roster-expiry--warn { color: #FFB800; opacity: 0.8; }
+.ski-idle-roster-expiry--urgent { color: #ef4444; opacity: 1; }
 .ski-idle-roster-empty {
   color: rgba(255, 255, 255, 0.3);
   font-size: 0.8rem;

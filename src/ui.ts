@@ -10759,12 +10759,12 @@ function bindEvents() {
                 const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
                 const cachedBaseAddr = status.ethAddress; // same EVM address
                 const cachedTronAddr = status.ethAddress ? ethToTron(status.ethAddress) : '';
-                const suiIcon = `<img src="${SUI_DROP_URI}" class="ski-idle-addr-icon" alt="SUI">`;
+                const suiIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#22c55e" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg></span>`;
                 const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
                 const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
                 const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><g transform="translate(10,3.5) scale(0.037)"><path d="M269.9 325.2L0 447.8l269.9 159.6 270-159.6z" fill="#fff" opacity="0.6"/><path d="M0.1 447.8l269.9 159.6V0z" fill="#fff" opacity="0.45"/><path d="M270 0v607.4l269.9-159.6z" fill="#fff" opacity="0.8"/><path d="M0 499l269.9 380.4V658.5z" fill="#fff" opacity="0.45"/><path d="M269.9 658.5v220.9L540 499z" fill="#fff" opacity="0.8"/></g></svg></span>`;
-                const baseIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#0052FF" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="20" font-weight="700" fill="white">B</text></svg></span>`;
-                const tronIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#FF0013" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="16" font-weight="700" fill="white">T</text></svg></span>`;
+                const baseIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#0052FF" stroke="white" stroke-width="2.5"/><g transform="translate(11,10.5) scale(0.475)"><path d="M19.1 0C8.6 0 0 8.5 0 19s8.6 19 19.1 19c9 0 16.6-6.2 18.6-14.6H24.8c-1.7 3.4-5.2 5.7-9.2 5.7-5.7 0-10.3-4.7-10.3-10.4 0-5.7 4.6-10.4 10.3-10.4 3.8 0 7.1 2.1 8.9 5.2h13.1C35.5 6 27.9 0 19.1 0z" fill="white"/></g></svg></span>`;
+                const tronIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#FF0013" stroke="white" stroke-width="2.5"/><g transform="translate(7.5,11) scale(0.046)"><path d="M378.8 0H4.5L167.1 340.7 505 121.1 378.8 0zM182.7 261.8L71.1 44.4h270.5L182.7 261.8zM204.1 294.5L454.4 147l-112.7 344.4L204.1 294.5z" fill="white"/></g></svg></span>`;
 
                 // Per-row USD balances
                 const _suiUsd2 = app.sui * (suiPriceCache?.price ?? 0) + app.stableUsd;
@@ -10774,8 +10774,9 @@ function bindEvents() {
                 const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}${_fmtBal2(_suiUsd2)}</span>`;
                 const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 6)}\u2026${status.btcAddress.slice(-6)}</span>`;
                 const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-6)}${_fmtBal2(_solUsd2)}</span>`;
-                const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-6)}</span>` : '';
-                const baseLine = cachedBaseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" title="${cachedBaseAddr}">${baseIcon} ${cachedBaseAddr.slice(0, 6)}\u2026${cachedBaseAddr.slice(-6)}</span>` : '';
+                const baseChip = cachedBaseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
+                const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-6)}${baseChip}</span>` : '';
+                const baseLine = cachedBaseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${cachedBaseAddr}">${baseIcon} ${cachedBaseAddr.slice(0, 6)}\u2026${cachedBaseAddr.slice(-6)}</span>` : '';
                 const tronLine = cachedTronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${cachedTronAddr}">${tronIcon} ${cachedTronAddr.slice(0, 5)}\u2026${cachedTronAddr.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
                 addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}`;
                 addrRow.removeAttribute('hidden');
@@ -10786,8 +10787,19 @@ function bindEvents() {
                     ev.stopPropagation();
                     const h = el as HTMLElement;
                     const full = h.title || '';
-                    const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : h.classList.contains('ski-idle-addr-line--base') ? '#0052FF' : h.classList.contains('ski-idle-addr-line--tron') ? '#FF0013' : '#4da2ff';
+                    const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a' : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc' : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8' : h.classList.contains('ski-idle-addr-line--base') ? '#0052FF' : h.classList.contains('ski-idle-addr-line--tron') ? '#FF0013' : '#22c55e';
                     toggleAddrRow(h, full, c);
+                  });
+                });
+                // L2 chip → uncollapse Base row
+                addrRow.querySelectorAll('.ski-idle-addr-l2-chip').forEach(chip => {
+                  chip.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    const baseRow = addrRow.querySelector('.ski-idle-addr-line--base') as HTMLElement | null;
+                    if (!baseRow) return;
+                    const visible = baseRow.style.display !== 'none';
+                    baseRow.style.display = visible ? 'none' : '';
+                    (chip as HTMLElement).style.opacity = visible ? '1' : '0.4';
                   });
                 });
                 const _closeAddr = (ev: Event) => {
@@ -11624,7 +11636,15 @@ function bindEvents() {
         }
         _renderThunderComposePreview();
       });
-      _idleThunderInput?.addEventListener('blur', () => setTimeout(_dismissAtDropdown, 150));
+      _idleThunderInput?.addEventListener('blur', () => {
+        setTimeout(_dismissAtDropdown, 150);
+        // Clear input on blur if it only contains @tag(s) and/or whitespace — restore quick buttons
+        setTimeout(() => {
+          if (!_idleThunderInput) return;
+          const v = _idleThunderInput.value.replace(/@\S*/g, '').trim();
+          if (!v) { _idleThunderInput.value = ''; _renderThunderComposePreview(); }
+        }, 200);
+      });
       _idleThunderInput?.addEventListener('keydown', (e) => {
         e.stopPropagation();
         if (_atDropdown) {

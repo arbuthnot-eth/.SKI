@@ -11803,6 +11803,7 @@ function bindEvents() {
   // On disconnect, kill the idle timer so overlay doesn't reappear
   window.addEventListener('ski:wallet-disconnected', () => {
     if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+    import('./client/thunder.js').then(({ resetThunderClient }) => resetThunderClient()).catch(() => {});
   });
 
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
@@ -11933,6 +11934,24 @@ export function initUI() {
       window.dispatchEvent(new CustomEvent('ski:wallet-connected', {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
+
+      // Initialize Thunder Timestream client
+      import('./client/thunder.js').then(({ initThunderClient }) => {
+        import('./client/timestream-transport.js').then(({ TimestreamTransport }) => {
+          initThunderClient({
+            signer: {
+              signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
+              toSuiAddress: () => ws.address,
+            },
+            sealServerConfigs: [
+              { objectId: '0x22135e12ab6ca0249b4572c0d32e0e155c31b27e5e69aa10760b15e033789a32', weight: 1 },
+              { objectId: '0xdd823bf2ecd8c84ca777ad26aa99c05e1ed66dde1f0b89b181cd5b9468751a13', weight: 1 },
+              { objectId: '0x51f67a7a7c3eb8f54792e62ea8a45e55c9718e70ca8d9a7b1f5f7e8a25092bd0', weight: 1 },
+            ],
+            transport: new TimestreamTransport(),
+          });
+        }).catch(() => {});
+      }).catch(() => {});
 
       // Execute Prism intent if one was stored from ?prism= URL
       (async () => {

@@ -10,6 +10,7 @@ interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
   TreasuryAgents: DurableObjectNamespace;
   Chronicom: DurableObjectNamespace;
+  TimestreamAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
@@ -1351,6 +1352,23 @@ app.get('/api/thunder/chronicom', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// Timestream — per-group encrypted message transport (Thunder Timestream)
+app.post('/api/timestream/:groupId/:action', async (c) => {
+  const groupId = c.req.param('groupId');
+  const action = c.req.param('action');
+  if (!groupId || !action) return c.json({ error: 'groupId and action required' }, 400);
+  const stub = c.env.TimestreamAgent.get(c.env.TimestreamAgent.idFromName(groupId));
+  const body = await c.req.text();
+  const res = await stub.fetch(new Request(`https://timestream-do/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+  }));
+  const text = await res.text();
+  try { return c.json(JSON.parse(text), res.status as any); }
+  catch { return c.json({ error: text }, 500); }
+});
+
 // Migrate ultron: sweep all assets to new keeper + update ultron.sui target address
 app.post('/api/cache/migrate', async (c) => {
   try {
@@ -1629,3 +1647,4 @@ export { SplashDeviceAgent } from './agents/splash.js';
 export { ShadeExecutorAgent } from './agents/shade-executor.js';
 export { TreasuryAgents } from './agents/treasury-agents.js';
 export { Chronicom } from './agents/chronicom.js';
+export { TimestreamAgent } from './agents/timestream.js';

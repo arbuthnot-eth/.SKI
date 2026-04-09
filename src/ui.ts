@@ -11002,8 +11002,9 @@ function bindEvents() {
                 recipientAddress: recipAddr || undefined,
                 transfer,
                 signAndExecute: async (txOrBytes: any) => {
-                  if (sendBtn) sendBtn.innerHTML = '\u26c8\ufe0f Creating Storm\u2026';
-                  showToast('\u26c8\ufe0f Creating Storm with ' + recip + '.sui \u2014 sign to confirm');
+                  const _amtNote = transferAmtUsd ? `$${transferAmtUsd} to ${recip}.sui` : `signal to ${recip}.sui`;
+                  if (sendBtn) sendBtn.innerHTML = `\u26a1 ${_amtNote}\u2026`;
+                  showToast(`\u26a1 Sending ${_amtNote} + creating Storm \u2014 sign to confirm`);
                   const result = await signAndExecuteTransaction(txOrBytes);
                   // Mark Storm as created in cache
                   _stormExistsCache[groupUuid] = true;

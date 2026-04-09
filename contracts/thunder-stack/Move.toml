@@ -1,0 +1,17 @@
+[package]
+name = "sui_stack_messaging"
+edition = "2024.beta"
+
+[dependencies]
+sui_groups = { git = "https://github.com/MystenLabs/sui-groups.git", subdir = "move/packages/sui_groups", rev = "main" }
+suins = { r.mvr = "@suins/core" }
+
+[addresses]
+sui_stack_messaging = "0x0"
+
+[dev-addresses]
+sui_stack_messaging = "0x0"
+
+[environments]
+mainnet = { chain-id = "35834a8a" }
+testnet = { chain-id = "4c78adac" }

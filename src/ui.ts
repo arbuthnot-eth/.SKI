@@ -11185,7 +11185,7 @@ function bindEvents() {
                 text: msgText,
                 recipientAddress: recipAddr || undefined,
                 transfer,
-                executeTransfer: transfer ? (bytes: Uint8Array) => signAndExecuteTransaction(bytes) : undefined,
+                signAndExecute: (txOrBytes: any) => signAndExecuteTransaction(txOrBytes),
               });
               const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';
               await _storeThunderLocal(senderName || ws.address, recip, msgText + amtLabel, 'out', undefined, nsTargetAddress ?? undefined);

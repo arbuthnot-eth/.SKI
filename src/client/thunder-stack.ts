@@ -226,22 +226,24 @@ export async function sendThunder(opts: {
   text: string;
   recipientAddress?: string;
   transfer?: { recipientAddress: string; amountMist: bigint };
-  executeTransfer?: (txBytes: Uint8Array) => Promise<any>;
+  /** Sign and execute a transaction (for Storm creation + token transfers).
+   *  Accepts Uint8Array (pre-built) or Transaction object (WaaP compat). */
+  signAndExecute?: (tx: Uint8Array | Transaction) => Promise<any>;
 }): Promise<{ messageId: string }> {
   const client = getThunderClient();
 
   // Execute token transfer as separate on-chain tx
-  if (opts.transfer && opts.transfer.amountMist > 0n && opts.executeTransfer) {
+  if (opts.transfer && opts.transfer.amountMist > 0n && opts.signAndExecute) {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
     const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer.amountMist)]);
     tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer.recipientAddress)));
     const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
     const bytes = await tx.build({ client: gql as never });
-    await opts.executeTransfer(bytes as Uint8Array);
+    await opts.signAndExecute(bytes as Uint8Array);
   }
 
-  // Try to send — if group doesn't exist, create it first
+  // Try to send — if Storm doesn't exist, create it first
   try {
     return await client.messaging.sendMessage({
       signer: _signer!,
@@ -249,16 +251,21 @@ export async function sendThunder(opts: {
       text: opts.text,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Storm not found — auto-create and retry
-    if (msg.includes('not found') || msg.includes('Object') || msg.includes('null')) {
-      const members = opts.recipientAddress ? [opts.recipientAddress] : [];
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // Storm not found — auto-create on-chain and retry
+    if (errMsg.includes('not found') || errMsg.includes('Object') || errMsg.includes('null')) {
+      if (!opts.signAndExecute) throw new Error('Storm does not exist and no signAndExecute provided to create it');
       const uuid = 'uuid' in opts.groupRef ? opts.groupRef.uuid : undefined;
-      await client.messaging.createAndShareGroup({
-        signer: _signer!,
-        name: uuid || 'thunder',
+      const members = opts.recipientAddress ? [opts.recipientAddress] : [];
+      // Use tx.* to get a Transaction object — pass directly for WaaP compat
+      const stormTx = client.messaging.tx.createAndShareGroup({
+        name: uuid || 'thunder-storm',
         initialMembers: members,
       });
+      stormTx.setSender(normalizeSuiAddress(_address));
+      await opts.signAndExecute(stormTx);
+      // Wait for indexing
+      await new Promise(r => setTimeout(r, 2000));
       // Retry send after Storm creation
       return client.messaging.sendMessage({
         signer: _signer!,
@@ -336,18 +343,19 @@ export async function* subscribeThunders(opts: {
  * Create a new Storm (on-chain messaging group for Seal key management).
  * Auto-called on first message to a new conversation.
  */
-export async function createStorm(opts: {
+export function createStorm(opts: {
   name: string;
   members: string[];
   transaction?: Transaction;
-}) {
+}): Transaction {
   const client = getThunderClient();
-  return client.messaging.createAndShareGroup({
-    signer: _signer!,
+  const tx = client.messaging.tx.createAndShareGroup({
     name: opts.name,
     initialMembers: opts.members,
     transaction: opts.transaction,
   });
+  tx.setSender(normalizeSuiAddress(_address));
+  return tx;
 }
 
 // ─── SuiNS resolution ───────────────────────────────────────────────

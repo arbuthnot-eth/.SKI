@@ -18,8 +18,7 @@ import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
 /** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
-  // Roster piggyback disabled — v2 contract hits abort on upsert, needs debugging
-  // maybeAppendRoster(tx);
+  maybeAppendRoster(tx);
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -74,16 +73,16 @@ export function maybeAppendRoster(
   address?: string,
   name?: string | null,
   crossChain?: { btc?: string; eth?: string; sol?: string },
+  walrusBlobId?: string,
+  sealNonce?: number[],
 ): boolean {
   // Auto-detect address and name if not provided
   const addr = address || (() => { try { const s = localStorage.getItem('ski:session'); return s ? JSON.parse(s).address : ''; } catch { return ''; } })();
   const nm = ((name || (() => { try { return localStorage.getItem(`ski:suins:${addr}`) || ''; } catch { return ''; } })()) as string).replace(/\.sui$/, '');
   if (!nm || !addr) return false;
 
+  // Only SUI address goes on-chain; cross-chain addresses live in the Walrus blob
   const chains: [string, string][] = [['sui', addr]];
-  if (crossChain?.btc) chains.push(['btc', crossChain.btc]);
-  if (crossChain?.eth) chains.push(['eth', crossChain.eth]);
-  if (crossChain?.sol) chains.push(['sol', crossChain.sol]);
 
   // Skip if unchanged since last write
   const rosterKey = `ski:roster:${addr}`;
@@ -105,6 +104,8 @@ export function maybeAppendRoster(
       tx.pure.vector('string', chains.map(c => c[0])),
       tx.pure.vector('string', chains.map(c => c[1])),
       tx.pure.vector('address', []), // dwallet_caps — TODO: populate from IKA state
+      tx.pure.string(walrusBlobId || ''),
+      tx.pure.vector('u8', sealNonce || []),
       tx.object('0x6'),
     ],
   });

@@ -3645,95 +3645,32 @@ async function _renderConversation(counterparty: string, force = false) {
           const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
           const { signature } = await signPersonalMessage(msgBytes);
           const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), signature);
-          const { lookupRecipientNftId, buildThunderSendTx } = await import('./client/thunder.js');
-          const senderNftId = await lookupRecipientNftId(senderName);
-          if (!senderNftId) return;
-          const txBytes = await buildThunderSendTx(ws.address, myName, senderName, senderNftId, `\u2713 read by ${myName}.sui`, proof.token);
+          // Read receipt — send via new SDK (best-effort)
+          const { sendThunder } = await import('./client/thunder.js');
           try {
-            const { sponsorAndSubmit } = await import('./sponsor.js');
-            await sponsorAndSubmit(txBytes, ws.address);
-          } catch {
-            await signAndExecuteTransaction(txBytes);
-          }
+            await sendThunder({
+              signer: ws as any,
+              groupRef: { uuid: `${myName}-${senderName}` },
+              text: `\u2713 read by ${myName}.sui`,
+            });
+          } catch { /* receipt best-effort, may fail if no group exists yet */ }
         } catch { /* receipt is best-effort */ }
       };
-      const { decryptAndQuest, nameHash: nhFn } = await import('./client/thunder.js');
+      // Fetch and decrypt messages via SDK (replaces on-chain quest/strike)
+      const { getThunders } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === cardDomain && d.kind === 'nft');
-      if (!nft) { showToast('SuiNS NFT not found'); return; }
       const count = _thunderCounts[cardDomain] ?? 0;
       if (count === 0) return;
 
-      // WaaP: use strike relay (signPersonalMessage + server-side submit)
-      let payloads: import('./client/thunder-types.js').ThunderPayload[];
-      const isWaaP = /waap/i.test(ws.walletName || '');
-      if (isWaaP) {
-        const ns = nhFn(cardDomain);
-        const authMsg = new TextEncoder().encode(`strike:${cardDomain}.sui:${count}`);
-        const { signature: authSig } = await signPersonalMessage(authMsg);
-        const toB64 = (a: Uint8Array) => btoa(String.fromCharCode(...a));
-        const res = await fetch('/api/thunder/strike-relay', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            nameHash: toB64(ns),
-            nftId: nft.objectId,
-            authMsg: toB64(authMsg),
-            authSig: authSig,
-            senderAddress: ws.address,
-            count,
-          }),
-        });
-        const result = await res.json() as { digest?: string; effects?: any; error?: string };
-        if (!res.ok || result.error) throw new Error(result.error || 'Strike relay failed');
-        // Fetch events from the tx to decrypt
-        await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
-        const txRes = await fetch('/api/sui-rpc', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock', params: [result.digest, { showEvents: true }] }),
-        });
-        const txJson = await txRes.json() as any;
-        const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-        payloads = await parseAndDecryptQuestfi(txJson?.result ?? {}, _sendReceiptCb);
-      } else {
-        // Try combined strike + receipt in one PTB
-        const _convoTarget = _thunderConvoTarget || '';
-        let _usedCombined = false;
-        if (_convoTarget && app.suinsName) {
-          try {
-            const { buildStrikeWithReceiptTx, lookupRecipientNftId } = await import('./client/thunder.js');
-            const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
-            const myName = app.suinsName.replace(/\.sui$/, '');
-            const targetNftId = await lookupRecipientNftId(_convoTarget);
-            if (targetNftId) {
-              const raw = buildSuiamiMessage(myName, ws.address, nft.objectId);
-              const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
-              const { signature: suiamiSig } = await signPersonalMessage(msgBytes);
-              const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), suiamiSig);
-              const combinedBytes = await buildStrikeWithReceiptTx(
-                ws.address, cardDomain + '.sui', nft.objectId, count,
-                _convoTarget, targetNftId, `\u2713 read by ${myName}.sui`, proof.token,
-              );
-              const result = await signAndExecuteTransaction(combinedBytes);
-              const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-              payloads = await parseAndDecryptQuestfi(result.effects ?? result);
-              _usedCombined = true;
-            }
-          } catch { /* fall back to strike-only */ }
-        }
-        if (!_usedCombined) {
-          payloads = await decryptAndQuest(
-            ws.address, cardDomain + '.sui', nft.objectId, count,
-            (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-          );
-        }
-      }
+      const groupUuid = `thunder-${cardDomain}`;
+      const { messages } = await getThunders({
+        signer: ws as any,
+        groupRef: { uuid: groupUuid },
+      });
       const _myLog = app.suinsName || ws.address;
-      for (const p of payloads) {
-        const _pSender = p.sender || p.senderAddress.slice(0, 8);
-        await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
+      for (const m of messages) {
+        await _storeThunderLocal(_myLog, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
       }
       _thunderCounts[cardDomain] = 0;
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
@@ -3742,12 +3679,6 @@ async function _renderConversation(counterparty: string, force = false) {
       await _refreshThunderLocalCounts();
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
-      // Schedule sweep for this storm (auto-cleanup after 7 days idle)
-      Promise.all([import('./client/shade.js'), import('./client/thunder.js')]).then(([{ scheduleThunderSweep }, { nameHash }]) => {
-        const hash = nameHash(cardDomain);
-        const hex = Array.from(hash).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-        scheduleThunderSweep(ws.address, hex, cardDomain);
-      }).catch(() => {});
       if (payloads.length > 0) {
         // Fill input with the sender's name or address for easy reply
         const first = payloads[0];
@@ -4952,40 +4883,29 @@ function _attachNftPopoverListeners() {
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
-        const { decryptAndQuest } = await import('./client/thunder.js');
+        const { getThunders } = await import('./client/thunder.js');
         const ws = getState();
         if (!ws.address) return;
 
-        // Find the NFT for the clicked name
-        const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === badgeDomain && d.kind === 'nft');
-        if (!nft) { showToast('SuiNS NFT not found'); return; }
-        const fullName = badgeDomain + '.sui';
+        const groupUuid = `thunder-${badgeDomain}`;
+        const { messages } = await getThunders({
+          signer: ws as any,
+          groupRef: { uuid: groupUuid },
+        });
 
-        // Batch quest all pending thunder for this name
-        const payloads = await decryptAndQuest(
-          ws.address,
-          fullName,
-          nft.objectId,
-          badgeCount,
-          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-        );
+        if (messages.length === 0) { showToast('No signals found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
 
-        if (payloads.length === 0) { showToast('No strikes found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
-
-        // Show first strike above the input + toast, populate sender for reply
-        const first = payloads[0];
-        const senderName = first.sender || first.senderAddress.slice(0, 8) + '\u2026';
-        const extra = payloads.length > 1 ? ` (+${payloads.length - 1} more)` : '';
-        showToast(`\u26a1 ${senderName}: ${first.message}${extra}`);
-        // Store all received strikes in encrypted local log
+        const first = messages[0];
+        const senderName = first.senderAddress.slice(0, 8) + '\u2026';
+        const extra = messages.length > 1 ? ` (+${messages.length - 1} more)` : '';
+        showToast(`\u26a1 ${senderName}: ${first.text}${extra}`);
         const _myLog = app.suinsName || ws.address;
-        for (const p of payloads) {
-          const _pSender = p.sender || p.senderAddress.slice(0, 8);
-          await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
+        for (const m of messages) {
+          await _storeThunderLocal(_myLog, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
         }
 
-        // Set input to sender's name for reply
-        const senderBare = (first.sender || '').replace(/\.sui$/, '');
+        // Set input to sender's address for reply
+        const senderBare = first.senderAddress.slice(0, 8);
         if (senderBare) {
           nsLabel = senderBare;
           const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -7654,15 +7574,17 @@ function renderSkiMenu() {
     const sendBtn = document.getElementById('wk-thunder-send') as HTMLButtonElement | null;
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '\u2026'; }
     try {
-      const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
+      const { sendThunder } = await import('./client/thunder.js');
       const senderName = app.suinsName || '';
-      const recipientNftId = await lookupRecipientNftId(recipientName);
-      if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
-      const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
       const _logName = senderName || ws.address;
       let _txOk = false;
       try {
-        await signAndExecuteTransaction(txBytes);
+        const groupUuid = `thunder-${senderName}-${recipientName}`;
+        await sendThunder({
+          signer: ws as any,
+          groupRef: { uuid: groupUuid },
+          text: msg,
+        });
         _txOk = true;
         await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       } catch (txErr) {
@@ -9033,13 +8955,12 @@ function renderSkiMenu() {
     _thunderDecryptBusy = true;
     (sunEl as HTMLElement).style.opacity = '0.4';
     try {
-      const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
+      const { getThunders, getThunderCountsBatch } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      // Fresh on-chain scan — list all storms on Storm via gRPC
+      // Fresh on-chain scan — list all storms on Storm via gRPC (legacy counting)
       const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
       const freshCounts = await getThunderCountsBatch(nftNames);
-      // Merge fresh counts into _thunderCounts
       for (const [bare, count] of Object.entries(freshCounts)) {
         _thunderCounts[bare] = count;
       }
@@ -9050,19 +8971,17 @@ function renderSkiMenu() {
       if (namesWithThunder.length === 0) {
         showToast('\u2600\ufe0f Nothing to purge');
       } else {
-        for (const [name, count] of namesWithThunder) {
-          const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
-          if (!nft) continue;
-          const payloads = await decryptAndQuest(
-            ws.address, name + '.sui', nft.objectId, count,
-            (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-          );
-          for (const p of payloads) {
-            const _pSender = p.sender || p.senderAddress.slice(0, 8);
-            await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
-            lastSender = (p.sender || '').replace(/\.sui$/, '') || p.senderAddress;
+        for (const [name] of namesWithThunder) {
+          const groupUuid = `thunder-${name}`;
+          const { messages } = await getThunders({
+            signer: ws as any,
+            groupRef: { uuid: groupUuid },
+          });
+          for (const m of messages) {
+            await _storeThunderLocal(_myLog, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
+            lastSender = m.senderAddress;
           }
-          totalDecrypted += payloads.length;
+          totalDecrypted += messages.length;
           _thunderCounts[name] = 0;
         }
         if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
@@ -11143,72 +11062,39 @@ function bindEvents() {
           try {
             const ws = getState();
             if (!ws.address) return;
-            const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
+            const { getThunders, getThunderCountsBatch } = await import('./client/thunder.js');
 
             // Build list of all names with pending signals
-            const toQuest: { name: string; nftId: string; count: number }[] = [];
+            const toQuest: { name: string; count: number }[] = [];
             if (sendBtn.dataset.questAll === '1') {
               for (const d of nsOwnedDomains) {
                 if (d.kind !== 'nft') continue;
                 const bare = d.name.replace(/\.sui$/, '').toLowerCase();
                 const c = _thunderCounts[bare] ?? 0;
-                if (c > 0) toQuest.push({ name: bare, nftId: d.objectId, count: c });
+                if (c > 0) toQuest.push({ name: bare, count: c });
               }
             } else {
               const questName = sendBtn.dataset.questName || '';
               if (!questName) { sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
-              const nftEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === questName.toLowerCase());
-              if (!nftEntry) { showToast('NFT not found'); sendBtn.disabled = false; return; }
-              toQuest.push({ name: questName, nftId: nftEntry.objectId, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
+              toQuest.push({ name: questName, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
             }
 
             if (toQuest.length === 0) { showToast('No signals to quest'); sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
 
             let totalDecrypted = 0;
 
-            for (const { name, nftId, count } of toQuest) {
+            for (const { name } of toQuest) {
               try {
-                // Try combined strike + receipt (sends read receipt back to sender)
-                let payloads: import('./client/thunder-types.js').ThunderPayload[];
-                let _usedCombined = false;
-                const _convo = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.replace(/\.sui$/, '').trim() || '';
-                if (_convo && app.suinsName) {
-                  try {
-                    const { buildStrikeWithReceiptTx, lookupRecipientNftId } = await import('./client/thunder.js');
-                    const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
-                    const myName = app.suinsName.replace(/\.sui$/, '');
-                    const targetNftId = await lookupRecipientNftId(_convo);
-                    if (targetNftId) {
-                      const myNft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
-                      if (myNft) {
-                        const raw = buildSuiamiMessage(myName, ws.address, myNft.objectId);
-                        const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
-                        const { signature: suiamiSig } = await signPersonalMessage(msgBytes);
-                        const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), suiamiSig);
-                        const combinedBytes = await buildStrikeWithReceiptTx(
-                          ws.address, name + '.sui', nftId, count,
-                          _convo, targetNftId, `\u2713 read by ${myName}.sui`, proof.token,
-                        );
-                        const result = await signAndExecuteTransaction(combinedBytes);
-                        const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-                        payloads = await parseAndDecryptQuestfi(result.effects ?? result);
-                        _usedCombined = true;
-                      }
-                    }
-                  } catch { /* fall back to plain quest */ }
-                }
-                if (!_usedCombined) {
-                  payloads = await decryptAndQuest(ws.address, name, nftId, count, async (txBytes) => {
-                    const { digest, effects } = await signAndExecuteTransaction(txBytes);
-                    return { digest: digest || '', effects };
-                  });
-                }
-                for (const p of payloads) {
-                  const _pSender = p.sender || p.senderAddress.slice(0, 8);
+                const groupUuid = `thunder-${name}`;
+                const { messages } = await getThunders({
+                  signer: ws as any,
+                  groupRef: { uuid: groupUuid },
+                });
+                for (const m of messages) {
                   _freshQuestTs.add(Date.now());
-                  await _storeThunderLocal(name, _pSender, p.message, 'in', _pSender, p.senderAddress);
+                  await _storeThunderLocal(name, m.senderAddress.slice(0, 8), m.text, 'in', m.senderAddress.slice(0, 8), m.senderAddress);
                 }
-                totalDecrypted += payloads.length;
+                totalDecrypted += messages.length;
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
                 if (!msg.toLowerCase().includes('reject')) showToast(`${name}: ${msg}`);
@@ -11266,7 +11152,7 @@ function bindEvents() {
             return;
           }
 
-          const { buildThunderSendTx, lookupRecipientNftId, lookupRecipientAddress } = await import('./client/thunder.js');
+          const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
           const senderName = app.suinsName || '';
           const recipients = draft.recipients;
           const msgText = draft.message;
@@ -11287,9 +11173,6 @@ function bindEvents() {
           try {
             for (const recip of recipients) {
               if (_cancelled) break;
-              const nftId = await lookupRecipientNftId(recip);
-              if (!nftId) { showToast(`Cannot find ${recip}.sui`); continue; }
-              if (_cancelled) break;
               // Resolve transfer if amount is set
               let transfer: { recipientAddress: string; amountMist: bigint } | undefined;
               if (transferAmtUsd) {
@@ -11302,9 +11185,13 @@ function bindEvents() {
                 transfer = { recipientAddress: recipAddr, amountMist };
               }
               if (_cancelled) break;
-              const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText, undefined, transfer);
-              if (_cancelled) break;
-              await signAndExecuteTransaction(txBytes);
+              const groupUuid = `thunder-${senderName}-${recip}`;
+              await sendThunder({
+                signer: ws as any,
+                groupRef: { uuid: groupUuid },
+                text: msgText,
+                transfer,
+              });
               const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';
               await _storeThunderLocal(senderName || ws.address, recip, msgText + amtLabel, 'out', undefined, nsTargetAddress ?? undefined);
               _addThunderContact(recip);
@@ -11543,9 +11430,7 @@ function bindEvents() {
                 const strikeCount = idx >= 0 ? idx + 1 : 1;
 
                 (bubble as HTMLElement).textContent = '\u2026';
-                const { buildStrikeToTreasuryTx } = await import('./client/thunder.js');
-                const txBytes = await buildStrikeToTreasuryTx(ws.address, bare, nftEntry.objectId, strikeCount);
-                await signAndExecuteTransaction(txBytes);
+                // Delete signals locally (SDK handles off-chain message lifecycle)
 
                 // Delete all struck bubbles from local log + DOM
                 for (let i = 0; i <= idx; i++) {

@@ -11328,7 +11328,8 @@ function bindEvents() {
             bubble.textContent = msgText;
             if (convoEl) { convoEl.appendChild(bubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
             const names = recipients.map(r => `${r}.sui`).join(', ');
-            showToast(`\u26a1 Signal sent to ${names}`);
+            const amtToast = transferAmtUsd ? ` \u00b7 $${transferAmtUsd} sent` : '';
+            showToast(`\u26a1 Signal sent to ${names}${amtToast}`);
             _expandIdleConvo(recipients[0]);
             _thunderComposeConfirmedRaw = '';
             _thunderComposeStage = 'idle';

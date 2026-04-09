@@ -360,6 +360,19 @@ export function createStorm(opts: {
   return tx;
 }
 
+// ─── Storm existence check ──────────────────────────────────────────
+
+/** Check if an on-chain Storm exists for a given UUID. */
+export async function stormExists(uuid: string): Promise<boolean> {
+  try {
+    const client = getThunderClient();
+    await client.messaging.view.getCurrentKeyVersion({ uuid });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── SuiNS resolution ───────────────────────────────────────────────
 
 export async function lookupRecipientAddress(name: string): Promise<string | null> {

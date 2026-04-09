@@ -9609,6 +9609,19 @@ function bindEvents() {
         }
       };
 
+      // Track Storm existence per groupId
+      const _stormExistsCache: Record<string, boolean | 'checking'> = {};
+      const _checkStormExists = (groupId: string) => {
+        if (_stormExistsCache[groupId] !== undefined) return;
+        _stormExistsCache[groupId] = 'checking';
+        import('./client/thunder.js').then(({ stormExists }) => {
+          stormExists(groupId).then(exists => {
+            _stormExistsCache[groupId] = exists;
+            _renderThunderComposePreview();
+          }).catch(() => { _stormExistsCache[groupId] = false; _renderThunderComposePreview(); });
+        }).catch(() => {});
+      };
+
       const _renderThunderComposePreview = () => {
         const raw = _idleThunderInput?.value.trim() || '';
         const draft = _parseThunderCompose(raw);
@@ -9632,9 +9645,22 @@ function bindEvents() {
           _thunderComposeStage = 'confirmed';
         }
 
+        // Check if Storm exists for the current conversation
+        const senderName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        const firstRecip = (draft.recipients[0] || '').toLowerCase();
+        const groupId = firstRecip ? `thunder-${[senderName, firstRecip].sort().join('-')}` : '';
+        if (groupId) _checkStormExists(groupId);
+        const hasStorm = groupId ? _stormExistsCache[groupId] === true : false;
+        const stormChecking = groupId ? _stormExistsCache[groupId] === 'checking' : false;
+
         if (_idleThunderSend && !isQuestMode && _thunderComposeStage !== 'sending') {
           const amtLabel = draft.amount !== undefined ? ` $${draft.amount}` : '';
-          if (_thunderComposeStage === 'confirmed') {
+          if (!hasStorm && !stormChecking && groupId && _stormExistsCache[groupId] === false) {
+            // No Storm exists — show Storm creation button
+            _idleThunderSend.innerHTML = '\u26c8\ufe0f Storm';
+            _idleThunderSend.title = 'Create a Storm with ' + firstRecip + '.sui to start messaging';
+            _idleThunderSend.disabled = !!draft.error;
+          } else if (_thunderComposeStage === 'confirmed') {
             _idleThunderSend.innerHTML = draft.amount !== undefined
               ? `\u26a1 Send $${draft.amount}`
               : '\u26a1 Send';
@@ -9646,7 +9672,6 @@ function bindEvents() {
             _idleThunderSend.title = draft.error ? 'Need a recipient (@name)' : draft.amountError || 'Open Storm';
           }
           _idleThunderSend.disabled = !!draft.error || !!draft.amountError;
-          // Visual feedback: red border on amount error
           _idleThunderSend.classList.toggle('ski-idle-thunder-send--amt-error', !!draft.amountError);
         }
       };
@@ -11187,10 +11212,12 @@ function bindEvents() {
                 recipientAddress: recipAddr || undefined,
                 transfer,
                 signAndExecute: async (txOrBytes: any) => {
-                  // Show Storm creation status
                   if (sendBtn) sendBtn.innerHTML = '\u26c8\ufe0f Creating Storm\u2026';
                   showToast('\u26c8\ufe0f Creating Storm with ' + recip + '.sui \u2014 sign to confirm');
-                  return signAndExecuteTransaction(txOrBytes);
+                  const result = await signAndExecuteTransaction(txOrBytes);
+                  // Mark Storm as created in cache
+                  _stormExistsCache[groupUuid] = true;
+                  return result;
                 },
               });
               const amtLabel = transferAmtUsd ? ` ($${transferAmtUsd})` : '';

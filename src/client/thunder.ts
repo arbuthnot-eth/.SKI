@@ -9,6 +9,7 @@ export {
   getThunders,
   subscribeThunders,
   createStorm,
+  stormExists,
   lookupRecipientAddress,
   type ThunderMessage,
   type ThunderClientOptions,

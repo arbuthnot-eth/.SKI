@@ -2943,6 +2943,55 @@ body {
   font-size: 0.65rem;
 }
 .ski-idle-addr-row[hidden] { display: none; }
+.ski-idle-roster-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(10, 10, 15, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ski-idle-roster-panel[hidden] { display: none; }
+.ski-idle-roster-item {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.ski-idle-roster-item:hover {
+  background: rgba(255, 184, 0, 0.15);
+  border-color: rgba(255, 184, 0, 0.4);
+  color: #FFB800;
+}
+.ski-idle-roster-item--owned {
+  border-color: rgba(77, 162, 255, 0.3);
+  color: #93c5fd;
+}
+.ski-idle-roster-item--owned:hover {
+  background: rgba(77, 162, 255, 0.15);
+  border-color: rgba(77, 162, 255, 0.5);
+}
+.ski-idle-roster-tld {
+  opacity: 0.4;
+  font-weight: 400;
+}
+.ski-idle-roster-empty {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.8rem;
+  padding: 8px;
+  text-align: center;
+  width: 100%;
+}
 .ski-idle-addr-qr {
   display: flex;
   justify-content: center;

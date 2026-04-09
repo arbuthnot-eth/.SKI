@@ -9133,6 +9133,7 @@ function bindEvents() {
             <span class="ski-idle-context-text" id="ski-idle-price-text"></span>
           </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
+          <div class="ski-idle-roster-panel" id="ski-idle-roster" hidden></div>
           <div id="ski-idle-card" class="ski-idle-card"></div>
           <div id="ski-idle-sol-qr" class="ski-idle-sol-qr" hidden></div>
           <div class="ski-idle-iusd-panel" id="ski-idle-iusd-panel" hidden>
@@ -9599,16 +9600,64 @@ function bindEvents() {
       // Reads from card name first (authoritative), then falls back to input
       _idleOverlay.querySelector('#ski-idle-thunder-at')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (!_idleThunderInputEl) return;
-        const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.replace(/\.sui$/, '').trim() || '';
-        const resolvedName = cardName || nsLabel || _idleNsInput?.value || '';
-        if (_idleThunderInputEl.value.startsWith('@')) {
-          _idleThunderInputEl.focus();
+        const rosterPanel = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+        if (!rosterPanel) return;
+
+        // Toggle roster panel
+        if (!rosterPanel.hasAttribute('hidden')) {
+          rosterPanel.setAttribute('hidden', '');
+          _unfreezeGif();
           return;
         }
-        _idleThunderInputEl.value = resolvedName ? `@${resolvedName} ` : '@';
-        _idleThunderInputEl.focus();
-        _idleThunderInputEl.setSelectionRange(_idleThunderInputEl.value.length, _idleThunderInputEl.value.length);
+
+        // Build roster from owned names + thunder contacts
+        _freezeGif();
+        const names: string[] = [];
+        const ownedSet = new Set<string>();
+        for (const d of nsOwnedDomains) {
+          const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+          if (bare) ownedSet.add(bare);
+        }
+        // Add contacts from thunder conversation history (names we've talked to)
+        const contactKey = `ski:thunder-contacts:${getState().address}`;
+        try {
+          const stored = localStorage.getItem(contactKey);
+          if (stored) {
+            const contacts = JSON.parse(stored) as string[];
+            for (const c of contacts) {
+              if (c && !ownedSet.has(c)) names.push(c);
+            }
+          }
+        } catch {}
+        // Add owned names at the end
+        for (const n of ownedSet) names.push(n);
+
+        if (names.length === 0) {
+          rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No contacts yet</div>';
+        } else {
+          rosterPanel.innerHTML = names.map(n => {
+            const isOwned = ownedSet.has(n);
+            const cls = isOwned ? 'ski-idle-roster-item--owned' : '';
+            return `<button class="ski-idle-roster-item ${cls}" data-name="${esc(n)}" type="button">${esc(n)}<span class="ski-idle-roster-tld">.sui</span></button>`;
+          }).join('');
+        }
+        rosterPanel.removeAttribute('hidden');
+
+        // Click a name → insert @name in thunder input
+        rosterPanel.querySelectorAll('.ski-idle-roster-item').forEach(btn => {
+          btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const name = (btn as HTMLElement).dataset.name || '';
+            if (!name || !_idleThunderInputEl) return;
+            const val = _idleThunderInputEl.value;
+            _idleThunderInputEl.value = val ? `${val.trimEnd()} @${name} ` : `@${name} `;
+            _idleThunderInputEl.focus();
+            _idleThunderInputEl.setSelectionRange(_idleThunderInputEl.value.length, _idleThunderInputEl.value.length);
+            _idleThunderInputEl.dispatchEvent(new Event('input'));
+            rosterPanel.setAttribute('hidden', '');
+            _unfreezeGif();
+          });
+        });
       });
       _idleNsInput?.addEventListener('input', () => {
         const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');

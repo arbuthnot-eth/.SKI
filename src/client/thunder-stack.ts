@@ -248,15 +248,21 @@ export async function sendThunder(opts: {
     needsStorm = true;
   }
 
-  // ─── Build single PTB: transfer + Storm creation (if needed) ──
-  if (hasTransfer) {
-    // Start with the transfer
+  // ─── Build single PTB: transfer + Storm + SUIAMI roster ──────
+  // One signature covers everything
+  if (hasTransfer || needsStorm) {
+    if (!opts.signAndExecute) throw new Error('signAndExecute required for transfers and Storm creation');
+
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
-    const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-    tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
 
-    // Compose Storm creation into the same PTB if needed
+    // 1. SUI transfer (if amount specified)
+    if (hasTransfer) {
+      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+      tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
+    }
+
+    // 2. Storm creation (if no on-chain Storm exists)
     if (needsStorm) {
       const members = opts.recipientAddress ? [opts.recipientAddress] : [];
       client.messaging.tx.createAndShareGroup({
@@ -266,50 +272,46 @@ export async function sendThunder(opts: {
       });
     }
 
-    // One signature for both transfer + Storm creation
-    await opts.signAndExecute!(tx);
+    // 3. SUIAMI Roster attestation (piggyback sender identity on-chain)
+    try {
+      const { maybeAppendRoster } = await import('../suins.js');
+      maybeAppendRoster(tx, _address);
+    } catch { /* roster piggyback is best-effort */ }
+
+    // One signature for transfer + Storm + SUIAMI
+    await opts.signAndExecute(tx);
 
     if (needsStorm) {
-      // Wait for Storm indexing
       await new Promise(r => setTimeout(r, 2000));
     }
 
     // Record the transfer as a private Thunder in the Timestream DO
-    const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
-    const transferNote = `\u26a1 $${amtLabel} sent`;
-    await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        groupId,
-        encryptedText: btoa(transferNote),
-        nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
-        keyVersion: '0',
-        senderAddress: _address,
-      }),
-    });
+    if (hasTransfer) {
+      const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
+      const transferNote = `\u26a1 $${amtLabel} sent`;
+      await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          groupId,
+          encryptedText: btoa(transferNote),
+          nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
+          keyVersion: '0',
+          senderAddress: _address,
+        }),
+      });
+    }
 
     // If there's no message text beyond the amount, we're done
-    const textWithoutAmount = opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim();
-    if (!textWithoutAmount) {
-      return { messageId: 'transfer' };
+    if (hasTransfer) {
+      const textWithoutAmount = opts.text.replace(/@\S+\$\d+(?:\.\d{0,2})?/g, '').trim();
+      if (!textWithoutAmount) {
+        return { messageId: 'transfer' };
+      }
     }
   }
 
-  // ─── Message: Seal-encrypted, needs Storm ─────────────────────
-  if (needsStorm && !hasTransfer) {
-    // Storm wasn't created by transfer flow — create it standalone
-    if (!opts.signAndExecute) throw new Error('Storm does not exist — create one first');
-    const members = opts.recipientAddress ? [opts.recipientAddress] : [];
-    const stormTx = client.messaging.tx.createAndShareGroup({
-      name: groupId || 'thunder-storm',
-      initialMembers: members,
-    });
-    stormTx.setSender(normalizeSuiAddress(_address));
-    await opts.signAndExecute(stormTx);
-    await new Promise(r => setTimeout(r, 2000));
-  }
-
+  // ─── Seal-encrypted message (Storm must exist by now) ─────────
   return client.messaging.sendMessage({
     signer: _signer!,
     groupRef: opts.groupRef,

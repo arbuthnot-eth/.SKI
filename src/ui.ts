@@ -9642,7 +9642,6 @@ function bindEvents() {
           _thunderComposeConfirmedRaw = '';
           _thunderComposeStage = 'idle';
           if (_idleThunderSend && !isQuestMode) {
-            // Check Storm existence for current target
             const _curTarget = (nsLabel || '').toLowerCase();
             const _curMe = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
             const _curGid = _curTarget && _curMe ? `thunder-${[_curMe, _curTarget].sort().join('-')}` : '';
@@ -9651,6 +9650,11 @@ function bindEvents() {
             _idleThunderSend.innerHTML = _curHasStorm ? '\u26a1' : '\u26c8\ufe0f';
             _idleThunderSend.title = _curHasStorm ? 'Open Storm' : `Create Storm`;
             _idleThunderSend.disabled = false;
+            // Disable input until Storm exists
+            if (_idleThunderInput) {
+              _idleThunderInput.disabled = !_curHasStorm;
+              _idleThunderInput.placeholder = _curHasStorm ? '' : 'Create a Storm first';
+            }
           }
           return;
         }
@@ -10242,7 +10246,36 @@ function bindEvents() {
           })();
         } else if (btnText === 'Storm' || btnText === 'Thunder') {
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-          if (convoEl && !convoEl.hasAttribute('hidden')) {
+          if (btnText === 'Storm' && label) {
+            // Create Storm on-chain
+            const ws = getState();
+            if (!ws.address) { showToast('Connect wallet first'); return; }
+            _idleActionBtn!.disabled = true;
+            _idleActionBtn!.textContent = '\u26c8\ufe0f\u2026';
+            try {
+              const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+              const groupUuid = `thunder-${[myName, label.toLowerCase()].sort().join('-')}`;
+              const { createStorm, lookupRecipientAddress } = await import('./client/thunder.js');
+              const recipAddr = await lookupRecipientAddress(label);
+              const stormTx = createStorm({
+                name: groupUuid,
+                members: recipAddr ? [recipAddr] : [],
+              });
+              showToast(`\u26c8\ufe0f Creating Storm between ${myName} and ${label} \u2014 sign to confirm`);
+              await signAndExecuteTransaction(stormTx);
+              _stormExistsCache[groupUuid] = true;
+              showToast(`\u26c8\ufe0f Storm created with ${label}.sui`);
+              _updateIdleStatus();
+              _renderThunderComposePreview();
+              _expandIdleConvo(label);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (!msg.toLowerCase().includes('reject')) showToast(msg);
+            } finally {
+              _idleActionBtn!.disabled = false;
+              _updateIdleStatus();
+            }
+          } else if (convoEl && !convoEl.hasAttribute('hidden')) {
             convoEl.setAttribute('hidden', '');
           } else if (label) {
             _expandIdleConvo(label);
@@ -11090,8 +11123,38 @@ function bindEvents() {
       const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _sendIdleThunder = async () => {
-        // Quest mode: decrypt pending signals across all owned names
         const sendBtn = _idleThunderSend;
+
+        // Storm creation mode — ⛈️ button clicked when no Storm exists
+        const _curTarget = (nsLabel || '').toLowerCase();
+        const _curMe = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        const _curGid = _curTarget && _curMe ? `thunder-${[_curMe, _curTarget].sort().join('-')}` : '';
+        if (_curGid && _stormExistsCache[_curGid] === false) {
+          if (!_curTarget) return;
+          const ws = getState();
+          if (!ws.address) { showToast('Connect wallet first'); return; }
+          if (sendBtn) { sendBtn.innerHTML = '\u26c8\ufe0f\u2026'; sendBtn.disabled = true; }
+          try {
+            const { createStorm, lookupRecipientAddress } = await import('./client/thunder.js');
+            const recipAddr = await lookupRecipientAddress(_curTarget);
+            const stormTx = createStorm({ name: _curGid, members: recipAddr ? [recipAddr] : [] });
+            showToast(`\u26c8\ufe0f Creating Storm between ${_curMe} and ${_curTarget} \u2014 sign to confirm`);
+            await signAndExecuteTransaction(stormTx);
+            _stormExistsCache[_curGid] = true;
+            showToast(`\u26c8\ufe0f Storm created with ${_curTarget}.sui`);
+            _updateIdleStatus();
+            _renderThunderComposePreview();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          } finally {
+            if (sendBtn) sendBtn.disabled = false;
+            _renderThunderComposePreview();
+          }
+          return;
+        }
+
+        // Quest mode: decrypt pending signals across all owned names
         if (sendBtn?.dataset.questMode === '1') {
           sendBtn.innerHTML = '\u2026';
           sendBtn.disabled = true;

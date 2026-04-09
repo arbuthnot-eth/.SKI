@@ -1,0 +1,55 @@
+{
+  "name": "suiami",
+  "version": "0.1.0",
+  "description": "SUIAMI — SUI-Authenticated Message Identity. Cryptographic proof that a wallet owner controls a SuiNS name with cross-chain address attestation.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./verify": {
+      "import": "./dist/verify.js",
+      "types": "./dist/verify.d.ts"
+    },
+    "./roster": {
+      "import": "./dist/roster.js",
+      "types": "./dist/roster.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "contracts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "sui",
+    "suins",
+    "identity",
+    "proof",
+    "cross-chain",
+    "ika",
+    "dwallet",
+    "seal",
+    "walrus"
+  ],
+  "author": "brando.sui",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arbuthnot-eth/.SKI",
+    "directory": "packages/suiami"
+  },
+  "peerDependencies": {
+    "@noble/hashes": ">=1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

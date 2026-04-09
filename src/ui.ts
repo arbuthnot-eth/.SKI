@@ -9598,7 +9598,7 @@ function bindEvents() {
 
       // @ button — insert @tag and focus thunder input for autocomplete
       // Reads from card name first (authoritative), then falls back to input
-      _idleOverlay.querySelector('#ski-idle-thunder-at')?.addEventListener('click', (e) => {
+      _idleOverlay.querySelector('#ski-idle-thunder-at')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         const rosterPanel = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
         if (!rosterPanel) return;
@@ -9610,38 +9610,50 @@ function bindEvents() {
           return;
         }
 
-        // Build roster from owned names + thunder contacts
+        // Fetch the TARGET name's roster (their address's owned SuiNS names)
         _freezeGif();
-        const names: string[] = [];
-        const ownedSet = new Set<string>();
+        const targetAddr = nsTargetAddress || nsNftOwner || '';
+        rosterPanel.innerHTML = '<div class="ski-idle-roster-empty" style="opacity:0.4">\u2026</div>';
+        rosterPanel.removeAttribute('hidden');
+
+        let targetNames: Array<{ name: string; kind: string }> = [];
+        if (targetAddr) {
+          try {
+            const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ query: `{ address(address: "${targetAddr}") { suinsRegistrations { nodes { domain } } } }` }),
+            });
+            const gql = await res.json() as any;
+            const nodes = gql?.data?.address?.suinsRegistrations?.nodes ?? [];
+            for (const n of nodes) {
+              const bare = (n.domain || '').replace(/\.sui$/, '').toLowerCase();
+              if (bare) targetNames.push({ name: bare, kind: bare.length <= 4 ? 'short' : 'normal' });
+            }
+          } catch {}
+        }
+
+        // Also add connected wallet's owned names
+        const myNames: Array<{ name: string; kind: string }> = [];
         for (const d of nsOwnedDomains) {
           const bare = d.name.replace(/\.sui$/, '').toLowerCase();
-          if (bare) ownedSet.add(bare);
+          if (bare) myNames.push({ name: bare, kind: 'owned' });
         }
-        // Add contacts from thunder conversation history (names we've talked to)
-        const contactKey = `ski:thunder-contacts:${getState().address}`;
-        try {
-          const stored = localStorage.getItem(contactKey);
-          if (stored) {
-            const contacts = JSON.parse(stored) as string[];
-            for (const c of contacts) {
-              if (c && !ownedSet.has(c)) names.push(c);
-            }
-          }
-        } catch {}
-        // Add owned names at the end
-        for (const n of ownedSet) names.push(n);
 
-        if (names.length === 0) {
-          rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No contacts yet</div>';
+        const allNames = [...targetNames, ...myNames];
+        if (allNames.length === 0) {
+          rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No names found</div>';
         } else {
-          rosterPanel.innerHTML = names.map(n => {
-            const isOwned = ownedSet.has(n);
-            const cls = isOwned ? 'ski-idle-roster-item--owned' : '';
-            return `<button class="ski-idle-roster-item ${cls}" data-name="${esc(n)}" type="button">${esc(n)}<span class="ski-idle-roster-tld">.sui</span></button>`;
+          rosterPanel.innerHTML = allNames.map(({ name, kind }) => {
+            // Assign shape by name characteristics
+            const variant: SkiDotVariant = kind === 'owned' ? 'blue-square'
+              : kind === 'short' ? 'orange-triangle'
+              : 'green-circle';
+            const shape = _shapeOnlySvg(variant, 16);
+            const cls = kind === 'owned' ? 'ski-idle-roster-item--owned' : '';
+            return `<button class="ski-idle-roster-item ${cls}" data-name="${esc(name)}" type="button">${shape} ${esc(name)}<span class="ski-idle-roster-tld">.sui</span></button>`;
           }).join('');
         }
-        rosterPanel.removeAttribute('hidden');
 
         // Click a name → insert @name in thunder input
         rosterPanel.querySelectorAll('.ski-idle-roster-item').forEach(btn => {

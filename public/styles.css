@@ -2964,17 +2964,21 @@ body {
 }
 .ski-idle-roster-panel[hidden] { display: none; }
 .ski-idle-roster-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 12px;
   color: #e2e8f0;
   font-size: 0.82rem;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 4px 10px 4px 6px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
   white-space: nowrap;
 }
+.ski-idle-roster-item svg { flex-shrink: 0; }
 .ski-idle-roster-item:hover {
   background: rgba(255, 184, 0, 0.15);
   border-color: rgba(255, 184, 0, 0.4);

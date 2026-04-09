@@ -260,11 +260,37 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. SUI transfer (direct for now — IOU initiate requires existing StormID)
-    // TODO: Once Storm exists, use thunder_iou::iou::initiate for escrow+TTL (#73)
+    // 1. Transfer — direct if creating Storm (can't &mut shared in same PTB),
+    //    IOU initiate if Storm already exists (escrow + 7-day TTL)
     if (hasTransfer) {
-      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-      tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
+      if (needsStorm) {
+        // Direct transfer — Storm not available as &mut yet
+        const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+        tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
+      } else {
+        // IOU initiate — Storm exists, use on-chain escrow with TTL
+        const [iouCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+        const senderBare = (opts.senderName || '') + '.sui';
+        const recipBare = (opts.recipientName || '') + '.sui';
+        const senderHash = Array.from(keccak_256(new TextEncoder().encode(senderBare)));
+        const recipHash = Array.from(keccak_256(new TextEncoder().encode(recipBare)));
+        const { groupId: stormObjectId } = client.messaging.derive.resolveGroupRef(opts.groupRef);
+        tx.moveCall({
+          package: IOU_PACKAGE,
+          module: 'iou',
+          function: 'initiate',
+          arguments: [
+            tx.object(stormObjectId),
+            tx.pure.vector('u8', senderHash),
+            tx.pure.vector('u8', recipHash),
+            iouCoin,
+            tx.pure.u64(604_800_000), // 7 day TTL
+            tx.pure.u64(Date.now()),  // nonce
+            tx.pure.vector('u8', []), // sealed_memo
+            tx.object('0x6'),         // Clock
+          ],
+        });
+      }
     }
 
     // 2. Storm creation (if no on-chain Storm exists)

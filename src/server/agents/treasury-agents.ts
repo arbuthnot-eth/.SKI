@@ -2950,7 +2950,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
                     const recipName = kaminoMatch.suinsName.replace(/\.sui$/i, '');
                     const msg = `⚡ OpenCLOB fill: ${(lamports / 1e9).toFixed(2)} SOL → Kamino ${kaminoMatch.strategy} → $${iusdValue.toFixed(2)} iUSD minted to your wallet.${kaminoDigest ? ` Kamino tx: ${kaminoDigest.slice(0, 12)}…` : ''}`;
                     // Send via Timestream DO directly (server-side, no SDK — just store encrypted signal)
-                    const groupId = `thunder-ultron-${recipName}`;
+                    const groupId = `thunder-${['ultron', recipName].sort().join('-')}`;
                     await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
                       method: 'POST',
                       headers: { 'content-type': 'application/json' },
@@ -4426,7 +4426,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // Send welcome Thunder to the new name — announces their chain addresses
       try {
         const welcomeMsg = `\ud83e\udd91 Rumble squids provisioned! btc@${bare} eth@${bare} sol@${bare} — your chain addresses are live. Rumble yourself to take full custody.`;
-        const groupId = `thunder-ultron-${bare}`;
+        const groupId = `thunder-${['ultron', bare].sort().join('-')}`;
         await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

@@ -64,16 +64,16 @@ function getAddress(): string {
 
 // ─── AES-256-GCM ───────────────────────────────────────────────────
 
-async function deriveKey(groupId: string, address: string): Promise<CryptoKey> {
-  // Deterministic key from groupId + address — both parties derive the same key
-  // This is symmetric: both sender and recipient in the group can encrypt/decrypt
-  const material = new TextEncoder().encode(`thunder:${groupId}:${address}`);
+async function deriveKey(groupId: string): Promise<CryptoKey> {
+  // Deterministic key from groupId — both parties in the conversation derive the same key
+  // groupId format: thunder-{sender}-{recipient} (names are sorted for consistency)
+  const material = new TextEncoder().encode(`thunder:${groupId}`);
   const hash = await crypto.subtle.digest('SHA-256', material);
   return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
 async function encrypt(text: string, groupId: string): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array }> {
-  const key = await deriveKey(groupId, getAddress());
+  const key = await deriveKey(groupId);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const data = new TextEncoder().encode(text);
   const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, data));
@@ -81,7 +81,7 @@ async function encrypt(text: string, groupId: string): Promise<{ ciphertext: Uin
 }
 
 async function decrypt(ciphertext: Uint8Array, nonce: Uint8Array, groupId: string): Promise<string> {
-  const key = await deriveKey(groupId, getAddress());
+  const key = await deriveKey(groupId);
   const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, key, ciphertext);
   return new TextDecoder().decode(decrypted);
 }

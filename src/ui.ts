@@ -3650,7 +3650,7 @@ async function _renderConversation(counterparty: string, force = false) {
           try {
             await sendThunder({
 
-              groupRef: { uuid: `${myName}-${senderName}` },
+              groupRef: { uuid: `thunder-${[myName, senderName].sort().join('-')}` },
               text: `\u2713 read by ${myName}.sui`,
             });
           } catch { /* receipt best-effort, may fail if no group exists yet */ }
@@ -7579,7 +7579,7 @@ function renderSkiMenu() {
       const _logName = senderName || ws.address;
       let _txOk = false;
       try {
-        const groupUuid = `thunder-${senderName}-${recipientName}`;
+        const groupUuid = `thunder-${[senderName, recipientName].sort().join('-')}`;
         await sendThunder({
   
           groupRef: { uuid: groupUuid },
@@ -11177,7 +11177,7 @@ function bindEvents() {
                 transfer = { recipientAddress: recipAddr, amountMist };
               }
               if (_cancelled) break;
-              const groupUuid = `thunder-${senderName}-${recip}`;
+              const groupUuid = `thunder-${[senderName, recip].sort().join('-')}`;
               await sendThunder({
   
                 groupRef: { uuid: groupUuid },

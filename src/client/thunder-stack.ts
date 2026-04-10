@@ -29,9 +29,9 @@ const IOU_PACKAGE = '0x05b21b79f0fe052f685e4eee049ded3394f71d8384278c23d60532be3
 export const GLOBAL_SUIAMI_STORM = '0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8';
 export const GLOBAL_SUIAMI_STORM_UUID = 'suiami-global';
 
-// Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
-// Mainnet Seal key servers (free, open mode, 2-of-3 threshold)
-// NodeInfra excluded — broken CORS (sends duplicate Access-Control-Allow-Origin: *, *)
+// Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
+// Overclock, Studio Mirai, H2O Nodes.
+// NodeInfra excluded — broken CORS (duplicate Access-Control-Allow-Origin: *, *)
 const SEAL_SERVERS = [
   { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
   { objectId: '0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10', weight: 1 }, // Studio Mirai
@@ -81,7 +81,7 @@ export function initThunderClient(opts: ThunderClientOptions) {
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
   _client = createSuiStackMessagingClient(gqlClient as any, {
-    seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: false },
+    seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
       sessionKey: {
         address: opts.address,
@@ -262,8 +262,7 @@ export async function sendThunder(opts: {
 
   // ─── Build single PTB: transfer + Storm + SUIAMI roster ──────
   // One signature covers everything
-  if (hasTransfer || needsStorm) {
-    if (!opts.signAndExecute) throw new Error('signAndExecute required for transfers and Storm creation');
+  if ((hasTransfer || needsStorm) && opts.signAndExecute) {
 
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
@@ -322,20 +321,37 @@ export async function sendThunder(opts: {
 
     if (needsStorm) {
       await new Promise(r => setTimeout(r, 2000));
+      // Add both participants to the DO
+      try {
+        await fetch(`/api/timestream/${encodeURIComponent(groupId)}/add-participant`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ address: _address }),
+        });
+        if (opts.recipientAddress) {
+          await fetch(`/api/timestream/${encodeURIComponent(groupId)}/add-participant`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ address: opts.recipientAddress, addedBy: _address }),
+          });
+        }
+      } catch {}
     }
 
-    // Record the transfer as a private Thunder in the Timestream DO
+    // Record the transfer as a private Thunder in the Timestream DO.
+    // Route through Seal envelope encryption — the amount is sensitive
+    // metadata and must never hit the DO in cleartext.
     if (hasTransfer) {
       const amtLabel = opts.text.match(/\$(\d+(?:\.\d{0,2})?)/)?.[1] || (Number(opts.transfer!.amountMist) / 1e9).toFixed(2);
       const transferNote = `\u26a1 $${amtLabel} sent`;
+      const noteBytes = new TextEncoder().encode(transferNote);
+      const noteEnv = await encryptWithRetry(groupId, noteBytes);
       await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           groupId,
-          encryptedText: btoa(transferNote),
-          nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
-          keyVersion: '0',
+          encryptedText: toB64(noteEnv.ciphertext),
+          nonce: toB64(noteEnv.nonce),
+          keyVersion: noteEnv.keyVersion.toString(),
           senderAddress: _address,
         }),
       });
@@ -350,25 +366,110 @@ export async function sendThunder(opts: {
     }
   }
 
-  // ─── Seal-encrypted message (Storm must exist by now) ─────────
-  return client.messaging.sendMessage({
-    signer: _signer!,
-    groupRef: opts.groupRef,
-    text: opts.text,
+  // ─── Seal-encrypt + send via Timestream DO (free, no on-chain tx) ───
+  // NO plaintext fallback. If encryption fails, the send fails — we will
+  // never store cleartext in the DO labeled as ciphertext.
+  const msgBytes = new TextEncoder().encode(opts.text);
+  const envelope = await encryptWithRetry(groupId, msgBytes);
+  await fetch(`/api/timestream/${encodeURIComponent(groupId)}/send`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      groupId,
+      encryptedText: toB64(envelope.ciphertext),
+      nonce: toB64(envelope.nonce),
+      keyVersion: envelope.keyVersion.toString(),
+      senderAddress: _address,
+    }),
   });
+  return { messageId: `msg-${Date.now()}` };
 }
 
 /**
- * Fetch and decrypt messages from a Timestream.
- * SDK handles: Seal decryption via key server dry-run.
+ * Envelope-encrypt with a bounded retry. Storm creation in the same PTB
+ * may race the on-chain key-version becoming queryable; retry a few times
+ * before giving up. Never falls back to plaintext.
+ */
+async function encryptWithRetry(
+  groupId: string,
+  data: Uint8Array,
+): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; keyVersion: bigint }> {
+  const client = getThunderClient();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await client.messaging.encryption.encrypt({ uuid: groupId, data });
+    } catch (err) {
+      lastErr = err;
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  throw new Error(`Thunder encrypt failed after 5 attempts: ${String(lastErr)}`);
+}
+
+/**
+ * Fetch messages from a Timestream DO.
+ * Reads directly from the DO — messages are stored as base64 text.
+ * Falls back to SDK's Seal-decrypt path for legacy encrypted messages.
  */
 export async function getThunders(opts: {
   groupRef: GroupRef;
   afterOrder?: number;
   limit?: number;
 }): Promise<{ messages: ThunderMessage[]; hasNext: boolean }> {
+  const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
+
+  // Direct DO fetch + Seal decrypt
   const client = getThunderClient();
-  const result = await client.messaging.getMessages({
+  try {
+    const res = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        afterOrder: opts.afterOrder,
+        limit: opts.limit,
+        address: _address,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json() as { messages: any[]; hasNext: boolean };
+      const messages: ThunderMessage[] = [];
+      for (const m of data.messages) {
+        let text = '';
+        const ciphertext = fromB64(m.encryptedText);
+        const nonce = fromB64(m.nonce || '');
+        const kv = BigInt(m.keyVersion || '0');
+        try {
+          // Try Seal decryption first
+          const plaintext = await client.messaging.encryption.decrypt({
+            uuid: groupId,
+            envelope: { ciphertext, nonce, keyVersion: kv },
+          });
+          text = new TextDecoder().decode(plaintext);
+        } catch {
+          // Fallback: treat as plaintext (legacy or unencrypted messages)
+          try { text = new TextDecoder().decode(ciphertext); } catch { text = m.encryptedText || ''; }
+        }
+        messages.push({
+          messageId: m.messageId || m.id || `msg-${m.order}`,
+          groupId,
+          order: m.order ?? 0,
+          text,
+          senderAddress: m.senderAddress || '',
+          createdAt: m.timestamp ?? m.createdAt ?? Date.now(),
+          updatedAt: m.timestamp ?? m.updatedAt ?? Date.now(),
+          isEdited: false,
+          isDeleted: false,
+          senderVerified: false,
+        });
+      }
+      return { messages, hasNext: data.hasNext ?? false };
+    }
+  } catch {}
+
+  // Fallback: SDK path with Seal decryption
+  const client2 = getThunderClient();
+  const result = await client2.messaging.getMessages({
     signer: _signer!,
     groupRef: opts.groupRef,
     afterOrder: opts.afterOrder,

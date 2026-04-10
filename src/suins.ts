@@ -1431,6 +1431,7 @@ export async function buildKioskPurchaseTx(
   sellerKioskId: string,
   nftId: string,
   priceMist: string,
+  domainName?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1461,6 +1462,14 @@ export async function buildKioskPurchaseTx(
       transferRequest,
     ],
   });
+
+  // Set target address + default in the same PTB (single sign)
+  if (domainName) {
+    const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    suinsTx.setTargetAddress({ nft, address: walletAddress });
+    suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
+  }
 
   // Transfer NFT directly to buyer (SuiNS needs AddressOwner, not kiosk)
   tx.transferObjects([nft], tx.pure.address(walletAddress));
@@ -1508,6 +1517,8 @@ export async function buildTradeportPurchaseTx(
   rawAddress: string,
   nftTokenId: string,
   priceMist: string,
+  /** If provided, setTargetAddress + setDefault in the same PTB */
+  domainName?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1530,7 +1541,7 @@ export async function buildTradeportPurchaseTx(
     tx.setSender(walletAddress);
     // Tradeport buy expects EXACTLY the listing price — commission is deducted from seller's portion
     const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
-    tx.moveCall({
+    const nft = tx.moveCall({
       target: `${v.pkg}::${v.fn}`,
       typeArguments: [SUINS_REG_TYPE],
       arguments: [
@@ -1541,6 +1552,14 @@ export async function buildTradeportPurchaseTx(
     });
     // buy consumes the entire coin — destroy the zero remainder
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
+    // Set target address + default in the same PTB (single sign)
+    if (domainName) {
+      const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+      const suinsTx = new SuinsTransaction(suinsClient, tx);
+      suinsTx.setTargetAddress({ nft, address: walletAddress });
+      suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
+    }
+    tx.transferObjects([nft], tx.pure.address(walletAddress));
     return buildWithTx(tx, transport);
   });
 

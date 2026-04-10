@@ -12179,6 +12179,17 @@ function bindEvents() {
       // Idle background videos — user-cyclable list. Click the video to swap
       // to the next one; choice is persisted in localStorage. New videos can
       // be added by appending to IDLE_BACKGROUNDS without any other changes.
+      // Drop stale caches from previous bundles (silent transcodes) so users
+      // don't keep playing an audioless copy after we ship an audio version.
+      if ('caches' in self) {
+        caches.keys().then(keys => {
+          for (const k of keys) {
+            if (k.startsWith('ski-media-') && k !== 'ski-media-v3') {
+              caches.delete(k).catch(() => {});
+            }
+          }
+        }).catch(() => {});
+      }
       const _idleVideo = _idleOverlay.querySelector('video.ski-idle-img') as HTMLVideoElement | null;
       const IDLE_BACKGROUNDS: Array<{ id: string; webm: string; mp4: string; label: string }> = [
         { id: 'basmr',    webm: '/assets/basmr.webm',    mp4: '/assets/basmr.mp4',    label: 'BASMR' },
@@ -12188,7 +12199,7 @@ function bindEvents() {
         if (!_idleVideo) return;
         if ('caches' in self) {
           try {
-            const cache = await caches.open('ski-media-v2');
+            const cache = await caches.open('ski-media-v3');
             const cached = await cache.match(bg.webm);
             if (cached) {
               const blob = await cached.blob();
@@ -12258,14 +12269,19 @@ function bindEvents() {
       _audioToggle.title = 'Toggle background audio';
       _audioToggle.textContent = '\u{1F507}';
       _idleOverlay?.appendChild(_audioToggle);
-      _audioToggle.addEventListener('click', (ev) => {
+      _audioToggle.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!_idleVideo) return;
         const nextMuted = !_idleVideo.muted;
         _setMuted(nextMuted);
         _userPrefersAudio = !nextMuted;
         try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
-        if (!nextMuted) _idleVideo.play().catch(() => {});
+        if (!nextMuted) {
+          // Resume playback from current position under user gesture — browsers
+          // require .play() to be called inside a handler to lift the autoplay
+          // mute gate. Catch + ignore if the browser still blocks.
+          try { await _idleVideo.play(); } catch {}
+        }
       });
 
       // Click the video to cycle to the next background.

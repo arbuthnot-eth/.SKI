@@ -11757,7 +11757,7 @@ function bindEvents() {
           convoEl.insertBefore(_sent, convoEl.querySelector('.ski-convo-reply'));
           convoEl.scrollTop = convoEl.scrollHeight;
           try {
-            const { sendThunder } = await import('./client/thunder.js');
+            const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
             const recipAddr = await lookupRecipientAddress(bare);
             const _cacheSaysExists = _stormExistsCache[groupId] === true;
             await sendThunder({

@@ -15,11 +15,9 @@ import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { DappKitSigner, type SignPersonalMessageFn } from './dapp-kit-signer.js';
-import { keccak_256 } from '@noble/hashes/sha3.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
 const GQL_URL = 'https://graphql.mainnet.sui.io/graphql';
-const IOU_PACKAGE = '0x05b21b79f0fe052f685e4eee049ded3394f71d8384278c23d60532be3f04535f';
 
 /**
  * Global SUIAMI Storm — public identity directory. Anyone with a SuiNS name can join.
@@ -297,37 +295,14 @@ export async function sendThunder(opts: {
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(_address));
 
-    // 1. Transfer
+    // 1. Transfer — always a direct SUI transfer (splitCoins → transferObjects).
+    // The iou::initiate escrow path was aspirational code that never shipped:
+    // the Move function is declared PRIVATE (not callable from a PTB) and its
+    // first parameter is &mut UID, not a PermissionedGroup. Calling it surfaced
+    // as "Unexpected error" for every $ send on an existing Storm.
     if (hasTransfer) {
-      if (needsStorm) {
-        // Storm initiation (first contact) — direct transfer + Storm creation
-        // Can't call iou::initiate on a shared object in the same PTB that shares it
-        const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-        tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
-      } else {
-        // iOUSD object — private on-chain escrow on existing Storm (7-day TTL)
-        const [iouCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
-        const senderBare = (opts.senderName || '') + '.sui';
-        const recipBare = (opts.recipientName || '') + '.sui';
-        const senderHash = Array.from(keccak_256(new TextEncoder().encode(senderBare)));
-        const recipHash = Array.from(keccak_256(new TextEncoder().encode(recipBare)));
-        const { groupId: stormObjectId } = client.messaging.derive.resolveGroupRef(opts.groupRef);
-        tx.moveCall({
-          package: IOU_PACKAGE,
-          module: 'iou',
-          function: 'initiate',
-          arguments: [
-            tx.object(stormObjectId),
-            tx.pure.vector('u8', senderHash),
-            tx.pure.vector('u8', recipHash),
-            iouCoin,
-            tx.pure.u64(604_800_000), // 7 day TTL
-            tx.pure.u64(Date.now()),  // nonce
-            tx.pure.vector('u8', []), // sealed_memo
-            tx.object('0x6'),         // Clock
-          ],
-        });
-      }
+      const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(opts.transfer!.amountMist)]);
+      tx.transferObjects([coin], tx.pure.address(normalizeSuiAddress(opts.transfer!.recipientAddress)));
     }
 
     // 2. Storm creation (if no on-chain Storm exists)

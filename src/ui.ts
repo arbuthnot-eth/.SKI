@@ -11357,11 +11357,23 @@ function bindEvents() {
           return;
         }
 
-        const raw = _idleThunderInput?.value.trim() || '';
+        let raw = _idleThunderInput?.value.trim() || '';
         if (!raw) return;
         const ws = getState();
         if (!ws.address) return;
         try {
+          // If an open-storm convo already targets a specific counterparty
+          // and the user's text has no @tag, prepend the counterparty as the
+          // implicit recipient. This lets users type bare messages inside an
+          // open storm without repeating @name on every line.
+          const _openStormTarget = (() => {
+            const convoOpen = _idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])');
+            if (!convoOpen) return '';
+            return (nsLabel || '').replace(/\.sui$/, '').toLowerCase();
+          })();
+          if (_openStormTarget && !/(?:^|[^a-z0-9_-])@[a-z0-9-]{3,63}/i.test(raw)) {
+            raw = `@${_openStormTarget} ${raw}`;
+          }
           const draft = _parseThunderCompose(raw);
           if (!draft || draft.error || draft.recipients.length === 0) {
             _thunderComposeConfirmedRaw = '';
@@ -11475,10 +11487,10 @@ function bindEvents() {
               _renderThunderComposePreview();
               return;
             }
-            // Success: keep @tag, clear message + amount
+            // Success: clear the input completely. The open storm context
+            // takes care of routing follow-up messages to the same recipient.
             if (_idleThunderInput) {
-              const _keepTag = recipients[0] ? `@${recipients[0]} ` : '';
-              _idleThunderInput.value = _keepTag;
+              _idleThunderInput.value = '';
             }
             const names = recipients.join(', ');
             if (transferAmtUsd) {

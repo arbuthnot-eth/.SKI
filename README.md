@@ -34,7 +34,7 @@ One number carries the instruction. No metadata leaks.
 - **Tradeport** — SuiNS marketplace listing proxy (`/api/tradeport/listing/:label`)
 - **Walrus** — Seal-encrypted blob storage for Thunder ciphertext, Shade payloads, quilted batch writes
 - **Solana/Helius** — Webhook-driven deposit watchers, SPL token resolution, Jupiter routing
-- **Seal** — 2-of-3 threshold encryption (Overclock, NodeInfra, Studio Mirai key servers)
+- **Seal** — 2-of-3 threshold encryption (Overclock, Studio Mirai, H2O Nodes key servers)
 - **IKA dWallets** — Native cross-chain signing, batch DKG, DWalletCap wrappers
 
 ---
@@ -111,22 +111,26 @@ Dropdown with SuiNS name management, marketplace purchase (Tradeport/kiosk), Sha
 
 ---
 
-## Thunder — Encrypt Signals
+## Thunder — Seal-Encrypted Messaging
 
-On-chain encrypt messaging between SuiNS identities. Powered by [Seal](https://docs.mystenlabs.com/seal) threshold encryption (2-of-3 key servers) with ciphertext on [Walrus](https://walrus.xyz).
+Thunder is a thin wrapper around [`@mysten/sui-stack-messaging`](https://github.com/MystenLabs/sui-stack-messaging) with a custom Cloudflare Durable Object relayer (`TimestreamAgent`).
 
-- **Signal** — encrypt a message to any `.sui` name; only the NFT owner can decrypt
-- **Quest** — claim and decrypt signals, NFT-gated via Seal policies
-- **Strike** — delete signals on-chain, routing storage rebates to cache
-- **@tags** — mention SuiNS names with autocomplete from roster
+- **Encryption** — Seal 2-of-3 threshold DEK + AES-GCM envelope. Relayer never sees plaintext. Key servers verified on first encrypt (`verifyKeyServers: true`).
+- **Transport** — `TimestreamAgent` DO, one instance per `groupId`, speaks HTTP to `/api/timestream/:groupId/:action` (`send`, `fetch`, `fetch-one`, `update`, `delete`, `add-participant`).
+- **Identity** — SuiNS names (`alice.sui`) resolved via SuinsClient to target address / NFT owner.
+- **Storm** — on-chain `PermissionedGroup<Messaging>` (upstream Move package) anchors key-version history and membership; messages live off-chain in the DO.
+- **Global SUIAMI Storm** — `0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8` (uuid `suiami-global`), public identity directory. Joining is a public act by design.
+- **Seal servers** — Overclock, Studio Mirai, H2O Nodes (mainnet, open/free). 2-of-3 threshold.
 
-**Move contract (v4):** `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581`
+### Privacy Phase 1 (2026-04-10)
 
-## Storm v1
+- **No plaintext fallback** — `encryptWithRetry` retries up to 5× and fails the send rather than storing cleartext. Transfer notes also encrypted.
+- **Message padding** — plaintext padded to fixed buckets `[256, 1024, 4096, 16384]` bytes before Seal, killing the ciphertext-length side channel.
+- **Timestamp jitter** — DO rounds `createdAt`/`updatedAt` to 10s buckets + ±5s noise on ingest. Monotonic `order` preserves UI sort.
+- **Sender index on the wire** — new messages store `senderIndex` (position in the DO's participant list) instead of the raw Sui address. A dump of `messages` no longer reveals who authored what.
+- **Attachment guard** — DO rejects `attachments: [...]` at the send boundary; our transport does not round-trip them, and silently accepting would leak blob IDs outside the Seal envelope.
 
-Permissionless on-chain messaging primitive used by Thunder v5. No fees, no admin keys, no NFT gates. ECDH-derived storm_id hides who talks to whom.
-
-**Package:** `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942`
+Remaining Phase 2 items (sealed sender, non-derivable group IDs, encrypted membership) are deferred — see `docs/superpowers/specs/2026-04-10-thunder-privacy-audit-and-roadmap.md`.
 
 ## SUIAMI
 
@@ -211,15 +215,16 @@ Keeper wallet for all server-side signing: iUSD minting, Shade execution, Thunde
 
 ## Deployed Contracts
 
-| Contract | Package |
-|----------|---------|
+| Contract | Package / Object |
+|----------|------------------|
 | iUSD v2 | `0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9` |
-| SUIAMI Roster v2 | `0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4` |
-| SUIAMI Reciprocal Roster | `0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa` |
-| Storm v1 | `0xa3ed4fdf1369313647efcef77fd577aa4b77b50c62e5c5e29d4c383390cdf942` |
-| Thunder v4 | `0xb16f344c9f778be79d81ad3b3bd799476681d339a099ff9acaf2b7ea9e5d9581` |
+| SUIAMI Roster v3 (reciprocal) | `0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa` |
+| SUIAMI Roster object | `0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d` |
+| Global SUIAMI Storm | `0xfe23aad02ff15935b09249b4c5369bcd85f02ce157f54f94a3e7cc6dfa10a6e8` |
 | Shade | `0xfcd0b2b4f69758cd3ed0d35a55335417cac6304017c3c5d9a5aaff75c367aaff` |
 | Ignite | `0x66a44a869fe8ea7354620f7c356514efc30490679aa5cb24b453480e97790677` |
+
+Thunder uses the upstream [`@mysten/sui-stack-messaging`](https://github.com/MystenLabs/sui-stack-messaging) Move package; no custom Thunder or Storm contract. An earlier hybrid-stack package (`0xa3ed4fdf...cdf942`) was published but never wired into the client and has been stripped from the source tree.
 
 ---
 
@@ -379,6 +384,7 @@ bun run build && npx wrangler deploy
 | `ShadeExecutorAgent` | Auto-executes Shade orders at grace expiry |
 | `TreasuryAgents` | ultron.sui — iUSD minting, collateral, NS acquisition, Thunder relay |
 | `Chronicom` | Per-wallet thunder signal watcher with cached counts |
+| `TimestreamAgent` | Per-group Thunder message storage (Seal-encrypted, one DO per `groupId`) |
 
 ### API Routes
 
@@ -387,17 +393,18 @@ bun run build && npx wrangler deploy
 | `/agents/*` | WebSocket upgrade for DO agents |
 | `/api/health` | Health check |
 | `/api/shade/*` | Shade order management |
-| `/api/suiami/verify` | SUIAMI proof verification |
-| `/api/thunder/strike-relay` | Server-side Thunder relay for WaaP wallets |
-| `/api/tradeport/listing/:label` | Tradeport listing proxy |
+| `/api/suiami/verify` | SUIAMI proof verification (GraphQL-backed) |
+| `/api/timestream/:groupId/:action` | Thunder transport — Seal-encrypted message DO (`send`/`fetch`/`fetch-one`/`update`/`delete`/`add-participant`) |
 | `/api/thunder/chronicom` | Per-wallet signal count cache |
+| `/api/tradeport/listing/:label` | Tradeport listing proxy |
 
 ---
 
 ## Stack
 
-- `@mysten/sui` ^2.13.0, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` 1.2.4, `@ika.xyz/sdk` 0.3.1
-- Encryption: `@mysten/seal` ^1.1.1 (2-of-3 threshold key servers)
+- `@mysten/sui` ^2.13.0, `@mysten/suins` ^1.0.2, `@human.tech/waap-sdk` 1.3.0, `@ika.xyz/sdk` 0.3.1
+- Messaging: `@mysten/sui-stack-messaging` ^0.0.2, `@mysten/sui-groups` ^0.0.1 (Thunder)
+- Encryption: `@mysten/seal` ^1.1.1 (2-of-3 threshold — Overclock, Studio Mirai, H2O Nodes)
 - Storage: `@mysten/walrus` ^1.1.0 (blobs + quilted batch writes)
 - Solana: Helius (RPC + webhook deposit watchers), Jupiter (routing), Kamino (lending)
 - DEX: `aftermath-ts-sdk` (aggregation), DeepBook v3, Bluefin CLMM, Cetus CLMM

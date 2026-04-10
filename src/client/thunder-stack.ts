@@ -350,7 +350,10 @@ export async function sendThunder(opts: {
     await opts.signAndExecute(tx);
 
     if (needsStorm) {
-      await new Promise(r => setTimeout(r, 2000));
+      // The freshly-shared PermissionedGroup object needs to propagate to
+      // the fullnode the Seal SDK reads from. 4s here absorbs most of the
+      // lag; encryptWithRetry below has an additional ~20s retry window.
+      await new Promise(r => setTimeout(r, 4000));
       // Add both participants to the DO
       try {
         await fetch(`/api/timestream/${encodeURIComponent(groupId)}/add-participant`, {
@@ -417,24 +420,32 @@ export async function sendThunder(opts: {
 
 /**
  * Envelope-encrypt with a bounded retry. Storm creation in the same PTB
- * may race the on-chain key-version becoming queryable; retry a few times
- * before giving up. Never falls back to plaintext.
+ * may race the on-chain key-version becoming queryable — the fullnode
+ * read for the freshly-shared `PermissionedGroup` object can lag the
+ * tx by several seconds. Retry for up to ~20s before giving up.
+ * Never falls back to plaintext.
  */
 async function encryptWithRetry(
   groupId: string,
   data: Uint8Array,
 ): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array; keyVersion: bigint }> {
   const client = getThunderClient();
+  const delays = [500, 750, 1000, 1500, 2000, 2500, 3000, 3000, 3000, 3000]; // ~20s total
   let lastErr: unknown;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
       return await client.messaging.encryption.encrypt({ uuid: groupId, data });
     } catch (err) {
       lastErr = err;
-      await new Promise(r => setTimeout(r, 500));
+      if (attempt >= delays.length) break;
+      // Log first attempt failure so fresh-Storm races are visible in the console.
+      if (attempt === 0) {
+        try { console.warn(`[thunder] encrypt attempt 1 failed, retrying:`, err instanceof Error ? err.message : err); } catch {}
+      }
+      await new Promise(r => setTimeout(r, delays[attempt]));
     }
   }
-  throw new Error(`Thunder encrypt failed after 5 attempts: ${String(lastErr)}`);
+  throw new Error(`Thunder encrypt failed after ${delays.length + 1} attempts: ${String(lastErr)}`);
 }
 
 /**

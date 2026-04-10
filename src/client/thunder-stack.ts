@@ -91,7 +91,11 @@ let _address = '';
 // The SDK's `getSessionKey` mode lets us own the whole lifecycle. We memoize
 // the in-flight mint promise so concurrent encrypt/decrypt calls share one
 // signing round-trip instead of opening several wallet popups in parallel.
-const SESSION_KEY_TTL_MIN = 60;
+// Seal caps ttlMin at 30 minutes — can't set higher. Combined with
+// sessionStorage persistence this still gives "sign once per tab" UX
+// for the half-hour window; re-sign happens only on expiry or across
+// tab close.
+const SESSION_KEY_TTL_MIN = 30;
 const SESSION_STORAGE_KEY = (address: string) => `ski:seal-session:${address.toLowerCase()}`;
 let _sessionKeyPromise: Promise<SessionKey> | null = null;
 

@@ -10344,6 +10344,16 @@ function bindEvents() {
       _idleOverlay.querySelector('#ski-idle-iusd')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
+        // SAFETY: iUSD routing is disabled while the iUSD Treasury is
+        // undercollateralized. The Treasury reports senior=36, outstanding=133,
+        // so iusd::mint aborts with code 1 — any sweep that lands at the
+        // mint step would revert mid-flight and could leave funds at the
+        // intermediate swap stage. A user accidentally tapped the iUSD logo
+        // and almost paid 36 NS + 235 USDC into a tx that would have failed.
+        // Re-enable once the iUSD mint path is healthy.
+        showToast('iUSD routing temporarily disabled — Treasury collateral being repaired');
+        return;
+        // eslint-disable-next-line @typescript-eslint/no-unreachable
         const ws = getState();
         if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
@@ -12248,9 +12258,13 @@ function bindEvents() {
         if (!_idleVideo) return;
         _idleVideo.muted = muted;
         if (!muted) _idleVideo.volume = 1;
-        // Update the small overlay icon if present.
+        // Update the toggle's visual state.
         const icon = _idleOverlay?.querySelector('.ski-idle-audio-toggle') as HTMLElement | null;
-        if (icon) icon.textContent = muted ? '\u{1F507}' : '\u{1F50A}';
+        if (icon) {
+          icon.textContent = muted ? '\u{1F507}' : '\u{1F50A}';
+          icon.classList.toggle('ski-idle-audio-toggle--on', !muted);
+          icon.title = muted ? 'Unmute background audio' : 'Mute background audio';
+        }
       };
       const _tryUnmuteOnGesture = () => {
         if (!_userPrefersAudio || !_idleVideo) return;

@@ -3063,10 +3063,14 @@ function _renderProfileEl(el: HTMLElement) {
   // IKA status populated from on-chain query, not localStorage
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
+  // Squid 🦑 is always rendered so the layout doesn't jump. Dimmed + greyscale
+  // when the user has no IKA wallet yet — a visible-but-muted hint to Rumble.
+  const squidDim = app.ikaWalletId ? '' : ';opacity:0.35;filter:grayscale(1)';
+  const squidTitle = app.ikaWalletId ? 'Rumbled' : 'Rumble to provision cross-chain wallets';
   const innerHtml = `${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
-            <span class="wk-widget-primary-name">${esc(label)}<span style="display:inline-block;width:1.1em;text-align:center${app.ikaWalletId ? '' : ';visibility:hidden'}">\ud83e\udd91</span></span>
+            <span class="wk-widget-primary-name">${esc(label)}<span title="${squidTitle}" style="display:inline-block;width:1.1em;text-align:center${squidDim}">\ud83e\udd91</span></span>
           </span>
         </span>`;
 
@@ -11586,12 +11590,14 @@ function bindEvents() {
           }));
         } catch { /* fallback to empty */ }
 
-        if (!entries.length) {
-          // If the convo already has optimistic bubbles from a recent send,
-          // don't wipe them — a transient fetch failure (Seal session race,
-          // DO cold start) should never make a just-sent message disappear.
-          const hasExistingBubbles = convoEl.querySelectorAll('.ski-idle-bubble').length > 0;
-          if (hasExistingBubbles) return;
+        // Harvest any optimistic bubbles already in the DOM — a transient
+        // fetch failure (Seal session race, DO cold start) should never wipe
+        // a just-sent message, AND the header/progress bar must still render.
+        const existingBubbleHtml = Array.from(convoEl.querySelectorAll('.ski-idle-bubble'))
+          .map(b => b.outerHTML)
+          .join('');
+
+        if (!entries.length && !existingBubbleHtml) {
           convoEl.setAttribute('hidden', '');
           _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
           try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
@@ -11644,13 +11650,15 @@ function bindEvents() {
 
         const hasStorm = _stormExistsCache[groupId] === true;
         const stormLabel = hasStorm ? '\uD83D\uDD12' : '\u26c8\ufe0f'; // 🔒 if encrypted, ⛈️ if not
-        const bubbles = entries.slice(-20).map(m => {
+        const fetchedBubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
+        // If the fetch came back empty but we had optimistic bubbles, keep them.
+        const bubbles = fetchedBubbles || existingBubbleHtml;
         const progress = `<div class="ski-idle-convo-progress"><div class="ski-idle-convo-progress-fill"></div></div>`;
         // Identity header — two party cards (self + counterparty). Tap a card to
         // expand a QR popover encoding https://<name>.sui.ski. Proofs live in

@@ -10719,36 +10719,40 @@ function bindEvents() {
         showToast('\u26a1 Ignite — coming soon. Burn iUSD, get gas on any chain.');
       });
 
-      // Squid quick-action → toggle rumble panel or show cached squids rows
+      // Squid quick-action → toggle the cached squids rows. Never auto-fires
+      // the Rumble DKG flow — that needs its own explicit button + signature.
+      // Clicking the squid simply shows/hides the already-rendered addrRow,
+      // and closes any competing panels (storm convo, roster, rumble panel).
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', (e) => {
         const squid = (e.target as HTMLElement).closest('[data-action="rumble"]');
         if (!squid) return;
         e.stopPropagation();
         const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
-        // Close roster panel if open
-        const _rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
-        if (_rp && !_rp.hasAttribute('hidden')) { _rp.setAttribute('hidden', ''); }
-        // If rumble panel is open, close it
-        const convo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-        const panel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
-        if (panel && convo && !convo.hasAttribute('hidden')) {
-          convo.setAttribute('hidden', ''); convo.innerHTML = '';
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          _unfreezeGif();
-          return;
-        }
-        // If squids rows are open, close them
         const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
-        if (addrRow && !addrRow.hasAttribute('hidden')) {
-          addrRow.setAttribute('hidden', '');
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
-          _unfreezeGif();
-          return;
+        const convo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+        const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+
+        // Close competing panels whenever we interact with squids.
+        if (convo && !convo.hasAttribute('hidden')) { convo.setAttribute('hidden', ''); convo.innerHTML = ''; }
+        if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+        if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
+
+        if (addrRow) {
+          if (!addrRow.hasAttribute('hidden')) {
+            // Currently open → close
+            addrRow.setAttribute('hidden', '');
+            squidBtn?.classList.remove('ski-idle-quick-btn--active');
+            try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
+            _unfreezeGif();
+          } else {
+            // Currently closed → open (show whatever's already been rendered)
+            addrRow.removeAttribute('hidden');
+            squidBtn?.classList.add('ski-idle-quick-btn--active');
+            try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
+            _freezeGif();
+          }
         }
-        squidBtn?.classList.toggle('ski-idle-quick-btn--active');
-        try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
-        (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
       });
 
       // Storm-actions + send-group delegate same iusd/rumble handlers
@@ -11632,7 +11636,24 @@ function bindEvents() {
       let _convoPollTimer: ReturnType<typeof setInterval> | null = null;
       let _convoLastCount = 0;
 
+      // Storm is top-priority UI. When a convo opens, close every
+      // competing panel (squids addr row, roster, rumble provisioning
+      // panel) so the user's attention isn't split across stacked UIs.
+      const _closeCompetingPanels = () => {
+        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+        const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
+        if (addrRow && !addrRow.hasAttribute('hidden')) {
+          addrRow.setAttribute('hidden', '');
+          try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
+        }
+        if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+        if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
+        squidBtn?.classList.remove('ski-idle-quick-btn--active');
+      };
       async function _expandIdleConvo(counterparty: string) {
+        _closeCompetingPanels();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
 

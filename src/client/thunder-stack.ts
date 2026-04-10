@@ -497,6 +497,22 @@ export async function getThunders(opts: {
 }): Promise<{ messages: ThunderMessage[]; hasNext: boolean }> {
   const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
+  // Self-add to the DO participants list before fetching. The sender's
+  // sendThunder flow is supposed to add the recipient after Storm creation,
+  // but that hook runs inside try/catch and silently swallows failures —
+  // so recipients regularly miss the add. Self-adding on first fetch is
+  // the safety net. The DO's _handleAddParticipant accepts { address }
+  // with no addedBy (no cross-participant auth required for plain adds).
+  if (_address) {
+    try {
+      await fetch(`/api/timestream/${encodeURIComponent(groupId)}/add-participant`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: _address }),
+      });
+    } catch { /* best-effort — proceed to fetch regardless */ }
+  }
+
   // Direct DO fetch + Seal decrypt
   const client = getThunderClient();
   try {

@@ -63,11 +63,24 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     participants: [],
   };
 
+  /** Migrate persisted state from pre-P1.1 shape. Adds missing fields with safe defaults. */
+  private _ensureState() {
+    const s = this.state as Partial<TimestreamState> | undefined;
+    if (!s || !Array.isArray(s.messages) || !Array.isArray(s.participants) || typeof s.nextOrder !== 'number') {
+      this.setState({
+        messages: Array.isArray(s?.messages) ? s!.messages : [],
+        nextOrder: typeof s?.nextOrder === 'number' ? s!.nextOrder : 1,
+        participants: Array.isArray(s?.participants) ? s!.participants : [],
+      });
+    }
+  }
+
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.split('/').pop() || '';
 
     try {
+      this._ensureState();
       if (request.method === 'POST' && path === 'send') {
         return this._handleSend(request);
       }
@@ -93,21 +106,28 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     }
   }
 
+  /** Safe participants accessor — returns empty array if state missing. */
+  private get _participants(): string[] {
+    return Array.isArray(this.state?.participants) ? this.state.participants : [];
+  }
+
   /** Check if an address is a participant (can read/write). */
   private _isParticipant(address: string): boolean {
     if (!address) return false;
     const norm = normAddr(address);
+    const ps = this._participants;
     // Empty participants list = open (backward compat for existing DOs)
-    if (this.state.participants.length === 0) return true;
-    return this.state.participants.some(p => normAddr(p) === norm);
+    if (ps.length === 0) return true;
+    return ps.some(p => normAddr(p) === norm);
   }
 
   /** Add an address as a participant. */
   private _addParticipant(address: string) {
     if (!address) return;
     const norm = normAddr(address);
-    if (!this.state.participants.some(p => normAddr(p) === norm)) {
-      this.setState({ ...this.state, participants: [...this.state.participants, address] });
+    const ps = this._participants;
+    if (!ps.some(p => normAddr(p) === norm)) {
+      this.setState({ ...this.state, participants: [...ps, address] });
     }
   }
 
@@ -115,9 +135,10 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
   private _participantIndex(address: string): number {
     if (!address) return -1;
     const norm = normAddr(address);
-    let idx = this.state.participants.findIndex(p => normAddr(p) === norm);
+    const ps = this._participants;
+    let idx = ps.findIndex(p => normAddr(p) === norm);
     if (idx >= 0) return idx;
-    const participants = [...this.state.participants, address];
+    const participants = [...ps, address];
     this.setState({ ...this.state, participants });
     return participants.length - 1;
   }
@@ -142,7 +163,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     }
 
     // Auth: sender must be a participant (or first sender auto-joins).
-    if (this.state.participants.length > 0 && !this._isParticipant(body.senderAddress)) {
+    if (this._participants.length > 0 && !this._isParticipant(body.senderAddress)) {
       return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
 
@@ -187,7 +208,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     };
 
     // Auth: require participant address
-    if (this.state.participants.length > 0) {
+    if (this._participants.length > 0) {
       if (!body.address || !this._isParticipant(body.address)) {
         return Response.json({ error: 'Not a participant' }, { status: 403 });
       }
@@ -202,12 +223,12 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const hasNext = msgs.length > limit;
     const page = msgs.slice(0, limit);
 
-    return Response.json({ messages: page, hasNext, participants: this.state.participants });
+    return Response.json({ messages: page, hasNext, participants: this._participants });
   }
 
   private async _handleFetchOne(request: Request): Promise<Response> {
     const body = await request.json() as { messageId: string; address?: string };
-    if (this.state.participants.length > 0 && body.address && !this._isParticipant(body.address)) {
+    if (this._participants.length > 0 && body.address && !this._isParticipant(body.address)) {
       return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
     const msg = this.state.messages.find(m => m.messageId === body.messageId);
@@ -273,11 +294,11 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const body = await request.json() as { address: string; addedBy?: string };
 
     // Only existing participants can add new ones
-    if (this.state.participants.length > 0 && body.addedBy && !this._isParticipant(body.addedBy)) {
+    if (this._participants.length > 0 && body.addedBy && !this._isParticipant(body.addedBy)) {
       return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
 
     this._addParticipant(body.address);
-    return Response.json({ added: true, participants: this.state.participants.length });
+    return Response.json({ added: true, participants: this._participants.length });
   }
 }

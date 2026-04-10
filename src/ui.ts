@@ -11481,7 +11481,7 @@ function bindEvents() {
               _sentBubble.textContent = msgText || draft.raw || '';
               convoEl.appendChild(_sentBubble);
               convoEl.removeAttribute('hidden');
-              convoEl.scrollLeft = convoEl.scrollWidth;
+              convoEl.scrollTop = convoEl.scrollHeight;
             }
             // Refresh from DO after a short delay to catch any server-side additions
             setTimeout(() => _expandIdleConvo(recipients[0]), 1000);
@@ -11497,7 +11497,7 @@ function bindEvents() {
               failBubble.textContent = msgText;
               failBubble.title = txMsg;
               failBubble.style.cursor = 'pointer';
-              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollLeft = convoEl.scrollWidth; }
+              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
               failBubble.addEventListener('click', () => {
                 failBubble.remove();
                 if (_idleThunderInput) _idleThunderInput.value = raw;
@@ -11643,10 +11643,21 @@ function bindEvents() {
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
+        const progress = `<div class="ski-idle-convo-progress"><div class="ski-idle-convo-progress-fill"></div></div>`;
         const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
-        convoEl.innerHTML = title + bubbles;
+        convoEl.innerHTML = progress + title + bubbles;
         convoEl.removeAttribute('hidden');
-        convoEl.scrollLeft = convoEl.scrollWidth;
+        convoEl.scrollTop = convoEl.scrollHeight;
+        // Sync the progress bar with scrollTop — right edge = newest message.
+        const _progressFill = convoEl.querySelector('.ski-idle-convo-progress-fill') as HTMLElement | null;
+        const _syncProgress = () => {
+          if (!_progressFill) return;
+          const range = convoEl.scrollHeight - convoEl.clientHeight;
+          const pct = range > 0 ? Math.min(100, Math.max(0, (convoEl.scrollTop / range) * 100)) : 100;
+          _progressFill.style.width = `${pct}%`;
+        };
+        _syncProgress();
+        convoEl.addEventListener('scroll', _syncProgress, { passive: true });
 
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)

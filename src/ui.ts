@@ -9191,7 +9191,7 @@ function bindEvents() {
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <a class="ski-idle-version" href="https://www.npmjs.com/package/sui.ski" target="_blank" rel="noopener noreferrer">v${SKI_VERSION}</a>
-          <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"><source src="/assets/ski-idle.webm" type="video/webm"><source src="/assets/ski-idle.mp4" type="video/mp4"></video>
+          <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"></video>
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
             <span class="wk-ns-status" id="ski-idle-status" title="Set as default / show addresses" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
@@ -12176,28 +12176,65 @@ function bindEvents() {
 
       try { localStorage.setItem('ski:idle-open', '1'); } catch {}
 
-      // Cache idle video via Cache API for instant playback on subsequent loads
+      // Idle background videos — user-cyclable list. Click the video to swap
+      // to the next one; choice is persisted in localStorage. New videos can
+      // be added by appending to IDLE_BACKGROUNDS without any other changes.
       const _idleVideo = _idleOverlay.querySelector('video.ski-idle-img') as HTMLVideoElement | null;
-      if (_idleVideo && 'caches' in self) {
-        const vSrc = '/assets/ski-idle.webm';
-        caches.open('ski-media-v1').then(async (cache) => {
-          const cached = await cache.match(vSrc);
-          if (cached) {
-            // Serve from cache — instant
-            const blob = await cached.blob();
-            if (_idleVideoBlobUrl) URL.revokeObjectURL(_idleVideoBlobUrl);
-            _idleVideoBlobUrl = URL.createObjectURL(blob);
-            _idleVideo.src = _idleVideoBlobUrl;
+      const IDLE_BACKGROUNDS: Array<{ id: string; webm: string; mp4: string; label: string }> = [
+        { id: 'basmr',    webm: '/assets/basmr.webm',    mp4: '/assets/basmr.mp4',    label: 'BASMR' },
+        { id: 'ski-idle', webm: '/assets/ski-idle.webm', mp4: '/assets/ski-idle.mp4', label: 'SKI Idle' },
+      ];
+      const _loadIdleBg = async (bg: typeof IDLE_BACKGROUNDS[number]) => {
+        if (!_idleVideo) return;
+        if ('caches' in self) {
+          try {
+            const cache = await caches.open('ski-media-v2');
+            const cached = await cache.match(bg.webm);
+            if (cached) {
+              const blob = await cached.blob();
+              if (_idleVideoBlobUrl) URL.revokeObjectURL(_idleVideoBlobUrl);
+              _idleVideoBlobUrl = URL.createObjectURL(blob);
+              _idleVideo.src = _idleVideoBlobUrl;
+              _idleVideo.load();
+            } else {
+              // First visit for this bg — fall back to direct src and warm the cache.
+              _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
+              _idleVideo.load();
+              try {
+                const resp = await fetch(bg.webm);
+                if (resp.ok) await cache.put(bg.webm, resp.clone());
+              } catch {}
+            }
+          } catch {
+            _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
             _idleVideo.load();
-          } else {
-            // First visit — fetch, cache, and let the video load normally
-            try {
-              const resp = await fetch(vSrc);
-              if (resp.ok) cache.put(vSrc, resp.clone());
-            } catch {}
           }
-        }).catch(() => {});
-      }
+        } else {
+          _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
+          _idleVideo.load();
+        }
+        try { localStorage.setItem('ski:idle-bg', bg.id); } catch {}
+      };
+      // Resolve current choice from localStorage (default to first entry).
+      let _currentBgIdx = 0;
+      try {
+        const saved = localStorage.getItem('ski:idle-bg');
+        if (saved) {
+          const idx = IDLE_BACKGROUNDS.findIndex(b => b.id === saved);
+          if (idx >= 0) _currentBgIdx = idx;
+        }
+      } catch {}
+      void _loadIdleBg(IDLE_BACKGROUNDS[_currentBgIdx]);
+      // Click the video to cycle to the next background.
+      _idleVideo?.addEventListener('click', (ev) => {
+        // Don't intercept clicks that bubbled up from overlaid controls.
+        if ((ev.target as HTMLElement | null)?.closest('button, input, .ski-convo-party, .ski-idle-bubble')) return;
+        ev.stopPropagation();
+        _currentBgIdx = (_currentBgIdx + 1) % IDLE_BACKGROUNDS.length;
+        const next = IDLE_BACKGROUNDS[_currentBgIdx];
+        void _loadIdleBg(next);
+        showToast(`\u{1F3AC} ${next.label}`);
+      });
 
       // Auto-resolve pre-filled name on overlay open (e.g. restored from localStorage on refresh)
       if (_idleNsInput?.value && _idleNsInput.value.length >= 3 && isValidNsLabel(_idleNsInput.value)) {

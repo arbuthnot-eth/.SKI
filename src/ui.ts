@@ -3780,6 +3780,14 @@ const _preRumbledNames = new Set<string>(
 );
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
+// Eagerly load cached owned domains so ownership checks work before async fetch
+try {
+  const _eagerAddr = (() => { try { const s = localStorage.getItem('ski:session'); return s ? JSON.parse(s).address : ''; } catch { return ''; } })();
+  if (_eagerAddr) {
+    const _eagerCached = (() => { try { const raw = localStorage.getItem(`ski:owned-domains:${_eagerAddr}`); return raw ? JSON.parse(raw) : null; } catch { return null; } })();
+    if (_eagerCached && Array.isArray(_eagerCached)) nsOwnedDomains = _eagerCached;
+  }
+} catch {}
 let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // on-chain kiosk listing for current label
 let nsTradeportListing: TradeportListing | null = null; // Tradeport marketplace listing for current label
 let nsExpirationMs = 0; // expiration timestamp for current searched name (any name, not just owned)
@@ -4008,6 +4016,17 @@ async function fetchAndShowNsPrice(label: string) {
       const ws = getState();
       const ownerMatch = sr?.nftOwner && ws.address && normalizeSuiAddress(sr.nftOwner) === normalizeSuiAddress(ws.address);
       if (inRoster || ownerMatch) nsAvail = 'owned';
+      // Buffer: if not yet in roster, re-check after owned domains load
+      if (nsAvail === 'taken' && !inRoster && ws.address) {
+        setTimeout(() => {
+          const _recheck = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+          if (_recheck && nsAvail === 'taken' && nsPriceFetchFor?.toLowerCase() === bareLabel) {
+            nsAvail = 'owned';
+            _patchNsStatus();
+            window.dispatchEvent(new Event('ski:ownership-changed'));
+          }
+        }, 2000);
+      }
     }
     nsKioskListing = sr?.kioskId
       ? { kioskId: sr.kioskId, nftId: sr.kioskNftId!, priceMist: sr.kioskListingPriceMist! }
@@ -4688,6 +4707,15 @@ async function _fetchOwnedDomains() {
     nsOwnedDomains = fresh;
     _cacheOwnedDomains(fetchAddr, fresh);
     _patchNsOwnedList();
+    // Re-check ownership for current label (may have just been purchased)
+    if (nsAvail === 'taken' && nsLabel) {
+      const _bareCheck = nsLabel.trim().toLowerCase();
+      if (fresh.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === _bareCheck)) {
+        nsAvail = 'owned';
+        _patchNsStatus();
+        window.dispatchEvent(new Event('ski:ownership-changed'));
+      }
+    }
 
     // Auto pre-rumble any owned names not yet provisioned (covers Tradeport buys, gifts, etc.)
     for (const d of fresh) {
@@ -6775,7 +6803,7 @@ function renderSkiMenu() {
           btc: app.btcAddress || undefined,
           sol: app.solAddress || undefined,
           eth: app.ethAddress || undefined,
-        }, app.usd ?? undefined);
+        });
         const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
         const { bytes, signature } = await signPersonalMessage(msgBytes);
         const proof = createSuiamiProof(message, bytes, signature);
@@ -7336,7 +7364,7 @@ function renderSkiMenu() {
         throw txErr;
       }
       if (_txOk) {
-        showToast(`\u26a1 Signal sent to ${recipientName}.sui`);
+        showToast(`\u26a1 Thunder to ${recipientName} sent`);
         if (msgInput) msgInput.value = '';
         _thunderConvoTarget = '';
         _renderConversation(recipientName);
@@ -8296,32 +8324,32 @@ function renderSkiMenu() {
         // Build and execute purchase transaction
         if (btn) btn.textContent = 'TRADE';
         let purchaseTx: Uint8Array;
+        const domain = `${label}.sui`;
         if (nsKioskListing) {
-          purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
+          purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist, domain);
         } else {
-          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist);
+          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist, domain);
         }
         if (btn) btn.textContent = '\u270f';
         const { digest } = await signAndExecuteTransaction(purchaseTx);
 
-        // Post-purchase: update to owned state
+        // Post-purchase: update to owned state (target + default set in same PTB)
         nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null; nsTradeportListing = null;
         _patchNsStatus(); _patchNsRoute();
-        const domain = `${label}.sui`;
-        app.suinsName = app.suinsName || domain;
-        suinsCache[ws2.address] = app.suinsName;
-        try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
-        updateSkiDot('blue-square', app.suinsName);
+        app.suinsName = domain;
+        suinsCache[ws2.address] = domain;
+        try { localStorage.setItem(`ski:suins:${ws2.address}`, domain); } catch {}
+        updateSkiDot('blue-square', domain);
         _userManuallySelectedCoin = false;
         nsOwnedFetchedFor = ''; _fetchOwnedDomains();
         walletCoins = []; appBalanceFetched = false;
         renderSkiMenu();
         setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
-        // Notify idle overlay to refresh status (TRADE → SUIAMI transition)
         _preRumbledNames.add(label.toLowerCase());
         try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
         window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
-        showToast(`${label}.sui purchased \u2713`);
+        window.dispatchEvent(new CustomEvent('ski:primary-changed', { detail: { name: domain } }));
+        showToast(`${domain} purchased + set as primary \u2713`);
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         if (!raw.toLowerCase().includes('reject')) {
@@ -9198,6 +9226,7 @@ function bindEvents() {
             </div>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
+              <button class="ski-idle-thunder-clear" id="ski-idle-thunder-clear" type="button" title="Clear" style="display:none">\u2715</button>
               <div class="ski-idle-thunder-mirror" id="ski-idle-thunder-mirror" aria-hidden="true"></div>
               <div class="ski-idle-thunder-send-group">
                 <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="">\u26a1</button>
@@ -9231,13 +9260,20 @@ function bindEvents() {
       let _thunderComposeStage: 'idle' | 'preview' | 'confirmed' | 'sending' = 'idle';
 
       // Track Storm existence per groupId (shared between action button + compose preview)
-      const _stormExistsCache: Record<string, boolean | 'checking'> = {};
+      const _stormExistsCache: Record<string, boolean | 'checking'> = (() => {
+        try { const c = sessionStorage.getItem('ski:storm-cache'); return c ? JSON.parse(c) : {}; } catch { return {}; }
+      })();
+      const _markStormExists = (gid: string) => {
+        _stormExistsCache[gid] = true;
+        try { sessionStorage.setItem('ski:storm-cache', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
+      };
       const _checkStormExists = (groupId: string) => {
         if (_stormExistsCache[groupId] !== undefined) return;
         _stormExistsCache[groupId] = 'checking';
         import('./client/thunder.js').then(({ stormExists }) => {
           stormExists(groupId).then(exists => {
             _stormExistsCache[groupId] = exists;
+            if (exists) try { sessionStorage.setItem('ski:storm-cache', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
             _renderThunderComposePreview();
             _updateIdleStatus();
           }).catch(() => { _stormExistsCache[groupId] = false; _renderThunderComposePreview(); _updateIdleStatus(); });
@@ -9333,18 +9369,15 @@ function bindEvents() {
           const _gid = `thunder-${[myName, targetBare].sort().join('-')}`;
           const _hasStorm = _stormExistsCache[_gid] === true;
           if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
-          _idleActionBtn.textContent = _hasStorm ? 'Thunder' : 'Storm';
+          _idleActionBtn.textContent = _hasStorm ? 'Storm \u26a1' : 'Storm';
           _idleActionBtn.className = _hasStorm ? 'ski-idle-ns-action ski-idle-ns-action--thunder' : 'ski-idle-ns-action ski-idle-ns-action--storm';
-          const _myLabel = (app.suinsName || '').replace(/\.sui$/, '');
-          _idleActionBtn.title = _hasStorm
-            ? `Thunder \u2014 encrypt a signal to ${label}.sui`
-            : `Encrypt a Storm between ${_myLabel} and ${label}`;
+          _idleActionBtn.title = _hasStorm ? `Seal-encrypted Storm with ${label}` : `Open Storm with ${label} (creates on first message)`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
-          _idleActionBtn.textContent = 'SUIAMI';
+          const _hasProof = _suiamiVerifyHtml.includes('verified');
+          _idleActionBtn.textContent = _hasProof ? 'SUIAMI \u2713' : 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
-          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
-
+          _idleActionBtn.title = _hasProof ? `SUIAMI verified \u2014 ${_iamName}.sui` : `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = false;
         } else {
           _idleActionBtn.textContent = 'SUIAMI';
@@ -9483,6 +9516,7 @@ function bindEvents() {
         if (_gifImg) try { _gifImg.play(); } catch {}
         _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.remove('ski-idle-thunder-convo--frozen');
       };
+
 
       let _cardCacheKey = ''; // tracks what's currently rendered to avoid redundant updates
       let _cardBalCache: { addr: string; usd: number; ts: number } | null = null;
@@ -9653,10 +9687,12 @@ function bindEvents() {
       const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
       const _thunderMirror = _idleOverlay.querySelector('#ski-idle-thunder-mirror') as HTMLElement | null;
+      const _thunderClearBtn = _idleOverlay.querySelector('#ski-idle-thunder-clear') as HTMLElement | null;
       const _updateThunderRowActive = () => {
         const val = _idleThunderInputEl?.value ?? '';
         const active = _idleThunderInputEl === document.activeElement || !!val;
         _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
+        if (_thunderClearBtn) _thunderClearBtn.style.display = val ? '' : 'none';
         // Color modes: green (valid amount), red (over budget), yellow (thunder only)
         const hasAmount = val.includes('$');
         const hasAt = val.includes('@');
@@ -9682,8 +9718,22 @@ function bindEvents() {
           }
         }
       };
+      _thunderClearBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (_idleThunderInputEl) { _idleThunderInputEl.value = ''; _idleThunderInputEl.focus(); }
+        _updateThunderRowActive();
+        _renderThunderComposePreview();
+      });
       _idleThunderInputEl?.addEventListener('focus', () => { _freezeGif(); _updateThunderRowActive(); });
-      _idleThunderInputEl?.addEventListener('blur', () => { if (!_idleThunderInputEl?.value) _unfreezeGif(); _updateThunderRowActive(); });
+      _idleThunderInputEl?.addEventListener('blur', () => {
+        const val = _idleThunderInputEl?.value?.trim() ?? '';
+        // Clear if only @mention with no actual message
+        if (val && /^@[a-z0-9-]+\s*$/i.test(val)) {
+          _idleThunderInputEl!.value = '';
+        }
+        if (!_idleThunderInputEl?.value) _unfreezeGif();
+        _updateThunderRowActive();
+      });
       _idleThunderInputEl?.addEventListener('input', _updateThunderRowActive);
 
       // @ button — insert @tag and focus thunder input for autocomplete
@@ -9785,7 +9835,7 @@ function bindEvents() {
 
         // Close squids/addr rows if open
         const _addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
-        if (_addrRow && !_addrRow.hasAttribute('hidden')) _addrRow.setAttribute('hidden', '');
+        if (_addrRow && !_addrRow.hasAttribute('hidden')) { _addrRow.setAttribute('hidden', ''); try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {} }
         _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
         const _convoPanel = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (_convoPanel && !_convoPanel.hasAttribute('hidden')) { _convoPanel.setAttribute('hidden', ''); _convoPanel.innerHTML = ''; }
@@ -9892,6 +9942,13 @@ function bindEvents() {
               _updateIdleCard(cardName);
               _renderThunderComposePreview();
               _expandIdleConvo(val);
+              // Re-poll after 3s if input unchanged — catches balance updates, ownership changes
+              setTimeout(() => {
+                if (nsLabel.trim().toLowerCase() === val) {
+                  _cardCacheKey = ''; // force card refresh
+                  _updateIdleCard(cardName);
+                }
+              }, 3000);
             });
           }, NS_LOOKUP_DEBOUNCE_MS);
         }
@@ -10202,39 +10259,12 @@ function bindEvents() {
             _idleActionBtn!.textContent = 'Shade';
             _idleActionBtn!.disabled = false;
           })();
-        } else if (btnText === 'Storm' || btnText === 'Thunder') {
+        } else if (btnText === 'Storm') {
+          // Toggle Storm convo — open/close conversation with history
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-          if (btnText === 'Storm' && label) {
-            // Create Storm on-chain
-            const ws = getState();
-            if (!ws.address) { showToast('Connect wallet first'); return; }
-            _idleActionBtn!.disabled = true;
-            _idleActionBtn!.textContent = '\u26c8\ufe0f\u2026';
-            try {
-              const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-              const groupUuid = `thunder-${[myName, label.toLowerCase()].sort().join('-')}`;
-              const { createStorm, lookupRecipientAddress } = await import('./client/thunder.js');
-              const recipAddr = await lookupRecipientAddress(label);
-              const stormTx = createStorm({
-                name: groupUuid,
-                members: recipAddr ? [recipAddr] : [],
-              });
-              showToast(`\u26c8\ufe0f Creating Storm between ${myName} and ${label} \u2014 sign to confirm`);
-              await signAndExecuteTransaction(stormTx);
-              _stormExistsCache[groupUuid] = true;
-              showToast(`\u26c8\ufe0f Storm created with ${label}.sui`);
-              _updateIdleStatus();
-              _renderThunderComposePreview();
-              _expandIdleConvo(label);
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              if (!msg.toLowerCase().includes('reject')) showToast(msg);
-            } finally {
-              _idleActionBtn!.disabled = false;
-              _updateIdleStatus();
-            }
-          } else if (convoEl && !convoEl.hasAttribute('hidden')) {
+          if (convoEl && !convoEl.hasAttribute('hidden')) {
             convoEl.setAttribute('hidden', '');
+            try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
           } else if (label) {
             _expandIdleConvo(label);
             const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
@@ -10256,7 +10286,27 @@ function bindEvents() {
         if (nsAvail) _updateIdleCard(_initLabel);
         // Force re-fetch even if cached — ensures _updateIdleStatus sees fresh ownership
         nsPriceFetchFor = '';
-        fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
+        fetchAndShowNsPrice(_initLabel).then(async () => {
+          _updateIdleStatus();
+          // Resolve primary SuiNS of target address for card (same as input debounce)
+          let _addr = nsTargetAddress || nsNftOwner;
+          if (!_addr && nsAvail === 'taken') {
+            try { const { lookupNftOwner: _lno } = await import('./suins.js'); const o = await _lno(_initLabel); if (o) { _addr = o; nsNftOwner = o; } } catch {}
+          }
+          let cardName = _initLabel;
+          if (_addr && _rosterCache?.addr === _addr) {
+            const primary = _rosterCache.names.find(n => n.primary);
+            if (primary) cardName = primary.name;
+          } else if (_addr) {
+            try {
+              const r = await fetch('https://graphql.mainnet.sui.io/graphql', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`, variables: { a: _addr } }) });
+              const g = await r.json() as any;
+              const prim = (g?.data?.address?.defaultNameRecord?.domain ?? '').replace(/\.sui$/, '').toLowerCase();
+              if (prim) cardName = prim;
+            } catch {}
+          }
+          _updateIdleCard(cardName);
+        });
         // Auto-open conversation if there are pending signals
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
         if (_pendingCount > 0) {
@@ -10490,6 +10540,37 @@ function bindEvents() {
 
       // iUSD panel — $ quick button toggles panel, shows treasury stats + mint/burn/ignite
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', async (e) => {
+        // Green circle — reset everything to primary
+        const greenBtn = (e.target as HTMLElement).closest('[data-action="green"]');
+        if (greenBtn) {
+          e.stopPropagation();
+          // Close squids
+          const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+          if (addrRow && !addrRow.hasAttribute('hidden')) { addrRow.setAttribute('hidden', ''); try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {} }
+          _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+          // Close roster
+          const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+          if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+          // Clear NS input
+          if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input')); }
+          nsLabel = '';
+          try { localStorage.removeItem('ski:ns-label'); } catch {}
+          const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+          if (clearBtn) clearBtn.style.display = 'none';
+          // Clear thunder input
+          if (_idleThunderInputEl) { _idleThunderInputEl.value = ''; }
+          _updateThunderRowActive();
+          _renderThunderComposePreview();
+          // Reset state
+          nsAvail = null; nsTargetAddress = null; nsNftOwner = null;
+          nsKioskListing = null; nsTradeportListing = null;
+          _cardCacheKey = '';
+          // Restore primary card
+          _updateIdleStatus();
+          _updateIdleCard('');
+          _unfreezeGif();
+          return;
+        }
         const btn = (e.target as HTMLElement).closest('[data-action="iusd"]');
         if (!btn) return;
         e.stopPropagation();
@@ -10634,10 +10715,12 @@ function bindEvents() {
         if (addrRow && !addrRow.hasAttribute('hidden')) {
           addrRow.setAttribute('hidden', '');
           squidBtn?.classList.remove('ski-idle-quick-btn--active');
+          try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
           _unfreezeGif();
           return;
         }
         squidBtn?.classList.toggle('ski-idle-quick-btn--active');
+        try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
         (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
       });
 
@@ -10646,22 +10729,11 @@ function bindEvents() {
       _idleOverlay.querySelector('#ski-idle-thunder-at-iusd')?.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!_idleThunderInputEl) return;
-        const val = _idleThunderInputEl.value;
-        const targetName = (nsLabel || '').trim().toLowerCase();
-        if (!val && targetName) {
-          // Empty input + name loaded — insert @name$
-          _idleThunderInputEl.value = `@${targetName}$`;
-        } else {
-          // Append $ after last @name tag
-          const match = val.match(/^(.*@\S+)\s*/);
-          if (match) {
-            _idleThunderInputEl.value = match[1] + '$';
-          } else if (targetName) {
-            _idleThunderInputEl.value = `@${targetName}$`;
-          } else {
-            _idleThunderInputEl.value = val.trimEnd() + '$';
-          }
-        }
+        // Use card name (authority) — fall back to input label, then primary
+        const cardName = _cardCurrentName || nsLabel.trim().toLowerCase() || (app.suinsName?.replace(/\.sui$/, '') || '');
+        if (!cardName) return;
+        // Set @name$ and focus for amount entry
+        _idleThunderInputEl.value = `@${cardName}$`;
         _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
         _idleThunderInputEl.focus();
         _idleThunderInputEl.dispatchEvent(new Event('input'));
@@ -10788,8 +10860,8 @@ function bindEvents() {
 
                 // Per-row USD balances
                 const _suiUsd2 = app.sui * (suiPriceCache?.price ?? 0) + app.stableUsd;
-                const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 0) : 0;
-                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal">$${Math.round(v).toLocaleString()}</span>` : '';
+                const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 83) : 0;
+                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${Math.round(v).toLocaleString()}</span></span>` : '';
 
                 // Resolve cross-chain addresses: own wallet first, then cached IKA for any address
                 const _isOwnAddr = ws.address && addr.toLowerCase() === ws.address.toLowerCase();
@@ -10813,13 +10885,18 @@ function bindEvents() {
                 // --- Cross-chain rows: dark placeholders when viewing others without SUIAMI ---
                 if (!_isOwnAddr && !_hasSuiamiProof) {
                   // Dark blurred placeholder rows for cross-chain addresses
-                  const darkBtc = `<span class="ski-idle-addr-line ski-idle-addr-dark">${btcIcon} \u25CF\u25CF\u25CF \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
-                  const darkSol = `<span class="ski-idle-addr-line ski-idle-addr-dark">${solIcon} \u25CF\u25CF\u25CF \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
-                  const darkEth = `<span class="ski-idle-addr-line ski-idle-addr-dark">${ethIcon} \u25CF\u25CF\u25CF \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
-                  const darkBase = `<span class="ski-idle-addr-line ski-idle-addr-dark">${baseIcon} \u25CF\u25CF\u25CF \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
-                  const darkTron = `<span class="ski-idle-addr-line ski-idle-addr-dark">${tronIcon} \u25CF\u25CF\u25CF \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
-                  const revealBtn = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--join" type="button" title="Join SUIAMI to reveal cross-chain addresses">SUIAMI to reveal</button>`;
-                  addrRow.innerHTML = `${suiLine}${darkBtc}${darkSol}${darkEth}${darkBase}${darkTron}${revealBtn}`;
+                  const _darkText = `<span class="ski-idle-addr-dark-text">\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
+                  const darkBtc = `<span class="ski-idle-addr-line ski-idle-addr-dark">${btcIcon} ${_darkText}</span>`;
+                  const darkSol = `<span class="ski-idle-addr-line ski-idle-addr-dark">${solIcon} ${_darkText}</span>`;
+                  const darkEth = `<span class="ski-idle-addr-line ski-idle-addr-dark">${ethIcon} ${_darkText}</span>`;
+                  const darkTron = `<span class="ski-idle-addr-line ski-idle-addr-dark">${tronIcon} ${_darkText}</span>`;
+                  const _myName = (app.suinsName || '').replace(/\.sui$/, '') || 'you';
+                  const revealQr = `<div class="ski-idle-addr-qr ski-idle-addr-reveal-qr" data-qr-addr="${esc(addr)}"></div>`;
+                  const revealBtn = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--join" type="button" title="SUIAMI? I AM ${esc(_myName)}">SUIAMI REVEAL</button>`;
+                  addrRow.innerHTML = `${suiLine}<div class="ski-idle-addr-reveal-wrap">${darkBtc}${darkSol}${darkEth}${darkTron}${revealQr}${revealBtn}</div>`;
+                  // Populate QR async
+                  const _revealQrEl = addrRow.querySelector('.ski-idle-addr-reveal-qr');
+                  if (_revealQrEl) _getAddrQrSvg(addr, 'usd').then(svg => { _revealQrEl.innerHTML = svg; });
                 } else if (!_isOwnAddr && _hasSuiamiProof) {
                   // Viewing someone else with SUIAMI proof — fetch from on-chain roster
                   const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} ${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>` : '';
@@ -10827,7 +10904,7 @@ function bindEvents() {
                   const baseChip = _baseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
                   const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} ${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}${baseChip}</span>` : '';
                   const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} ${_baseAddr.slice(0, 6)}\u2026${_baseAddr.slice(-6)}</span>` : '';
-                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 5)}\u2026${_tronAddr.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
+                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 6)}\u2026${_tronAddr.slice(-6)}</span>` : '';
                   const suiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified" type="button" title="Click to copy SUIAMI proof">\u2713 SUIAMI</button>`;
                   addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
                   // Async fetch from on-chain roster to fill in missing cross-chain addresses
@@ -10878,10 +10955,11 @@ function bindEvents() {
                   const baseChip = _baseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
                   const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} ${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}${baseChip}</span>` : '';
                   const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} ${_baseAddr.slice(0, 6)}\u2026${_baseAddr.slice(-6)}</span>` : '';
-                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 5)}\u2026${_tronAddr.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
+                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 6)}\u2026${_tronAddr.slice(-6)}</span>` : '';
                   const suiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified" type="button" title="Click to copy SUIAMI proof">\u2713 SUIAMI</button>`;
                   addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
                 }
+
                 addrRow.removeAttribute('hidden');
                 _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
                 _freezeGif();
@@ -10891,7 +10969,7 @@ function bindEvents() {
                   if (!_isOwnAddr && !_hasSuiamiProof) {
                     // "SUIAMI to reveal" button — dispatch request event
                     window.dispatchEvent(new CustomEvent('ski:request-suiami', {
-                      detail: { name: nsLabel || app.suinsName?.replace(/\.sui$/, '') }
+                      detail: { name: app.suinsName?.replace(/\.sui$/, '') || '' }
                     }));
                   } else if (_suiamiProofToken) {
                     navigator.clipboard.writeText(_suiamiProofToken).then(() => showToast('SUIAMI proof copied')).catch(() => {});
@@ -11193,33 +11271,10 @@ function bindEvents() {
       const _sendIdleThunder = async () => {
         const sendBtn = _idleThunderSend;
 
-        // Storm creation mode — ⛈️ button clicked when no Storm exists
-        const _curTarget = (nsLabel || '').toLowerCase();
-        const _curMe = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-        const _curGid = _curTarget && _curMe ? `thunder-${[_curMe, _curTarget].sort().join('-')}` : '';
-        if (_curGid && _stormExistsCache[_curGid] === false) {
-          if (!_curTarget) return;
-          const ws = getState();
-          if (!ws.address) { showToast('Connect wallet first'); return; }
-          if (sendBtn) { sendBtn.innerHTML = '\u26c8\ufe0f\u2026'; sendBtn.disabled = true; }
-          try {
-            const { createStorm, lookupRecipientAddress } = await import('./client/thunder.js');
-            const recipAddr = await lookupRecipientAddress(_curTarget);
-            const stormTx = createStorm({ name: _curGid, members: recipAddr ? [recipAddr] : [] });
-            showToast(`\u26c8\ufe0f Creating Storm between ${_curMe} and ${_curTarget} \u2014 sign to confirm`);
-            await signAndExecuteTransaction(stormTx);
-            _stormExistsCache[_curGid] = true;
-            showToast(`\u26c8\ufe0f Storm created with ${_curTarget}.sui`);
-            _updateIdleStatus();
-            _renderThunderComposePreview();
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (!msg.toLowerCase().includes('reject')) showToast(msg);
-          } finally {
-            if (sendBtn) sendBtn.disabled = false;
-            _renderThunderComposePreview();
-          }
-          return;
+        // Immediately show spinner to prevent "Send" flash
+        if (sendBtn && sendBtn.dataset.questMode !== '1') {
+          sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
+          sendBtn.disabled = true;
         }
 
         // Quest mode: decrypt pending signals across all owned names
@@ -11316,7 +11371,7 @@ function bindEvents() {
           }
 
           const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
-          const senderName = app.suinsName || '';
+          const senderName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
           const recipients = draft.recipients;
           const msgText = draft.message;
           const transferAmtUsd = (draft.amount && !draft.amountError) ? draft.amount : undefined;
@@ -11337,44 +11392,55 @@ function bindEvents() {
           try {
             for (const recip of recipients) {
               if (_cancelled) break;
-              // Resolve transfer if amount is set
-              let transfer: { recipientAddress: string; amountMist: bigint } | undefined;
+              const groupUuid = `thunder-${[senderName, recip].sort().join('-')}`;
+
               if (transferAmtUsd) {
+                // $amount transfer — needs on-chain tx
                 const recipAddr = await lookupRecipientAddress(recip);
-                if (!recipAddr) { showToast(`Cannot resolve address for ${recip}.sui`); continue; }
+                if (!recipAddr) { showToast(`Cannot resolve address for ${recip}`); continue; }
                 const suiPrice = suiPriceCache?.price ?? 0;
                 if (suiPrice <= 0) { showToast('Cannot determine SUI price'); continue; }
                 const suiAmount = transferAmtUsd / suiPrice;
                 const amountMist = BigInt(Math.floor(suiAmount * 1e9));
-                transfer = { recipientAddress: recipAddr, amountMist };
-              }
-              if (_cancelled) break;
-              const groupUuid = `thunder-${[senderName, recip].sort().join('-')}`;
-              // Resolve recipient address for group creation
-              const recipAddr = transfer?.recipientAddress || await lookupRecipientAddress(recip);
-              await sendThunder({
-                groupRef: { uuid: groupUuid },
-                text: msgText,
-                recipientAddress: recipAddr || undefined,
-                senderName: senderName,
-                recipientName: recip,
-                transfer,
-                signAndExecute: async (txOrBytes: any) => {
-                  const suiPrice = suiPriceCache?.price ?? 0;
-                  const suiAmt = transferAmtUsd && suiPrice > 0 ? (transferAmtUsd / suiPrice).toFixed(4) : '';
-                  if (transferAmtUsd) {
+                const transfer = { recipientAddress: recipAddr, amountMist };
+                if (_cancelled) break;
+                await sendThunder({
+                  groupRef: { uuid: groupUuid },
+                  text: msgText,
+                  recipientAddress: recipAddr,
+                  senderName,
+                  recipientName: recip,
+                  transfer,
+                  signAndExecute: async (txOrBytes: any) => {
                     if (sendBtn) sendBtn.innerHTML = `\u26a1 $${transferAmtUsd}\u2026`;
-                    showToast(`\u26c8\ufe0f Initiating Storm \u00b7 $${transferAmtUsd} (${suiAmt} SUI) to ${recip}.sui \u2014 sign to confirm`);
-                  } else {
-                    if (sendBtn) sendBtn.innerHTML = '\u26c8\ufe0f\u2026';
-                    showToast(`\u26c8\ufe0f Initiating Storm with ${recip}.sui \u2014 sign to confirm`);
-                  }
-                  const result = await signAndExecuteTransaction(txOrBytes);
-                  // Mark Storm as created in cache
-                  _stormExistsCache[groupUuid] = true;
-                  return result;
-                },
-              });
+                    showToast(`\u26a1 Sending $${transferAmtUsd} to ${recip}`);
+                    const result = await signAndExecuteTransaction(txOrBytes);
+                    _markStormExists(groupUuid);
+                    return result;
+                  },
+                });
+              } else {
+                // Seal-encrypt + send (creates Storm on first message if needed)
+                const _sendText = msgText || draft.raw || '';
+                if (!_sendText.trim()) continue;
+                const recipAddr = await lookupRecipientAddress(recip);
+                const _needsStormCreation = _stormExistsCache[groupUuid] !== true;
+                await sendThunder({
+                  groupRef: { uuid: groupUuid },
+                  text: _sendText,
+                  recipientAddress: recipAddr || undefined,
+                  senderName,
+                  recipientName: recip,
+                  signAndExecute: _needsStormCreation ? async (txOrBytes: any) => {
+                    showToast(`\u26c8\ufe0f Creating encrypted Storm with ${recip}`);
+                    const result = await signAndExecuteTransaction(txOrBytes);
+                    _markStormExists(groupUuid);
+                    _updateIdleStatus();
+                    return result;
+                  } : undefined,
+                });
+                if (_needsStormCreation) _markStormExists(groupUuid);
+              }
               _addThunderContact(recip);
             }
             if (_cancelled) {
@@ -11387,17 +11453,33 @@ function bindEvents() {
               _renderThunderComposePreview();
               return;
             }
-            // Success: clear input, fetch and render convo from Timestream DO
-            if (_idleThunderInput) _idleThunderInput.value = '';
-            const names = recipients.map(r => `${r}.sui`).join(', ');
-            const amtToast = transferAmtUsd ? ` \u00b7 $${transferAmtUsd} sent` : '';
-            showToast(`\u26a1 Signal sent to ${names}${amtToast}`);
+            // Success: keep @tag, clear message + amount
+            if (_idleThunderInput) {
+              const _keepTag = recipients[0] ? `@${recipients[0]} ` : '';
+              _idleThunderInput.value = _keepTag;
+            }
+            const names = recipients.join(', ');
+            if (transferAmtUsd) {
+              showToast(`$${transferAmtUsd} iUSD Thunder to ${names} sent`);
+            } else {
+              showToast(`\u26a1 Thunder to ${names} sent`);
+            }
             _thunderComposeConfirmedRaw = '';
             _thunderComposeStage = 'idle';
             _renderThunderComposePreview();
-            // Fetch conversation from DO — includes the message we just sent
+            // Optimistic: append sent message to convo immediately
             _freezeGif();
-            await _expandIdleConvo(recipients[0]);
+            const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+            if (convoEl) {
+              const _sentBubble = document.createElement('div');
+              _sentBubble.className = 'ski-idle-bubble ski-idle-bubble--out';
+              _sentBubble.textContent = msgText || draft.raw || '';
+              convoEl.appendChild(_sentBubble);
+              convoEl.removeAttribute('hidden');
+              convoEl.scrollTop = convoEl.scrollHeight;
+            }
+            // Refresh from DO after a short delay to catch any server-side additions
+            setTimeout(() => _expandIdleConvo(recipients[0]), 1000);
           } catch (txErr) {
             const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
             _thunderComposeStage = 'confirmed';
@@ -11468,6 +11550,9 @@ function bindEvents() {
         if (qrEl) qrEl.setAttribute('hidden', '');
       }
 
+      let _convoPollTimer: ReturnType<typeof setInterval> | null = null;
+      let _convoLastCount = 0;
+
       async function _expandIdleConvo(counterparty: string) {
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
@@ -11479,18 +11564,63 @@ function bindEvents() {
 
         let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
         try {
-          const { getThunders } = await import('./client/thunder.js');
-          const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 20 });
-          entries = messages;
+          // Direct DO fetch — no Seal session key needed, no wallet popup
+          const _doRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ limit: 50, address: getState().address || '' }),
+          });
+          if (_doRes.ok) {
+            const _doData = await _doRes.json() as { messages: any[] };
+            entries = (_doData.messages || []).map((m: any) => {
+              let text = '';
+              try {
+                const raw = atob(m.encryptedText);
+                // Try UTF-8 decode
+                try { text = decodeURIComponent(escape(raw)); } catch { text = raw; }
+              } catch { text = m.encryptedText || ''; }
+              return {
+                text,
+                senderAddress: m.senderAddress || '',
+                createdAt: m.timestamp ?? m.createdAt ?? Date.now(),
+                messageId: m.messageId || m.id || `msg-${m.order}`,
+              };
+            });
+          }
         } catch { /* fallback to empty */ }
 
         if (!entries.length) {
           convoEl.setAttribute('hidden', '');
           _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+          if (_convoPollTimer) { clearInterval(_convoPollTimer); _convoPollTimer = null; }
           return;
         }
 
+        // Messages exist = Storm exists — cache convo state for refresh persistence
+        _markStormExists(groupId);
+        _updateIdleStatus();
+        try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+
+        // Start polling for new messages (5s interval)
+        _convoLastCount = entries.length;
+        if (_convoPollTimer) clearInterval(_convoPollTimer);
+        _convoPollTimer = setInterval(async () => {
+          const _cEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+          if (!_cEl || _cEl.hasAttribute('hidden')) { clearInterval(_convoPollTimer!); _convoPollTimer = null; return; }
+          try {
+            const _pRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limit: 50, address: getState().address || '' }),
+            });
+            if (!_pRes.ok) return;
+            const _pData = await _pRes.json() as { messages: any[] };
+            if (_pData.messages.length > _convoLastCount) {
+              _convoLastCount = _pData.messages.length;
+              _expandIdleConvo(bare);
+            }
+          } catch {}
+        }, 5000);
 
         // Render Timestream messages as bubbles with reverse lookup
         const ws = getState();
@@ -11511,7 +11641,7 @@ function bindEvents() {
         }
 
         const hasStorm = _stormExistsCache[groupId] === true;
-        const stormLabel = hasStorm ? '\u26a1' : '\u26c8\ufe0f';
+        const stormLabel = hasStorm ? '\uD83D\uDD12' : '\u26c8\ufe0f'; // 🔒 if encrypted, ⛈️ if not
         const bubbles = entries.slice(-20).map(m => {
           const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
@@ -11533,8 +11663,8 @@ function bindEvents() {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
             if (_deleteBusy) return;
-            const ts = parseInt((bubble as HTMLElement).dataset.ts || '0', 10);
-            if (!ts) return;
+            const msgId = (bubble as HTMLElement).dataset.id || '';
+            if (!msgId) return;
             const isIncoming = (bubble as HTMLElement).classList.contains('ski-idle-bubble--in');
 
             // First tap: confirm (red)
@@ -11568,8 +11698,9 @@ function bindEvents() {
                 // Delete all struck bubbles from DOM
                 for (let i = 0; i <= idx; i++) {
                   const b = allBubbles[i] as HTMLElement;
-                  const bTs = parseInt(b.dataset.ts || '0', 10);
-                  _freshQuestTs.delete(bTs);
+                  const bId = b.dataset.id || '';
+                  // Delete from DO
+                  try { fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: bId }) }); } catch {}
                   b.remove();
                 }
 
@@ -11579,10 +11710,17 @@ function bindEvents() {
 
                 showToast(`\u26a1 ${strikeCount} struck \u2014 rebate \u2192 treasury`);
               } else {
-                // Local-only delete
+                // Delete from DO + remove from DOM
+                try {
+                  await fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ messageId: msgId, senderAddress: getState().address || '' }),
+                  });
+                } catch {}
                 (bubble as HTMLElement).remove();
               }
-              _freshQuestTs.delete(ts);
+              _freshQuestTs.delete(0);
             } catch (err) {
               const msg = err instanceof Error ? err.message : '';
               // Signal already gone on-chain (struck/expired) — just clean up locally
@@ -11732,7 +11870,7 @@ function bindEvents() {
           const opts = _atDropdown.querySelectorAll('.ski-idle-at-option');
           if (e.key === 'ArrowDown') { e.preventDefault(); _atSelectedIdx = Math.min(_atSelectedIdx + 1, opts.length - 1); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); _atSelectedIdx = Math.max(_atSelectedIdx - 1, 0); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
-          else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') _sendIdleThunder(); return; }
+          else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') { _thunderComposeStage = 'confirmed'; _thunderComposeConfirmedRaw = _idleThunderInput?.value || ''; _sendIdleThunder(); } return; }
           else if (e.key === 'Escape') { _dismissAtDropdown(); return; }
         }
         // Backspace on @name tag — delete the whole name at once, leave just @
@@ -11751,7 +11889,7 @@ function bindEvents() {
             return;
           }
         }
-        if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
+        if (e.key === 'Enter') { e.preventDefault(); _thunderComposeStage = 'confirmed'; _thunderComposeConfirmedRaw = _idleThunderInput?.value || ''; _sendIdleThunder(); }
       });
       _idleThunderSend?.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -11887,13 +12025,39 @@ function bindEvents() {
       });
 
       // Balance or owned domains updated — refresh card with new data
-      window.addEventListener('ski:balance-updated', () => {
-        _cardCacheKey = ''; // invalidate so it re-renders with new balance
+      // Ownership changed (e.g. purchased name now in roster)
+      window.addEventListener('ski:ownership-changed', () => {
+        _updateIdleStatus();
+        _cardCacheKey = '';
         const cardName = app.suinsName?.replace(/\.sui$/, '') || nsLabel || '';
         if (cardName) _updateIdleCard(cardName);
       });
 
+      window.addEventListener('ski:balance-updated', () => {
+        _cardCacheKey = ''; // invalidate so it re-renders with new balance
+        // Use current card name (not primary) to avoid overwriting resolved card
+        const cardName = _cardCurrentName || app.suinsName?.replace(/\.sui$/, '') || '';
+        if (cardName) _updateIdleCard(cardName);
+      });
+
       _updateIdleThunderBadge();
+
+      // Restore squids panel if it was open
+      try {
+        if (sessionStorage.getItem('ski:idle-squids') === '1') {
+          setTimeout(() => {
+            (_idleOverlay?.querySelector('[data-action="rumble"]') as HTMLElement)?.click();
+          }, 300);
+        }
+      } catch {}
+
+      // Restore convo if it was open — use localStorage for cross-session persistence
+      try {
+        const _savedConvo = localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo');
+        if (_savedConvo) {
+          setTimeout(() => _expandIdleConvo(_savedConvo), 500);
+        }
+      } catch {}
 
       // Close the SKI menu so it doesn't show behind the overlay
       if (app.skiMenuOpen) {

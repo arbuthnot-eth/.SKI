@@ -2926,16 +2926,13 @@ body {
 .ski-idle-addr-row {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 1px;
   width: calc(100% - 4px);
   padding: 4px 2px;
-  background: rgba(10, 10, 15, 0.5);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: transparent;
   border-radius: 6px;
   position: absolute;
-  top: calc(27% + 36px);
   bottom: 70px;
   left: 0;
   z-index: 3;
@@ -2955,14 +2952,11 @@ body {
   grid-auto-columns: max-content;
   gap: 6px;
   padding: 8px 10px;
-  background: rgba(10, 10, 15, 0.95);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: transparent;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: none;
   overflow-x: auto;
   overflow-y: hidden;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.6);
   scrollbar-width: thin;
   scrollbar-color: #ffffff transparent;
 }
@@ -2975,7 +2969,9 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(10, 10, 15, 0.8);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 12px;
   color: #e2e8f0;
@@ -3085,7 +3081,9 @@ body {
   cursor: pointer;
   font-weight: 600;
   font-size: 1.05rem;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(10, 10, 15, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid;
   transition: background 0.15s, border-color 0.15s;
 }
@@ -3123,19 +3121,28 @@ body {
 }
 .ski-idle-addr-line--tron:hover { border-color: rgba(255, 0, 19, 0.7); }
 .ski-idle-addr-dark {
-  color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.3) !important;
   border-color: rgba(255, 255, 255, 0.04) !important;
   pointer-events: none;
   user-select: none;
+}
+.ski-idle-addr-dark .ski-idle-addr-icon,
+.ski-idle-addr-dark .ski-idle-addr-icon--inline { opacity: 0.7; }
+.ski-idle-addr-dark-text {
   filter: blur(3px);
   letter-spacing: 2px;
+  opacity: 0.3;
+}
+.ski-idle-addr-reveal-qr {
+  flex: 0 !important;
+  min-height: 0 !important;
 }
 .ski-idle-addr-suiami {
   all: unset;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 5px 15px;
+  padding: 5px 8px;
   margin-top: 4px;
   width: fit-content;
   border-radius: 6px;
@@ -3160,6 +3167,39 @@ body {
 .ski-idle-addr-suiami--dwallet {
   box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
 }
+.ski-idle-addr-reveal-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ski-idle-addr-reveal-qr {
+  position: absolute !important;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  min-height: 0 !important;
+  flex: none !important;
+  padding: 4px !important;
+  background: rgba(10, 10, 15, 0.85);
+  border-radius: 8px;
+  display: flex !important;
+}
+.ski-idle-addr-reveal-qr:empty { display: none !important; }
+.ski-idle-addr-reveal-qr svg {
+  width: 114px !important;
+  height: 114px !important;
+  max-height: none !important;
+}
+.ski-idle-addr-reveal-wrap .ski-idle-addr-suiami {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  white-space: nowrap;
+}
 .ski-idle-addr-suiami--join {
   background: rgba(90, 115, 145, 0.45);
   border: 1px solid rgba(110, 140, 170, 0.5);
@@ -3181,11 +3221,12 @@ body {
 .ski-idle-addr-l2-chip:hover { opacity: 0.7; }
 .ski-idle-addr-bal {
   margin-left: auto;
-  font-size: 0.82rem;
-  font-weight: 500;
-  opacity: 0.7;
+  font-size: 0.85rem;
+  font-weight: 700;
   white-space: nowrap;
 }
+.ski-idle-addr-bal-sign { color: inherit; opacity: 0.8; }
+.ski-idle-addr-bal-num { color: #fff; }
 .ski-idle-card-row {
   display: flex;
   align-items: center;
@@ -3521,6 +3562,20 @@ a.ski-idle-bubble-name:hover {
 .ski-idle-thunder-input--amount ~ .ski-idle-thunder-mirror,
 .ski-idle-thunder-input--mirror ~ .ski-idle-thunder-mirror { display: block; }
 .ski-idle-thunder-input:focus::placeholder { color: transparent; }
+.ski-idle-thunder-clear {
+  all: unset;
+  position: absolute;
+  right: 40px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.7rem;
+  padding: 4px;
+  z-index: 2;
+  transition: color 0.15s;
+}
+.ski-idle-thunder-clear:hover { color: rgba(255, 255, 255, 0.8); }
 /* Quick-action buttons — visible when input is empty */
 .ski-idle-quick-actions {
   display: flex;

@@ -11995,33 +11995,36 @@ function bindEvents() {
         e.stopPropagation();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         const hasText = _idleThunderInput?.value.trim();
-        // If convo is open and no text being composed, toggle it closed
-        if (convoEl && !convoEl.hasAttribute('hidden') && !hasText && !_idleThunderSend?.dataset.questMode) {
-          convoEl.setAttribute('hidden', '');
-          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-          return;
-        }
-        // If convo is closed and no text, open it — or pre-fill @tag if no history
-        if (convoEl && convoEl.hasAttribute('hidden') && !hasText) {
-          const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '') || '';
-          if (cardName) {
+        const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '') || '';
+
+        // If there's already text in the input, this click is a send.
+        if (hasText) { _sendIdleThunder(); return; }
+
+        // No text → "Open Storm" behavior: ensure the convo is visible and
+        // focus the thunder input pre-filled with @name so the user can type
+        // immediately. Clicking ⚡ never closes the convo anymore — it always
+        // moves toward "ready to compose".
+        if (_idleThunderSend?.dataset.questMode) { _sendIdleThunder(); return; }
+
+        if (convoEl && cardName) {
+          if (convoEl.hasAttribute('hidden')) {
             _expandIdleConvo(cardName);
-            _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
-            // If no history existed, expandIdleConvo hid it again — show empty convo + pre-fill @tag
             if (convoEl.hasAttribute('hidden')) {
               convoEl.removeAttribute('hidden');
               convoEl.innerHTML = '';
-              _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
             }
-            // Pre-fill thunder input with @cardName if empty
-            if (_idleThunderInput && !_idleThunderInput.value.trim()) {
-              _idleThunderInput.value = `@${cardName} `;
-              _idleThunderInput.focus();
-              _idleThunderInput.setSelectionRange(_idleThunderInput.value.length, _idleThunderInput.value.length);
-            }
+          }
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+          if (_idleThunderInput) {
+            _idleThunderInput.value = `@${cardName} `;
+            _idleThunderInput.focus();
+            _idleThunderInput.setSelectionRange(_idleThunderInput.value.length, _idleThunderInput.value.length);
+            _updateThunderRowActive?.();
+            _renderThunderComposePreview?.();
           }
           return;
         }
+
         _sendIdleThunder();
       });
       // Clean up previous listeners (prevents accumulation on overlay recreate)
@@ -12329,27 +12332,6 @@ function bindEvents() {
         }
       });
 
-      // Constrain the thunder input's right edge to align with the squid
-      // button (or $ button) in the quick-actions row. This stops the input
-      // from spanning the full overlay width.
-      const _clampThunderInputWidth = () => {
-        const row = _idleOverlay?.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
-        const inputWrap = _idleOverlay?.querySelector('.ski-idle-thunder-input-wrap') as HTMLElement | null;
-        const quickActions = _idleOverlay?.querySelector('#ski-idle-quick-actions') as HTMLElement | null;
-        if (!row || !inputWrap || !quickActions) return;
-        const squidBtn = quickActions.querySelector('.ski-idle-quick-btn--squid') as HTMLElement | null;
-        const iusdBtn = quickActions.querySelector('.ski-idle-quick-btn--iusd') as HTMLElement | null;
-        const target = squidBtn || iusdBtn;
-        if (!target) return;
-        const rowRect = row.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        if (rowRect.width <= 0 || targetRect.width <= 0) return;
-        // Right edge of the squid/$ button, relative to the row's left edge.
-        const rightEdge = targetRect.right - rowRect.left;
-        inputWrap.style.maxWidth = `${Math.max(60, rightEdge)}px`;
-      };
-      requestAnimationFrame(_clampThunderInputWidth);
-      window.addEventListener('resize', _clampThunderInputWidth, { passive: true });
   };
 
   const _resetIdle = () => {

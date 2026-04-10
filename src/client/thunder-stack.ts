@@ -637,18 +637,27 @@ export async function lookupRecipientAddress(name: string): Promise<string | nul
   } catch { return null; }
 }
 
-/** Reverse lookup: address → primary SuiNS name. */
+/** Reverse lookup: address → primary SuiNS name (without .sui suffix). */
+const _reverseLookupCache: Record<string, string | null> = {};
 export async function reverseLookupName(address: string): Promise<string | null> {
+  if (!address) return null;
+  const key = address.toLowerCase();
+  if (key in _reverseLookupCache) return _reverseLookupCache[key];
   try {
     const res = await fetch(GQL_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: `{ address(address: "${address}") { defaultSuinsName } }` }),
+      body: JSON.stringify({ query: `{ address(address: "${address}") { defaultNameRecord { domain } } }` }),
     });
     const data = await res.json() as any;
-    const name = data?.data?.address?.defaultSuinsName;
-    return name ? name.replace(/\.sui$/, '') : null;
-  } catch { return null; }
+    const domain: string | undefined = data?.data?.address?.defaultNameRecord?.domain;
+    const name = domain ? domain.replace(/\.sui$/, '') : null;
+    _reverseLookupCache[key] = name;
+    return name;
+  } catch {
+    _reverseLookupCache[key] = null;
+    return null;
+  }
 }
 
 // Re-export types

@@ -11481,7 +11481,7 @@ function bindEvents() {
               _sentBubble.textContent = msgText || draft.raw || '';
               convoEl.appendChild(_sentBubble);
               convoEl.removeAttribute('hidden');
-              convoEl.scrollTop = convoEl.scrollHeight;
+              convoEl.scrollLeft = convoEl.scrollWidth;
             }
             // Refresh from DO after a short delay to catch any server-side additions
             setTimeout(() => _expandIdleConvo(recipients[0]), 1000);
@@ -11497,7 +11497,7 @@ function bindEvents() {
               failBubble.textContent = msgText;
               failBubble.title = txMsg;
               failBubble.style.cursor = 'pointer';
-              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
+              if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollLeft = convoEl.scrollWidth; }
               failBubble.addEventListener('click', () => {
                 failBubble.remove();
                 if (_idleThunderInput) _idleThunderInput.value = raw;
@@ -11646,7 +11646,7 @@ function bindEvents() {
         const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">${stormLabel} <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
         convoEl.innerHTML = title + bubbles;
         convoEl.removeAttribute('hidden');
-        convoEl.scrollTop = convoEl.scrollHeight;
+        convoEl.scrollLeft = convoEl.scrollWidth;
 
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)

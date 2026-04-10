@@ -8,11 +8,9 @@
  */
 import {
   createSuiStackMessagingClient,
-  MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG,
   type DecryptedMessage,
   type GroupRef,
 } from '@mysten/sui-stack-messaging';
-import { SessionKey, type ExportedSessionKey } from '@mysten/seal';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -82,67 +80,17 @@ let _address = '';
 
 // ─── Seal session key cache ─────────────────────────────────────────
 // The Seal SDK normally re-mints a session key on every page load (and prompts
-// the wallet for a personal-message signature each time). We:
-//   1. Bump TTL from the default 10min → 60min so a single sign covers an hour.
-//   2. Persist the exported key to sessionStorage so page refresh within the
-//      tab lifetime doesn't re-prompt. Keyed per wallet address so swapping
-//      accounts doesn't reuse the wrong key.
+// the wallet for a personal-message signature each time).
 //
-// The SDK's `getSessionKey` mode lets us own the whole lifecycle. We memoize
-// the in-flight mint promise so concurrent encrypt/decrypt calls share one
-// signing round-trip instead of opening several wallet popups in parallel.
-// Seal caps ttlMin at 30 minutes — can't set higher. Combined with
-// sessionStorage persistence this still gives "sign once per tab" UX
-// for the half-hour window; re-sign happens only on expiry or across
-// tab close.
+// Attempted a sessionStorage cache via the SDK's getSessionKey mode but the
+// manual SessionKey.create + setPersonalMessageSignature path produced
+// certificates the Seal key servers rejected with "Missing or invalid
+// parameters". Reverted to the address + onSign tier that the SDK wires
+// internally (see node_modules/.../session-key-manager.mjs). Only change
+// vs default: bump ttlMin from the SDK default (10 min) to the Seal cap
+// (30 min). Persistence across page refresh will require a passkey/PRF
+// wrapper as a Phase 2 upgrade.
 const SESSION_KEY_TTL_MIN = 30;
-const SESSION_STORAGE_KEY = (address: string) => `ski:seal-session:${address.toLowerCase()}`;
-let _sessionKeyPromise: Promise<SessionKey> | null = null;
-
-async function _loadOrMintSessionKey(
-  address: string,
-  signPersonalMessage: SignPersonalMessageFn,
-  gqlClient: SuiGraphQLClient,
-): Promise<SessionKey> {
-  // Cache hit within this tab's memory — return the live instance.
-  if (_sessionKeyPromise) return _sessionKeyPromise;
-
-  _sessionKeyPromise = (async () => {
-    // Try sessionStorage first.
-    try {
-      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY(address));
-      if (raw) {
-        const exported = JSON.parse(raw) as ExportedSessionKey;
-        if (exported.address?.toLowerCase() === address.toLowerCase()) {
-          const restored = SessionKey.import(exported, gqlClient as never);
-          if (!restored.isExpired()) return restored;
-        }
-      }
-    } catch { /* fall through to fresh mint */ }
-
-    // Mint fresh — prompts the wallet for one personal-message signature.
-    const key = await SessionKey.create({
-      address,
-      packageId: MAINNET_SUI_STACK_MESSAGING_PACKAGE_CONFIG.originalPackageId,
-      ttlMin: SESSION_KEY_TTL_MIN,
-      suiClient: gqlClient as never,
-    });
-    const personalMsg = key.getPersonalMessage();
-    const { signature } = await signPersonalMessage({ message: personalMsg });
-    await key.setPersonalMessageSignature(signature);
-
-    // Persist for the rest of the tab lifetime.
-    try {
-      sessionStorage.setItem(SESSION_STORAGE_KEY(address), JSON.stringify(key.export()));
-    } catch { /* storage quota / disabled — keep running from memory */ }
-
-    return key;
-  })();
-
-  // On failure, clear the promise so the next call retries cleanly.
-  _sessionKeyPromise.catch(() => { _sessionKeyPromise = null; });
-  return _sessionKeyPromise;
-}
 
 /**
  * Initialize the Thunder Timestream client with Seal encryption.
@@ -150,7 +98,6 @@ async function _loadOrMintSessionKey(
  */
 export function initThunderClient(opts: ThunderClientOptions) {
   _address = opts.address;
-  _sessionKeyPromise = null; // reset cache when wallet changes
 
   _signer = new DappKitSigner({
     address: opts.address,
@@ -163,7 +110,12 @@ export function initThunderClient(opts: ThunderClientOptions) {
     seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
       sessionKey: {
-        getSessionKey: () => _loadOrMintSessionKey(opts.address, opts.signPersonalMessage, gqlClient),
+        address: opts.address,
+        ttlMin: SESSION_KEY_TTL_MIN,
+        onSign: async (message: Uint8Array) => {
+          const { signature } = await opts.signPersonalMessage(message);
+          return signature;
+        },
       },
     },
     relayer: {
@@ -185,11 +137,6 @@ export function resetThunderClient() {
   }
   _client = null;
   _signer = null;
-  // Drop the cached Seal session key so a new wallet connection signs fresh.
-  if (_address) {
-    try { sessionStorage.removeItem(SESSION_STORAGE_KEY(_address)); } catch {}
-  }
-  _sessionKeyPromise = null;
   _address = '';
 }
 

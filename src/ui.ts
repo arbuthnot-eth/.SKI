@@ -9475,10 +9475,15 @@ function bindEvents() {
             const _curGid = _curMeHex && _curTgtHex ? `t-${[_curMeHex, _curTgtHex].sort().join('')}` : '';
             if (_curGid) _checkStormExists(_curGid);
             const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
-            // Idle icon is always ⛈️ (thunderstorm cloud) — represents "open storm",
-            // not "storm exists on-chain". The ⚡ bolt is reserved for active send.
-            _idleThunderSend.innerHTML = '\u26c8\ufe0f';
-            _idleThunderSend.title = _curHasStorm ? `Open Storm to ${_curTarget}` : `Create Storm with ${_curTarget}`;
+            // Icon depends on whether the storm is open in the UI. If
+            // the convo panel is already visible and decrypted, the
+            // button represents "thunder" (ready to fire) — ⚡ bolt +
+            // "Thunder <name>" tooltip. Otherwise ⛈️ "open storm".
+            const _convoVisible = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+            _idleThunderSend.innerHTML = _convoVisible ? '\u26a1' : '\u26c8\ufe0f';
+            _idleThunderSend.title = _convoVisible
+              ? `Thunder ${_curTarget}`
+              : (_curHasStorm ? `Open Storm to ${_curTarget}` : `Create Storm with ${_curTarget}`);
             _idleThunderSend.disabled = false;
             // Input always enabled — $ transfers don't need a Storm
             if (_idleThunderInput) {
@@ -9759,15 +9764,16 @@ function bindEvents() {
         const active = _idleThunderInputEl === document.activeElement || !!val;
         _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
         if (_thunderClearBtn) _thunderClearBtn.style.display = val ? '' : 'none';
-        // Icon swap: empty input = "open storm" ⛈️ (thunderstorm cloud),
-        // text present = "send thunder" ⚡ (lightning bolt). Skip when in
-        // quest mode or mid-send — those paths set their own content.
+        // Icon swap:
+        //   - text present → ⚡ bolt (send thunder)
+        //   - empty + storm convo already open in UI → ⚡ bolt (ready to thunder)
+        //   - empty + storm closed → ⛈️ cloud (open storm)
+        // Skip when in quest mode or mid-send — those paths set their own content.
         const _sendBtnEl = _idleThunderSend as HTMLElement | null;
         if (_sendBtnEl && !_sendBtnEl.dataset.questMode && !_sendBtnEl.querySelector('.ski-idle-thunder-spinner')) {
-          // Strip any message-only text (e.g. `@name` with no body) when
-          // deciding icon: if there's literally nothing to send, stay ⛈️.
           const _hasSendableText = val.replace(/@[a-z0-9-]+/gi, '').trim().length > 0;
-          const _nextIcon = _hasSendableText ? '\u26a1' : '\u26c8\ufe0f';
+          const _convoOpen = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+          const _nextIcon = (_hasSendableText || _convoOpen) ? '\u26a1' : '\u26c8\ufe0f';
           if (!_sendBtnEl.innerHTML.includes(_nextIcon)) {
             _sendBtnEl.innerHTML = _nextIcon;
           }
@@ -10413,6 +10419,8 @@ function bindEvents() {
             convoEl.setAttribute('hidden', '');
             _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
             try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+            // Icon flips back to ⛈️ once the convo is closed.
+            _renderThunderComposePreview?.();
           } else if (label) {
             _expandIdleConvo(label).catch(() => {});
             // Force the convo visible even if the fetch is still in flight.
@@ -11962,6 +11970,9 @@ function bindEvents() {
         // fetch round-trip. If the fetch comes back empty and the convo
         // closes itself, the class is removed on the failure path below.
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+        // Flip the icon to ⚡ "Thunder <name>" now that the convo is
+        // visible — _renderThunderComposePreview reads the open state.
+        _renderThunderComposePreview?.();
 
         let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
         try {

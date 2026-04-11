@@ -2724,10 +2724,9 @@ body {
   animation: ski-idle-fade 0.5s ease-in;
   transform-origin: top right;
   /* Floor the overlay width just enough to keep the name row usable.
-   * 280 is the sweet spot: input can show ~9-10 chars of a typed
-   * name, Storm action button fits inline, and the overlay doesn't
-   * sprawl. */
-  min-width: 280px;
+   * 230px: tight enough to stop sprawling, still wide enough for
+   * the input + Storm button + × purge cluster on one row. */
+  min-width: 230px;
   overflow: visible;
 }
 @keyframes ski-idle-fade {

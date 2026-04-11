@@ -2888,6 +2888,10 @@ body {
   flex-shrink: 0;
   padding: 5px 6px;
   border-radius: 6px;
+  /* Pinned to the right end of the row, with the × purge button
+   * sitting immediately after it. The input-wrap's flex: 1 consumes
+   * all the slack on the left so the input extends as far as
+   * possible before hitting the Storm button. */
   margin-left: auto;
   box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
@@ -2969,12 +2973,15 @@ body {
   border: 1px solid rgba(129, 140, 248, 0.55);
   color: #818cf8;
 }
-/* X clear button that sits next to the Storm action button. First
- * click arms the purge (all bubbles turn red). Second click fires
- * the bulk delete + pulls the local cache down with them. */
+/* X clear button — sits on the far right edge of the name row,
+ * immediately after the Storm action button. First click arms the
+ * purge (all bubbles turn red). Second click fires the bulk delete
+ * + pulls the local cache down with them. */
 .ski-idle-storm-purge {
   all: unset;
   flex-shrink: 0;
+  /* Pin hard-right so it doesn't shift when the row content varies. */
+  margin-left: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

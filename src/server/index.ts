@@ -1933,6 +1933,79 @@ app.post('/api/cache/attest-collateral', async (c) => {
   }
 });
 
+// Snorunt Lv.30 — directly attest a SOL-chain collateral delta under
+// a separate 'SOL' asset key. Cross-chain collateral should never
+// collide with the Sui-chain 'SUI' record that attestLiveCollateral
+// owns. Takes { valueUsdCents } so the caller can be precise.
+app.post('/api/cache/attest-sol-collateral', async (c) => {
+  try {
+    const body = await c.req.json() as { valueUsdCents: number };
+    if (!body.valueUsdCents) return c.json({ error: 'valueUsdCents required' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/attest-sol-collateral', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Snorunt Lv.30 — force-dispatch a known Solana deposit sig for
+// deposits whose getSignaturesForAddress returns empty from the
+// worker context (rate-limited RPC, etc.). Manual unblock path.
+app.post('/api/cache/force-dispatch-sol', async (c) => {
+  try {
+    const body = await c.req.json() as { sig: string; lamports: number; suiAddress: string };
+    if (!body.sig || !body.lamports || !body.suiAddress) return c.json({ error: 'sig, lamports, suiAddress required' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/force-dispatch-sol', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Snorunt Lv.30 — debug endpoint to see what _watchSolDeposits sees.
+app.post('/api/cache/debug-sol-watch', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/debug-sol-watch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Snorunt Lv.30 — reset the sol-watcher's last-processed cursor.
+// One-off fix for deposits stuck in pending because the old filter
+// logic excluded a single sig instead of walking forward from it.
+app.post('/api/cache/reset-sol-cursor', async (c) => {
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/reset-sol-cursor', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Chansey Lv.40 (#76) — manual activity-yield mint trigger. The
 // treasury mints iUSD up to its current surplus above 110% and sends
 // it to ultron's wallet. No-op if senior <= 1.1 * supply. Also fires

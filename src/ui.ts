@@ -3447,6 +3447,40 @@ let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
 // Thunder counts disabled — pending v4 migration (#63). Always empty.
 let _thunderCounts: Record<string, number> = {};
+
+/** Transfer tx digests known to be settled (claimed or recalled).
+ *  Populated by the click handler + the background settlement poll.
+ *  Persisted to localStorage so re-renders, reloads, and cross-session
+ *  views all paint settled bubbles gray from the start without a
+ *  network round-trip. Updated with the CLAIM tx digest too once the
+ *  recipient successfully claims, so the bubble can stamp a link to
+ *  the settlement record. */
+const _settledTxDigests: Set<string> = (() => {
+  try {
+    const raw = localStorage.getItem('ski:iou-settled:v1');
+    if (raw) return new Set<string>(JSON.parse(raw));
+  } catch {}
+  return new Set<string>();
+})();
+/** Map deposit-tx digest → claim/recall-tx digest, so settled bubbles
+ *  can stamp a link to the *settlement* tx rather than the deposit. */
+const _settlementTxDigests: Record<string, string> = (() => {
+  try {
+    const raw = localStorage.getItem('ski:iou-settlement:v1');
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+})();
+function _persistSettled(): void {
+  try { localStorage.setItem('ski:iou-settled:v1', JSON.stringify([..._settledTxDigests])); } catch {}
+  try { localStorage.setItem('ski:iou-settlement:v1', JSON.stringify(_settlementTxDigests)); } catch {}
+}
+function _markSettled(depositDigest: string, settlementDigest?: string): void {
+  if (!depositDigest) return;
+  _settledTxDigests.add(depositDigest);
+  if (settlementDigest) _settlementTxDigests[depositDigest] = settlementDigest;
+  _persistSettled();
+}
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
@@ -12720,9 +12754,23 @@ function bindEvents() {
           const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
           const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
           if (_isTransfer) {
-            const cls = `ski-idle-bubble--transfer`;
             const _digestMatch = m.text.match(/tx:([A-Za-z0-9]{40,60})/);
             const _digest = _digestMatch ? _digestMatch[1] : '';
+            // Pre-apply the settled class if we've seen this digest
+            // resolve to a consumed vault before. Survives convo
+            // re-renders so the gray paint doesn't flash back to
+            // green on every WS tick.
+            const _isKnownSettled = _digest && _settledTxDigests.has(_digest);
+            const cls = _isKnownSettled
+              ? `ski-idle-bubble--transfer ski-idle-bubble--transfer-settled`
+              : `ski-idle-bubble--transfer`;
+            // If we recorded the settlement (claim/recall) tx digest,
+            // stamp a green ✓ pill onto the label so the user can click
+            // through to the on-chain record.
+            const _settlementDigest = _isKnownSettled ? (_settlementTxDigests[_digest] || '') : '';
+            const _settlementPillHtml = _settlementDigest
+              ? `<a class="ski-idle-bubble-claim-tx" href="https://suivision.xyz/txblock/${esc(_settlementDigest)}" target="_blank" rel="noopener noreferrer" data-no-bubble-click="1" title="Settlement tx — ${esc(_settlementDigest)}"> \u2713 ${esc(_settlementDigest.slice(0, 6))}\u2026</a>`
+              : '';
             const _rawLabel = m.text.replace(/\s*\u00b7?\s*tx:[A-Za-z0-9]+\s*$/, '').trim();
             // Turn any @mention inside the label into a clickable
             // pill that populates the name input on click (same
@@ -12739,9 +12787,12 @@ function bindEvents() {
             const _transferNameTag = !isOut && _bareSender
               ? `<span class="ski-idle-bubble-sender" data-populate-name="${esc(_bareSender)}" data-no-bubble-click="1" title="Populate name input with @${esc(_bareSender)}">${esc(_bareSender)}</span>`
               : '';
-            const _inner = `${_transferNameTag}${_labelHtml}`;
+            const _inner = `${_transferNameTag}${_labelHtml}${_settlementPillHtml}`;
             const _role = isOut ? 'sender' : 'recipient';
-            return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_digest ? 'Click to claim / recall / view on-chain' : 'On-chain record (legacy)'}">${_inner}</div>`;
+            const _bubbleTitle = _isKnownSettled
+              ? 'Settled'
+              : (_digest ? 'Click to claim / recall' : 'On-chain record (legacy)');
+            return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_bubbleTitle}">${_inner}</div>`;
           }
           return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
@@ -12779,15 +12830,34 @@ function bindEvents() {
               if (b.classList.contains('ski-idle-bubble--transfer-settled')) return;
               const tx = b.dataset.tx || '';
               if (!tx) return;
+              // Fast path: we already know this digest is settled
+              // from a prior click or poll. Paint immediately.
+              if (_settledTxDigests.has(tx)) {
+                b.classList.add('ski-idle-bubble--transfer-settled');
+                return;
+              }
               const ref = await lookupAnyVaultFromDigest(tx);
               if (!ref) {
-                // Can't find the creation record anymore (indexer lag
-                // or old digest format) — leave the bubble live.
+                // lookupAnyVaultFromDigest fails two ways:
+                //   (a) the vault object has been consumed (deleted),
+                //       so the effects query no longer returns a live
+                //       outputState for it.
+                //   (b) the indexer hasn't caught up yet (rare; the
+                //       bubble is usually painted ≥1s after the tx).
+                // Treating it as settled is the right call almost
+                // all the time — the alternative ("leave live") is
+                // exactly the bug the user saw. Worst case under (b)
+                // is a brief gray flash on a brand-new deposit that
+                // fixes itself on the next render once the indexer
+                // catches up.
+                b.classList.add('ski-idle-bubble--transfer-settled');
+                _markSettled(tx);
                 return;
               }
               const live = await isVaultLive(ref.objectId);
               if (!live) {
                 b.classList.add('ski-idle-bubble--transfer-settled');
+                _markSettled(tx);
               }
             }));
           } catch (e) {
@@ -12960,6 +13030,9 @@ function bindEvents() {
                     // that navigates to Suivision.
                     _bubEl.classList.remove('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
                     _bubEl.classList.add('ski-idle-bubble--transfer-settled');
+                    // Persist so the next convo re-render keeps the
+                    // gray paint instead of flashing back to green.
+                    _markSettled(_txDigest);
                     showToast('Escrow already settled');
                     return;
                   }
@@ -13044,11 +13117,11 @@ function bindEvents() {
                       showToast(claimDigest ? `\u2705 Claimed — ${claimDigest.slice(0, 10)}\u2026` : '\u2705 Claimed');
                       // Paint the bubble as settled + stamp the claim
                       // tx digest in so the user can click through to
-                      // the on-chain settlement record. The bubble's
-                      // own click now opens the claim tx (not the
-                      // deposit), and a small ' · claimed' marker is
-                      // appended to the label so it's visually obvious.
+                      // the on-chain settlement record. Persisted via
+                      // _markSettled so re-renders keep both the gray
+                      // paint and the stamped pill.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
+                      _markSettled(_txDigest, claimDigest || undefined);
                       if (claimDigest) {
                         _bubEl.dataset.tx = claimDigest;
                         _bubEl.dataset.claimTx = claimDigest;
@@ -13100,10 +13173,12 @@ function bindEvents() {
                         : await signAndExecuteTransaction(bytes);
                       const digest = (r as any)?.digest || '';
                       showToast(digest ? `\u21a9\ufe0f Recalled — ${digest.slice(0, 10)}\u2026` : '\u21a9\ufe0f Recalled');
-                      // Recall success: balance returned. Animate the
-                      // bubble out — a short collapse then remove from
-                      // DOM so the storm convo cleanly drops the refund
-                      // off the conversation. Feels like undo.
+                      // Recall success: balance returned. Persist the
+                      // settled state so the next re-render paints the
+                      // bubble gray (rather than flashing green) until
+                      // the DO drops the message from history, then
+                      // animate it out for this render.
+                      _markSettled(_txDigest, digest || undefined);
                       _bubEl.classList.remove('ski-idle-bubble--recall-armed');
                       _bubEl.classList.add('ski-idle-bubble--recall-done');
                       setTimeout(() => { try { _bubEl.remove(); } catch {} }, 320);

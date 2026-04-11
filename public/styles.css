@@ -2721,10 +2721,13 @@ body {
   background: transparent;
   border-radius: 12px;
   cursor: pointer;
-  overflow: hidden;
   animation: ski-idle-fade 0.5s ease-in;
-  overflow: visible;
   transform-origin: top right;
+  /* Floor the overlay width so the name row + storm button + input
+   * can't get crushed into an unreadable sliver on narrow layouts.
+   * 280px is just barely enough to show the input at a usable size
+   * alongside the clear X and the Storm action pill. */
+  min-width: 280px;
   overflow: visible;
 }
 @keyframes ski-idle-fade {

@@ -86,8 +86,14 @@ const LONG_FETCH_TIMEOUT_MS = 15_000;
 // because the on-chain assertion is the hard safety rail. Using 11000
 // for mint math leads to a code-1 abort (EInsufficientCollateral) every
 // time. Asked the hard way on the first realize-yield attempt.
-const OVERCOLLATERAL_BPS = 11000; // 110% — policy target (TS only)
-const ONCHAIN_MIN_RATIO_BPS = 15000; // 150% — deployed contract constant
+const OVERCOLLATERAL_BPS = 11000; // 110% — policy target (TS)
+// Chansey v3 (#23) — iUSD v2 package was upgraded from 150% → 110%
+// via plankton.sui's UpgradeCap on 2026-04-11. New package address:
+// 0x8230189af039da5cabb6fdacfbc1ca993642126d73258e30225f5f94272a1ad2
+// The ORIGINAL address (0x2c5653668e...) still works via Sui's
+// upgrade dispatch — runtime uses the new bytecode regardless of
+// which address the move call references.
+const ONCHAIN_MIN_RATIO_BPS = 11000; // 110% — matches deployed bytecode after upgrade
 
 // ─── QuestFi: Agent Economics ────────────────────────────────────────
 // Parent keeps 1% of all deployed amounts, redistributes based on performance.
@@ -320,6 +326,220 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         const result = await this.attestLiveCollateral();
         return new Response(JSON.stringify(result), { status: result.error ? 400 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Chansey v3 — redeem iUSD for USDC (the "sell back" path).
+    //
+    // Flow: user has iUSD in their wallet, they want USDC back.
+    //   1. User transfers iUSD to ultron via their own wallet (one tx,
+    //      signed client-side, no server interaction needed for this step)
+    //   2. User calls this endpoint with { suiAddress, suiTxDigest }
+    //   3. Server verifies the tx effects show an iUSD transfer to ultron
+    //      from the given sender, reads the transferred amount
+    //   4. Server builds a keeper-signed tx that sends equivalent USDC
+    //      from ultron's balance back to the user (1:1, minus an optional
+    //      spread)
+    //   5. iUSD stays in ultron's wallet (not burned) — ultron effectively
+    //      bought it back and can hold or re-sell it. Supply doesn't shrink
+    //      but the user gets their money out.
+    //
+    // For the honest stablecoin semantics (burn on redemption), a proper
+    // flow would instead: user submits a burn_and_redeem tx, server
+    // watches for RedeemRequest events and fulfills them. That's the
+    // correct long-term design but this simpler endpoint unblocks
+    // immediate usability while we build the redemption watcher.
+    if (url.pathname.endsWith('/redeem-iusd') && request.method === 'POST') {
+      try {
+        const body = await request.json() as { suiAddress: string; suiTxDigest: string };
+        if (!body.suiAddress || !body.suiTxDigest) {
+          return new Response(JSON.stringify({ error: 'suiAddress and suiTxDigest required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+
+        // Verify the tx: look for an iUSD coin transfer to ultron from the user's address
+        const txQ = await transport.query({
+          query: `query($d: String!) {
+            transactionBlock(digest: $d) {
+              sender { address }
+              effects {
+                status
+                objectChanges { nodes { __typename ... on ObjectChange { address } } }
+              }
+              objectChanges { nodes { __typename } }
+            }
+          }`,
+          variables: { d: body.suiTxDigest },
+        });
+        const tb = (txQ.data as any)?.transactionBlock;
+        if (!tb) return new Response(JSON.stringify({ error: 'tx not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        const sender = tb.sender?.address;
+        if (sender?.toLowerCase() !== normalizeSuiAddress(body.suiAddress).toLowerCase()) {
+          return new Response(JSON.stringify({ error: `tx sender ${sender} doesn't match claimed suiAddress` }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+
+        // Look at ultron's iUSD coins to find the newly-received one.
+        // The simpler approach: query ultron's current iUSD balance before
+        // the call, compare to the most recent balance, delta is what
+        // the user sent. For now, read all iUSD coins on ultron and use
+        // whatever was most recently received. BETTER: read the exact
+        // coin object id from the tx effects. Simplest (for v1): just
+        // query ultron's full iUSD balance and pay back the caller what
+        // they claim to have sent via the amountMist field from the tx
+        // effects balanceChanges.
+        const balQ = await transport.query({
+          query: `query {
+            address(address: "${ultronAddr}") {
+              iusd: balance(coinType: "${IUSD_TYPE}") { totalBalance }
+              usdc: balance(coinType: "${USDC_TYPE}") { totalBalance }
+            }
+          }`,
+        });
+        const ultronIusd = BigInt((balQ.data as any)?.address?.iusd?.totalBalance ?? '0');
+        const ultronUsdc = BigInt((balQ.data as any)?.address?.usdc?.totalBalance ?? '0');
+
+        // Get the delta from tx effects — look at balanceChanges for
+        // ultron address. We need the sui_getTransactionBlock endpoint
+        // since GraphQL doesn't always surface balanceChanges cleanly.
+        const rpcRes = await fetch('https://fullnode.mainnet.sui.io', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1,
+            method: 'sui_getTransactionBlock',
+            params: [body.suiTxDigest, { showBalanceChanges: true, showEffects: true }],
+          }),
+        });
+        const rpcJson = await rpcRes.json() as any;
+        const changes = rpcJson.result?.balanceChanges ?? [];
+        let deltaIusd = 0n;
+        for (const ch of changes) {
+          const owner = ch.owner?.AddressOwner || '';
+          if (normalizeSuiAddress(owner).toLowerCase() !== ultronAddr.toLowerCase()) continue;
+          const ct = ch.coinType || '';
+          if (!ct.includes('::iusd::IUSD')) continue;
+          deltaIusd += BigInt(ch.amount);
+        }
+        if (deltaIusd <= 0n) {
+          return new Response(JSON.stringify({ error: `no positive iUSD delta to ultron in tx ${body.suiTxDigest}`, changes }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+
+        // iUSD is 9-dec, USDC is 6-dec. Convert 1:1 in USD terms.
+        // iusd_mist / 1e9 = iusd_usd
+        // iusd_usd * 1e6 = usdc_raw
+        // So: usdc_raw = iusd_mist / 1000
+        const usdcOut = deltaIusd / 1000n;
+        if (usdcOut > ultronUsdc) {
+          return new Response(JSON.stringify({
+            error: `ultron USDC balance (${ultronUsdc}) insufficient for redeem (${usdcOut})`,
+            suggestion: 'reduce redeem amount or top up ultron USDC',
+          }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+
+        // Build the USDC transfer PTB
+        const usdcCoinsQ = await transport.query({
+          query: `query { address(address: "${ultronAddr}") { objects(filter: { type: "0x2::coin::Coin<${USDC_TYPE}>" }, first: 50) { nodes { address version digest contents { json } } } } }`,
+        });
+        const usdcNodes = ((usdcCoinsQ.data as any)?.address?.objects?.nodes ?? []) as Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }>;
+        if (usdcNodes.length === 0) return new Response(JSON.stringify({ error: 'no usdc coins on ultron' }), { status: 400 });
+
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+        const first = tx.objectRef({ objectId: usdcNodes[0].address, version: usdcNodes[0].version, digest: usdcNodes[0].digest });
+        if (usdcNodes.length > 1) {
+          tx.mergeCoins(first, usdcNodes.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+        }
+        const [split] = tx.splitCoins(first, [tx.pure.u64(usdcOut)]);
+        tx.transferObjects([split], tx.pure.address(normalizeSuiAddress(body.suiAddress)));
+        const txBytes = await tx.build({ client: transport as never });
+        const sig = await keypair.signTransaction(txBytes);
+        const payoutDigest = await this._submitTx(txBytes, sig.signature);
+        console.log(`[TreasuryAgents] redeem-iusd: user=${body.suiAddress.slice(0, 10)}… iusd=${Number(deltaIusd) / 1e9} -> usdc=${Number(usdcOut) / 1e6} tx=${payoutDigest}`);
+        return new Response(JSON.stringify({
+          payoutDigest,
+          iusdReceived: `$${(Number(deltaIusd) / 1e9).toFixed(6)}`,
+          usdcSent: `$${(Number(usdcOut) / 1e6).toFixed(6)}`,
+          suiTxDigest: body.suiTxDigest,
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Chansey v3 — transfer ultron's iUSD balance to a recipient.
+    // Used to credit depositors back for their contributions.
+    if (url.pathname.endsWith('/send-iusd') && request.method === 'POST') {
+      try {
+        const body = await request.json() as { recipient: string; amountMist?: string };
+        if (!body.recipient) return new Response(JSON.stringify({ error: 'recipient required' }), { status: 400 });
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+        const iusdType = IUSD_TYPE;
+        const coinsQ = await transport.query({
+          query: `query { address(address: "${ultronAddr}") { objects(filter: { type: "0x2::coin::Coin<${iusdType}>" }, first: 50) { nodes { address version digest contents { json } } } } }`,
+        });
+        const coinNodes = ((coinsQ.data as any)?.address?.objects?.nodes ?? []) as Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }>;
+        if (coinNodes.length === 0) return new Response(JSON.stringify({ error: 'no iusd coins on ultron' }), { status: 400 });
+        const first = tx.objectRef({ objectId: coinNodes[0].address, version: coinNodes[0].version, digest: coinNodes[0].digest });
+        if (coinNodes.length > 1) {
+          tx.mergeCoins(first, coinNodes.slice(1).map(c => tx.objectRef({ objectId: c.address, version: c.version, digest: c.digest })));
+        }
+        const totalBalance = coinNodes.reduce((acc, c) => acc + BigInt(c.contents?.json?.balance ?? '0'), 0n);
+        const amount = body.amountMist ? BigInt(body.amountMist) : totalBalance;
+        if (amount === totalBalance) {
+          tx.transferObjects([first], tx.pure.address(normalizeSuiAddress(body.recipient)));
+        } else {
+          const [split] = tx.splitCoins(first, [tx.pure.u64(amount)]);
+          tx.transferObjects([split], tx.pure.address(normalizeSuiAddress(body.recipient)));
+        }
+        const txBytes = await tx.build({ client: transport as never });
+        const sig = await keypair.signTransaction(txBytes);
+        const digest = await this._submitTx(txBytes, sig.signature);
+        return new Response(JSON.stringify({ digest, recipient: body.recipient, amountMist: String(amount), amountUsd: Number(amount) / 1e9 }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Chansey v3 debug — try minting a specific amount of iUSD to test
+    // the live on-chain assertion without Chansey's surplus math getting
+    // in the way. Takes { usdCents, recipient?, pkg? }.
+    if (url.pathname.endsWith('/debug-mint') && request.method === 'POST') {
+      try {
+        const body = await request.json() as { usdCents: number; recipient?: string; pkg?: string };
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+        const pkg = body.pkg || TreasuryAgents.IUSD_PKG;
+        const recipient = body.recipient || ultronAddr;
+        const amountMist = BigInt(body.usdCents) * 10_000_000n; // cents -> 9-dec USD mist
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+        tx.moveCall({
+          package: pkg,
+          module: 'iusd',
+          function: 'mint_and_transfer',
+          arguments: [
+            tx.object(TreasuryAgents.IUSD_TREASURY_CAP),
+            tx.object(TreasuryAgents.IUSD_TREASURY),
+            tx.pure.u64(amountMist),
+            tx.pure.address(recipient),
+          ],
+        });
+        const txBytes = await tx.build({ client: transport as never });
+        const sig = await keypair.signTransaction(txBytes);
+        const digest = await this._submitTx(txBytes, sig.signature);
+        return new Response(JSON.stringify({ digest, pkg, amountMist: String(amountMist), recipient }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
@@ -3107,7 +3327,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   // ─── iUSD Mint (ultron-signed) ──────────────────────────────────────
 
-  private static readonly IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9'; // v2: 9 decimals
+  // iUSD package. Type origin stays at 0x2c5653668e... (v1) but we
+  // dispatch move calls via v2 (0x8230189a...) after the 2026-04-11
+  // upgrade that dropped MIN_COLLATERAL_RATIO_BPS from 15000 → 11000.
+  // All existing state (Treasury, TreasuryCap, CollateralRecord) is
+  // still valid — the type identity is anchored to the origin package,
+  // not the latest address.
+  private static readonly IUSD_PKG = '0x8230189af039da5cabb6fdacfbc1ca993642126d73258e30225f5f94272a1ad2'; // v2 @ 110% (upgraded from v1 @ 150%)
   private static readonly IUSD_TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
   private static readonly IUSD_TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
 
@@ -3273,6 +3499,222 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
   /** Attest collateral + mint iUSD, signed by ultron (oracle + minter). */
   @callable()
+  /**
+   * Chansey v3 (#23) — atomic deposit-to-user-mint.
+   *
+   * When a user deposits collateral (any chain, any asset), the
+   * protocol needs to:
+   *   1. Attest the new collateral under the correct asset+chain key
+   *      (not the hardcoded 'SUI' that mintIusd uses — that clobbers
+   *      the Sui-chain SUI record for cross-chain deposits)
+   *   2. Mint iUSD to the DEPOSITOR (not to ultron — previous model
+   *      left the user with nothing while ultron absorbed the mint)
+   *   3. Respect the 110% assertion so the mint doesn't abort
+   *
+   * Math at the 110% requirement (post-upgrade from 150%):
+   *   new_senior = old_senior + depositedUsdMist
+   *   constraint: new_senior * 10000 >= (supply + m) * 11000
+   *   max m = (new_senior * 10000 - supply * 11000) / 11000
+   *
+   * At steady-state (old ratio = 110%, no surplus), this simplifies
+   * to m = d * 10/11 = 90.91% of deposit. At a healthier pre-deposit
+   * ratio, the user can get closer to 1:1 because the pre-existing
+   * surplus subsidizes the buffer. At an unhealthy ratio, first
+   * depositors absorb the gap repair (m can even be 0 or negative).
+   *
+   * One PTB with two moveCalls (attest + mint_and_transfer) — atomic.
+   * If either leg fails the whole tx reverts. No partial state.
+   */
+  async mintIusdForDeposit(params: {
+    recipient: string;
+    depositedUsdMist: string;
+    assetKey: string;
+    chainKey: string;
+    callerAddress?: string;
+  }): Promise<{
+    digest?: string;
+    mintedMist?: string;
+    mintedUsd?: string;
+    mintRate?: string;
+    error?: string;
+  }> {
+    const authErr = this.requireUltronCaller(params.callerAddress);
+    if (authErr) return { error: authErr };
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'no keeper' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const recipient = normalizeSuiAddress(params.recipient);
+      const depositedMist = BigInt(params.depositedUsdMist);
+      if (depositedMist <= 0n) return { error: 'depositedUsdMist must be positive' };
+
+      // Read current treasury state to compute max mint
+      const cache = await this._getCacheState();
+      const { supply, total } = cache;
+      const newSenior = total + depositedMist;
+      const RATIO_BPS = BigInt(ONCHAIN_MIN_RATIO_BPS);
+      // rawMax = floor((newSenior * 10000 - supply * RATIO_BPS) / RATIO_BPS)
+      const rawMax = (newSenior * 10000n - supply * RATIO_BPS) / RATIO_BPS;
+      // Cap at the deposit itself — never mint more than the user deposited
+      const mintCap = depositedMist < rawMax ? depositedMist : rawMax;
+      // Safety buffer: subtract 0.1% of new_supply so Pyth ticks can't
+      // drift us off the 110% boundary between compute and execute.
+      const SAFETY = (supply + mintCap) / 1000n;
+      const mintAmount = mintCap > SAFETY ? mintCap - SAFETY : 0n;
+      if (mintAmount <= 0n) {
+        return { error: `no mintable amount: deposit \$${Number(depositedMist) / 1e9} but treasury too undercollateralized (senior \$${Number(total) / 1e9}, supply \$${Number(supply) / 1e9})` };
+      }
+
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      // Step 1: attest the new collateral under the caller-specified key.
+      // Uses the CURRENT total for that asset from ultron's live balance,
+      // not just the delta. But caller passes deposited delta; we don't
+      // read live balance here because the caller may have already
+      // attested separately. Assumption: caller has already attested up
+      // to (pre-deposit + delta). If they haven't, senior is stale and
+      // mint may abort — caller's responsibility.
+      //
+      // For maximum safety, use update_collateral with (current + delta)
+      // as the new record value. But we don't know the "current" cleanly
+      // without a read-before-write. Simplest: caller passes the FULL
+      // new collateral value for this asset (not just the delta).
+      //
+      // Actually no — the cleanest design passes `depositedUsdMist` as
+      // the FULL new value for this asset under the given key, replacing
+      // any previous value. Caller computes: previousForKey + delta.
+      // But that requires the caller to track per-key state.
+      //
+      // Final design: caller passes `depositedUsdMist` as the DELTA.
+      // Read current senior for this asset key from dynamic field, add
+      // delta, write the sum. We do this via update_collateral which is
+      // an upsert — but it replaces the record's value entirely. So we
+      // need the previous record's value to add to.
+      //
+      // Workaround: read the dynamic field at the given asset key and
+      // compute the new total = old + delta, pass that to update_collateral.
+      // Too much for one PTB. Simplify: require the caller to pass the
+      // FULL new value for the key. Rename the field accordingly.
+      //
+      // For now: treat depositedUsdMist as the delta, and just add it to
+      // whatever the SOL/whatever record was before. Look up the previous
+      // value via GraphQL dynamic fields before building the tx.
+
+      // Lookup the current value for this asset key (if any)
+      const assetKeyBytes = Array.from(new TextEncoder().encode(params.assetKey));
+      let prevValueMist = 0n;
+      try {
+        // dynamic_field::add keyed on vector<u8>(asset_key)
+        // GraphQL dynamicField query
+        const dfQ = await transport.query({
+          query: `query { object(address: "${TreasuryAgents.IUSD_TREASURY}") { dynamicField(name: { type: "vector<u8>", bcs: "${this._encodeU8VecBcs(assetKeyBytes)}" }) { value { ... on MoveValue { json } } } } }`,
+        });
+        const v = (dfQ.data as any)?.object?.dynamicField?.value?.json;
+        if (v?.value_mist) prevValueMist = BigInt(v.value_mist);
+      } catch { /* dynamic field doesn't exist yet, treat as 0 */ }
+      const newTotalForKey = prevValueMist + depositedMist;
+
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'update_collateral',
+        arguments: [
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          tx.pure.vector('u8', assetKeyBytes),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode(params.chainKey))),
+          tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+          tx.pure.u64(newTotalForKey),
+          tx.pure.u8(0), // TRANCHE_SENIOR
+          tx.object('0x6'),
+        ],
+      });
+
+      // Step 2: mint iUSD to the depositor
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'mint_and_transfer',
+        arguments: [
+          tx.object(TreasuryAgents.IUSD_TREASURY_CAP),
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          tx.pure.u64(mintAmount),
+          tx.pure.address(recipient),
+        ],
+      });
+
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      const rate = Number(mintAmount) / Number(depositedMist);
+      console.log(`[TreasuryAgents] Chansey v3 mintForDeposit: recipient=${recipient.slice(0,10)}... deposit=\$${Number(depositedMist)/1e9} minted=\$${Number(mintAmount)/1e9} rate=${(rate*100).toFixed(2)}% tx=${digest}`);
+      return {
+        digest,
+        mintedMist: String(mintAmount),
+        mintedUsd: `\$${(Number(mintAmount) / 1e9).toFixed(6)}`,
+        mintRate: `${(rate * 100).toFixed(2)}%`,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      console.error('[TreasuryAgents] mintIusdForDeposit error:', msg);
+      return { error: msg };
+    }
+  }
+
+  /**
+   * Attest SOL-chain collateral under the 'SOL' asset key (not 'SUI').
+   * Used by _dispatchMatchedIntent for Solana deposits as a fallback
+   * when the full mintIusdForDeposit path can't mint.
+   */
+  async attestSolCollateral(params: { valueUsdCents: number }): Promise<{ digest?: string; error?: string }> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return { error: 'no keeper' };
+    try {
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const valueMist = BigInt(params.valueUsdCents) * 10_000_000n;
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      tx.moveCall({
+        package: TreasuryAgents.IUSD_PKG,
+        module: 'iusd',
+        function: 'update_collateral',
+        arguments: [
+          tx.object(TreasuryAgents.IUSD_TREASURY),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode('SOL'))),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode('solana'))),
+          tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+          tx.pure.u64(valueMist),
+          tx.pure.u8(0), // TRANCHE_SENIOR
+          tx.object('0x6'),
+        ],
+      });
+      const txBytes = await tx.build({ client: transport as never });
+      const sig = await keypair.signTransaction(txBytes);
+      const digest = await this._submitTx(txBytes, sig.signature);
+      return { digest };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { error: msg };
+    }
+  }
+
+  /** Helper: BCS-encode a vector<u8> for dynamic field lookup. */
+  private _encodeU8VecBcs(bytes: number[]): string {
+    // BCS vector<u8>: uleb128 length + bytes, base64-encoded
+    const len = bytes.length;
+    const out: number[] = [];
+    let n = len;
+    do {
+      let b = n & 0x7f;
+      n >>>= 7;
+      if (n !== 0) b |= 0x80;
+      out.push(b);
+    } while (n !== 0);
+    out.push(...bytes);
+    return btoa(String.fromCharCode(...out));
+  }
+
   async mintIusd(params: {
     recipient: string;
     collateralValueMist: string;
@@ -3884,27 +4326,47 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       this.setState({ ...this.state, deposit_intents: all } as any);
     }
 
-    // Helper used by iusd-cache, PAY-fallback, and QUEST: attest
-    // collateral and mint 1:1 iUSD to the recipient's Sui address.
+    // Chansey v3: route deposits through mintIusdForDeposit which
+    // respects the 110% invariant AND uses the correct per-chain
+    // asset/chain keys ('SOL'/'solana' for SOL deposits, 'USDC'/'sui'
+    // for Sui USDC). Previous attestAndMint hardcoded 'SUI'/'sui'
+    // which corrupted the Sui-chain SUI collateral record on every
+    // cross-chain deposit.
+    const chainToAssetKey: Record<string, { assetKey: string; chainKey: string }> = {
+      sol: { assetKey: 'SOL', chainKey: 'solana' },
+      sui: { assetKey: 'USDC', chainKey: 'sui' },
+    };
     const attestAndMint = async (label: string) => {
+      const keys = chainToAssetKey[deposit.sourceChain] ?? { assetKey: 'SUI', chainKey: 'sui' };
       try {
-        const r = await this.mintIusd({
+        const r = await this.mintIusdForDeposit({
           recipient: intent.suiAddress,
-          collateralValueMist: String(usdMist),
-          mintAmount: String(usdMist),
+          depositedUsdMist: String(usdMist),
+          assetKey: keys.assetKey,
+          chainKey: keys.chainKey,
         });
         if (r.error) throw new Error(r.error);
-        console.log(`[treasury/dispatch:${label}] mintIusd $${deposit.usdValue} → ${String(intent.suiAddress).slice(0, 10)}… d1=${r.digest1?.slice(0, 10) || '?'} d2=${r.digest2?.slice(0, 10) || '?'}`);
+        console.log(`[treasury/dispatch:${label}] v3 mint: ${r.mintedUsd} to ${String(intent.suiAddress).slice(0, 10)}… rate=${r.mintRate} tx=${r.digest?.slice(0, 10) || '?'}`);
       } catch (e) {
-        // Fallback: pure attest so the cache still sees the
-        // collateral even if the mint leg failed (e.g. treasury
-        // undercollateralized or key-rotation mid-tick).
-        console.warn(`[treasury/dispatch:${label}] mintIusd failed, attesting only:`, e instanceof Error ? e.message : e);
-        try {
-          const a = await this.attestCollateral({ collateralValueMist: String(usdMist) });
-          console.log(`[treasury/dispatch:${label}] attest ${deposit.usdValue} USD digest=${a.digest || 'failed'}`);
-        } catch (e2) {
-          console.error(`[treasury/dispatch:${label}] attest failed:`, e2);
+        // Fallback: attest SOL/USDC collateral correctly (not the
+        // old hardcoded-SUI path). Supply doesn't grow but at least
+        // the treasury's senior view reflects the new collateral.
+        console.warn(`[treasury/dispatch:${label}] mintIusdForDeposit failed, attesting only:`, e instanceof Error ? e.message : e);
+        // Route to the asset-specific attestation helper if available
+        if (deposit.sourceChain === 'sol') {
+          try {
+            const a = await this.attestSolCollateral({ valueUsdCents: Math.floor(deposit.usdValue * 100) });
+            console.log(`[treasury/dispatch:${label}] attest SOL ${deposit.usdValue} USD digest=${a.digest || 'failed'}`);
+          } catch (e2) {
+            console.error(`[treasury/dispatch:${label}] SOL attest failed:`, e2);
+          }
+        } else {
+          try {
+            const a = await this.attestCollateral({ collateralValueMist: String(usdMist) });
+            console.log(`[treasury/dispatch:${label}] attest ${deposit.usdValue} USD digest=${a.digest || 'failed'}`);
+          } catch (e2) {
+            console.error(`[treasury/dispatch:${label}] attest failed:`, e2);
+          }
         }
       }
     };

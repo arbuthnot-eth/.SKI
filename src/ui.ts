@@ -11996,7 +11996,15 @@ function bindEvents() {
         // actually existing once there's at least one real message.
         if (entries.length > 0) {
           _markStormExists(groupId);
+        }
+        // Always mirror the fresh fetch into the encrypted history cache
+        // — even when empty. If we skipped the save for zero-length
+        // fetches, deletes would silently resurrect on next hard refresh
+        // because the stale cache entries would still paint on SWR.
+        if (entries.length > 0) {
           _saveThunderHist(groupId, entries).catch(() => {});
+        } else {
+          try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
         }
         _updateIdleStatus();
         try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
@@ -12164,14 +12172,35 @@ function bindEvents() {
                 (bubble as HTMLElement).textContent = '\u2026';
                 // Delete signals locally (SDK handles off-chain message lifecycle)
 
-                // Delete all struck bubbles from DOM
+                // Delete all struck bubbles from DO (awaited) + DOM.
+                // Include senderAddress so the DO participant check
+                // passes, and await so we know the deletes actually
+                // landed before we stop polling.
+                const _myAddrForStrike = getState().address || '';
                 for (let i = 0; i <= idx; i++) {
                   const b = allBubbles[i] as HTMLElement;
                   const bId = b.dataset.id || '';
-                  // Delete from DO
-                  try { fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: bId }) }); } catch {}
+                  try {
+                    const _r = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ messageId: bId, senderAddress: _myAddrForStrike }),
+                    });
+                    if (!_r.ok) console.warn('[thunder] strike delete rejected:', _r.status, bId);
+                  } catch (e) { console.warn('[thunder] strike delete threw:', e); }
                   b.remove();
                 }
+                // Prune the local encrypted history cache too so hard
+                // refresh can't resurrect struck messages from SWR.
+                try {
+                  const cached = await _loadThunderHist(groupId);
+                  if (cached) {
+                    const struckIds = new Set(allBubbles.slice(0, idx + 1).map(b => (b as HTMLElement).dataset.id || ''));
+                    const pruned = cached.filter(m => !struckIds.has(m.messageId));
+                    if (pruned.length > 0) await _saveThunderHist(groupId, pruned);
+                    else try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+                  }
+                } catch {}
 
                 // Update counts
                 _thunderCounts[bare] = 0;
@@ -12179,15 +12208,41 @@ function bindEvents() {
 
                 showToast(`\u26a1 ${strikeCount} struck \u2014 rebate \u2192 treasury`);
               } else {
-                // Delete from DO + remove from DOM
+                // Delete from DO + remove from DOM. Check the response
+                // so silent 403/500 failures don't leave the message
+                // alive on the DO while the UI pretends it's gone.
+                let _delOk = false;
                 try {
-                  await fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, {
+                  const _delRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ messageId: msgId, senderAddress: getState().address || '' }),
                   });
-                } catch {}
-                (bubble as HTMLElement).remove();
+                  _delOk = _delRes.ok;
+                  if (!_delRes.ok) {
+                    const _txt = await _delRes.text().catch(() => '');
+                    console.warn('[thunder] delete rejected by DO:', _delRes.status, _txt);
+                    showToast(`Delete failed (${_delRes.status}) — message stays`);
+                  }
+                } catch (e) {
+                  console.warn('[thunder] delete fetch threw:', e);
+                  showToast('Delete network failed');
+                }
+                // Also drop the message from the local encrypted history
+                // cache so the next hard-refresh SWR paint doesn't
+                // resurrect it. Without this, the cache can outlive the
+                // DO entry and repopulate the UI on cold load.
+                if (_delOk) {
+                  try {
+                    const cached = await _loadThunderHist(groupId);
+                    if (cached) {
+                      const pruned = cached.filter(m => m.messageId !== msgId);
+                      if (pruned.length > 0) await _saveThunderHist(groupId, pruned);
+                      else try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+                    }
+                  } catch {}
+                  (bubble as HTMLElement).remove();
+                }
               }
               _freshQuestTs.delete(0);
             } catch (err) {

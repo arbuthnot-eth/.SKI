@@ -9857,7 +9857,13 @@ function bindEvents() {
       // keystroke — matching the mental model of a chip, not plain text.
       const _thunderTagMatch = (): { name: string; len: number } | null => {
         const val = _idleThunderInputEl?.value ?? '';
-        const m = val.match(/^@([a-z0-9-]{1,63})(\s|$)/i);
+        // Match just the `@name` prefix — the tag boundary is after
+        // the last hyphen/alnum of the name, regardless of what
+        // follows ($amount, space, more text, nothing). Previous
+        // `(\s|$)` trailing anchor was failing to match `@justy$1`
+        // entirely, which silently disabled the cursor lock whenever
+        // the user typed an amount.
+        const m = val.match(/^@([a-z0-9-]{1,63})/i);
         if (!m) return null;
         return { name: m[1].toLowerCase(), len: m[0].length };
       };

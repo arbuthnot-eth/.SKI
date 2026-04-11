@@ -3909,6 +3909,40 @@ a.ski-idle-bubble-name:hover {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
+.ski-idle-ns-sweep {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  padding: 4px 8px;
+  z-index: 3;
+}
+.ski-idle-ns-sweep[hidden] { display: none; }
+.ski-idle-ns-sweep-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(10, 20, 50, 0.85);
+  border: 1px solid rgba(77, 162, 255, 0.55);
+  border-radius: 999px;
+  color: #cfe3ff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-ns-sweep-btn:hover {
+  background: rgba(20, 40, 80, 0.92);
+  border-color: rgba(77, 162, 255, 0.85);
+}
+.ski-idle-ns-sweep-btn:disabled { cursor: default; opacity: 0.85; }
+.ski-idle-ns-sweep-icon { font-size: 0.85rem; line-height: 1; }
+.ski-idle-ns-sweep-label { white-space: nowrap; }
 .ski-idle-thunder-row--drop {
   outline: 2px dashed rgba(255, 184, 0, 0.65);
   outline-offset: -4px;

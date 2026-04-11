@@ -9315,6 +9315,7 @@ function bindEvents() {
               <button class="ski-idle-iusd-action ski-idle-iusd-action--ignite" id="ski-idle-iusd-ignite" type="button" title="Ignite \u2014 gas on any chain">\u26a1 Ignite</button>
             </div>
           </div>
+          <div class="ski-idle-ns-sweep" id="ski-idle-ns-sweep" hidden><button class="ski-idle-ns-sweep-btn" id="ski-idle-ns-sweep-btn" type="button" title="Sweep NS dust to iUSD cache"><span class="ski-idle-ns-sweep-icon">\u{1F9F9}</span><span class="ski-idle-ns-sweep-label">Sweep <span id="ski-idle-ns-sweep-amt">0</span> NS \u2192 cache</span></button></div>
           <div class="ski-idle-thunder-row">
             <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
               <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
@@ -9381,8 +9382,64 @@ function bindEvents() {
         }).catch(() => {});
       };
 
+      // NS sweep banner: show whenever the user holds non-dust NS.
+      // The user doesn't want to hold NS — tapping the banner runs
+      // ski.sweepNsToCache() which transfers all NS to ultron, where
+      // _sweepNsToIusd routes it through DeepBook → iUSD cache.
+      const _updateNsSweepBanner = () => {
+        const banner = _idleOverlay?.querySelector('#ski-idle-ns-sweep') as HTMLElement | null;
+        const amtEl = _idleOverlay?.querySelector('#ski-idle-ns-sweep-amt') as HTMLElement | null;
+        if (!banner || !amtEl) return;
+        const ns = app.nsBalance ?? 0;
+        // Dust floor: 0.01 NS. Below that, no banner.
+        if (ns < 0.01) {
+          banner.setAttribute('hidden', '');
+          return;
+        }
+        amtEl.textContent = ns < 1 ? ns.toFixed(3) : ns.toFixed(2);
+        banner.removeAttribute('hidden');
+      };
+
+      const _idleNsSweepBtn = _idleOverlay.querySelector('#ski-idle-ns-sweep-btn') as HTMLButtonElement | null;
+      _idleNsSweepBtn?.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (_idleNsSweepBtn.disabled) return;
+        _idleNsSweepBtn.disabled = true;
+        const origHtml = _idleNsSweepBtn.innerHTML;
+        _idleNsSweepBtn.innerHTML = '<span class="ski-idle-ns-sweep-icon">\u23f3</span><span class="ski-idle-ns-sweep-label">Sweeping\u2026</span>';
+        try {
+          const helper = (window as unknown as { ski?: { sweepNsToCache?: () => Promise<{ swept: number; digest: string | null } | null> } }).ski?.sweepNsToCache;
+          if (!helper) throw new Error('Sweep helper unavailable');
+          const r = await helper();
+          if (r && r.digest) {
+            showToast(`\u{1F9F9} Swept ${r.swept} NS \u2192 ultron`);
+            _idleNsSweepBtn.innerHTML = '<span class="ski-idle-ns-sweep-icon">\u2705</span><span class="ski-idle-ns-sweep-label">Swept</span>';
+            setTimeout(() => {
+              const banner = _idleOverlay?.querySelector('#ski-idle-ns-sweep') as HTMLElement | null;
+              banner?.setAttribute('hidden', '');
+              if (_idleNsSweepBtn) {
+                _idleNsSweepBtn.innerHTML = origHtml;
+                _idleNsSweepBtn.disabled = false;
+              }
+            }, 2000);
+            // Force a balance refresh so app.nsBalance reflects the sweep
+            setTimeout(() => { try { void (window as any).ski?.refreshBalances?.(); } catch {} }, 3000);
+          } else {
+            showToast('Nothing to sweep');
+            _idleNsSweepBtn.innerHTML = origHtml;
+            _idleNsSweepBtn.disabled = false;
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/reject|cancel/i.test(msg)) showToast(`Sweep failed: ${msg.slice(0, 100)}`);
+          _idleNsSweepBtn.innerHTML = origHtml;
+          _idleNsSweepBtn.disabled = false;
+        }
+      });
+
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
+        _updateNsSweepBanner();
         const label = nsLabel.trim();
         const validLabel = isValidNsLabel(label);
         const ws = getState();

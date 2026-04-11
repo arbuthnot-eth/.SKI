@@ -11983,6 +11983,126 @@ function bindEvents() {
         } catch {}
       };
 
+      /**
+       * Remember a partner for the incoming-thunder watcher. Stored
+       * as { bare, addr, groupId, lastSeenMs } keyed by the partner's
+       * bare name in localStorage under ski:thunder-partners:<myAddr>.
+       * The watcher polls this list every few seconds to detect new
+       * inbound messages while no convo is open, so storms can
+       * auto-pop without the user typing a name.
+       */
+      type _ThunderPartner = { bare: string; addr: string; groupId: string; lastSeenMs: number };
+      const _PARTNERS_KEY = (myAddr: string) => `ski:thunder-partners:${myAddr.toLowerCase()}`;
+      const _loadPartners = (myAddr: string): Record<string, _ThunderPartner> => {
+        try {
+          const raw = localStorage.getItem(_PARTNERS_KEY(myAddr));
+          return raw ? JSON.parse(raw) : {};
+        } catch { return {}; }
+      };
+      const _savePartners = (myAddr: string, partners: Record<string, _ThunderPartner>) => {
+        try { localStorage.setItem(_PARTNERS_KEY(myAddr), JSON.stringify(partners)); } catch {}
+      };
+      const _rememberPartner = (p: _ThunderPartner) => {
+        const myAddr = (getState().address || '').toLowerCase();
+        if (!myAddr) return;
+        const partners = _loadPartners(myAddr);
+        const existing = partners[p.bare];
+        // Preserve a higher lastSeen if the caller passed a stale one,
+        // e.g. repeated opens of the same convo.
+        partners[p.bare] = {
+          ...p,
+          lastSeenMs: Math.max(existing?.lastSeenMs || 0, p.lastSeenMs || 0),
+        };
+        _savePartners(myAddr, partners);
+      };
+      const _setPartnerLastSeen = (bare: string, lastSeenMs: number) => {
+        const myAddr = (getState().address || '').toLowerCase();
+        if (!myAddr) return;
+        const partners = _loadPartners(myAddr);
+        if (!partners[bare]) return;
+        partners[bare].lastSeenMs = Math.max(partners[bare].lastSeenMs || 0, lastSeenMs);
+        _savePartners(myAddr, partners);
+      };
+
+      /**
+       * Incoming-thunder watcher. Polls every partner's Timestream
+       * DO every ~4 seconds for the newest message. When a new
+       * inbound thunder lands (createdAt > lastSeenMs AND senderAddress
+       * is NOT the current user), auto-open that partner's storm
+       * unless the user already has a different convo open (in
+       * which case we just bump the partner's lastSeenMs so the
+       * next overlay mount detects nothing stale). Self-cleans when
+       * the overlay is torn down.
+       */
+      let _incomingWatcherTimer: ReturnType<typeof setInterval> | null = null;
+      const _startIncomingWatcher = () => {
+        if (_incomingWatcherTimer) clearInterval(_incomingWatcherTimer);
+        const tick = async () => {
+          if (!_idleOverlay) {
+            if (_incomingWatcherTimer) { clearInterval(_incomingWatcherTimer); _incomingWatcherTimer = null; }
+            return;
+          }
+          const myAddr = (getState().address || '').toLowerCase();
+          if (!myAddr) return;
+          const partners = _loadPartners(myAddr);
+          const partnerList = Object.values(partners);
+          if (partnerList.length === 0) return;
+          // Limit to the 8 most-recently-seen partners to keep the
+          // tick cheap even for heavy users.
+          partnerList.sort((a, b) => (b.lastSeenMs || 0) - (a.lastSeenMs || 0));
+          const toPoll = partnerList.slice(0, 8);
+          await Promise.all(toPoll.map(async (p) => {
+            try {
+              const res = await fetch(`/api/timestream/${encodeURIComponent(p.groupId)}/fetch`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ limit: 5, address: myAddr }),
+              });
+              if (!res.ok) return;
+              const data = await res.json() as { messages: Array<{ senderAddress?: string; createdAt?: number; timestamp?: number }> };
+              const msgs = data.messages || [];
+              if (msgs.length === 0) return;
+              // Find the newest inbound message (not from me).
+              let newestInbound = 0;
+              for (const m of msgs) {
+                const sa = (m.senderAddress || '').toLowerCase();
+                if (sa === myAddr) continue;
+                const ts = m.createdAt ?? m.timestamp ?? 0;
+                if (ts > newestInbound) newestInbound = ts;
+              }
+              if (newestInbound <= (p.lastSeenMs || 0)) return;
+              // New inbound detected. Bump lastSeen regardless so we
+              // don't re-fire on the next tick.
+              _setPartnerLastSeen(p.bare, newestInbound);
+              // If a convo is already open on a different partner,
+              // don't interrupt. Just let the bump above stick.
+              const _currentConvoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+              const _convoOpen = !!(_currentConvoEl && !_currentConvoEl.hasAttribute('hidden'));
+              const _currentBare = (_idleNsInput?.value || '').toLowerCase();
+              if (_convoOpen && _currentBare && _currentBare !== p.bare) return;
+              // Auto-open: populate the name input + expand the convo.
+              if (_idleNsInput && _idleNsInput.value !== p.bare) {
+                _idleNsInput.value = p.bare;
+                nsLabel = p.bare;
+                try { localStorage.setItem('ski:ns-label', p.bare); } catch {}
+                const _clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+                if (_clearBtn) _clearBtn.style.display = p.bare ? '' : 'none';
+                nsAvail = null;
+                nsTargetAddress = p.addr;
+                _updateIdleStatus();
+              }
+              _userClosedStorms.delete(p.bare);
+              _expandIdleConvo(p.bare).catch(() => {});
+              showToast(`\u26a1 New thunder from @${p.bare}`);
+            } catch { /* network blip — retry next tick */ }
+          }));
+        };
+        _incomingWatcherTimer = setInterval(tick, 4000);
+        // Fire once immediately so a fresh overlay mount catches
+        // anything that arrived while the page was closed.
+        tick().catch(() => {});
+      };
+
       async function _expandIdleConvo(counterparty: string) {
         _closeCompetingPanels();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
@@ -12108,6 +12228,19 @@ function bindEvents() {
         _updateIdleStatus();
         try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+
+        // Remember this partner + the newest thunder timestamp so the
+        // incoming-thunder watcher can detect subsequent new messages
+        // from them and auto-open the convo on overlay mount.
+        const _newestTs = entries.length > 0
+          ? entries.reduce((acc, m) => Math.max(acc, m.createdAt ?? 0), 0)
+          : Date.now();
+        _rememberPartner({
+          bare,
+          addr: counterpartyAddr,
+          groupId,
+          lastSeenMs: _newestTs,
+        });
 
         // Real-time subscribe (Jolteon Lv. 25): open a WebSocket to the
         // TimestreamAgent DO. The DO broadcasts an event on every state
@@ -13288,6 +13421,11 @@ function bindEvents() {
         fetchAndShowNsPrice(_idleNsInput.value).catch(() => {});
         _expandIdleConvo(_idleNsInput.value).catch(() => {});
       }
+
+      // Start the incoming-thunder watcher so storms from tracked
+      // partners auto-pop when new inbound messages arrive while
+      // the overlay is idle or viewing a different target.
+      _startIncomingWatcher();
 
       // When the wallet connects AFTER the overlay has already
       // mounted (the common hard-refresh race), re-run the auto-open

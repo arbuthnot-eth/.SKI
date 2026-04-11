@@ -150,6 +150,11 @@ export interface TreasuryAgentsState {
   last_sweep_ms: number;
   tick_count: number;
   squids: SquidStats;
+  /** Cursor for the Sui-side USDC watcher: the newest coin digest
+   *  seen on a previous tick. Prevents re-processing the same
+   *  incoming USDC coin on every poll. Blank on first run → the
+   *  first tick establishes a baseline and matches nothing. */
+  last_sui_usdc_cursor?: string;
 }
 
 interface Env {
@@ -447,12 +452,31 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
         const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
 
-        // Derive a 4-digit tag from the Sui address (deterministic, reproducible)
+        // Derive a 6-digit tag from the Sui address hash. Deterministic
+        // per-address by default so reprompting the same user in quick
+        // succession yields the same QR — but if that tag is ALREADY
+        // pending for a different intent (vanishingly rare collision),
+        // we perturb by a nonce 1..9 so the new intent lands in a free
+        // slot. Giving up after 10 attempts falls through to the 503
+        // path so the client retries.
         const addrBytes = new TextEncoder().encode(body.suiAddress);
         const hashBuf = await crypto.subtle.digest('SHA-256', addrBytes);
         const hashArr = new Uint8Array(hashBuf);
-        // 6-digit tag from address hash — encodes SUIAMI identity in sub-cent precision
-        const tag = ((hashArr[0] << 16) | (hashArr[1] << 8) | hashArr[2]) % 1000000; // 000000-999999
+        const baseTag = ((hashArr[0] << 16) | (hashArr[1] << 8) | hashArr[2]) % 1000000;
+        const _existingIntents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+        let tag = baseTag;
+        for (let nonce = 0; nonce < 10; nonce++) {
+          const candidate = (baseTag + nonce) % 1000000;
+          const clash = _existingIntents.some(i =>
+            i.status === 'pending'
+            && i.tag === candidate
+            && i.suiAddress !== body.suiAddress,
+          );
+          if (!clash) { tag = candidate; break; }
+          if (nonce === 9) {
+            throw new Error('Tag space exhausted for this address — retry in a moment');
+          }
+        }
 
         // Get SOL price from Sibyl
         let solPrice: number | null = null;

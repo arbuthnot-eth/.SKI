@@ -2820,7 +2820,9 @@ body {
   top: 27%;
   left: 12px;
   z-index: 2;
-  padding: 4px 8px;
+  /* Right padding is zero so the × purge button can sit flush
+   * against the overlay's right edge without trailing whitespace. */
+  padding: 4px 0 4px 8px;
   /* Row itself is transparent — the input and the Storm action button
    * carry their own backgrounds, the space between them stays clear. */
   background: transparent;
@@ -2838,7 +2840,7 @@ body {
 }
 .ski-idle-ns-input-wrap .wk-ns-dot-sui {
   position: absolute;
-  right: 6px;
+  right: 2px;
   pointer-events: none;
   z-index: 1;
 }
@@ -2992,12 +2994,12 @@ body {
 .ski-idle-storm-purge {
   all: unset;
   flex-shrink: 0;
-  /* Pull left to cancel the row's 6px gap (Storm ends flush
-   * against × with ~0px between) and pull right to poke past
-   * the row's right padding so × sits hard against the overlay's
-   * right edge. */
+  /* Pull left to cancel the row's 6px gap — Storm ends flush
+   * against × with ~0px between them. margin-right: 0 is fine
+   * now that the row's right padding is zero; × sits at the
+   * literal right edge of the row. */
   margin-left: -6px;
-  margin-right: -6px;
+  margin-right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;

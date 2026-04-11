@@ -12720,8 +12720,17 @@ function bindEvents() {
       // unconditionally, so the <video> element keeps the `muted` attribute
       // until the user interacts; once unmuted we remember the choice and
       // restore it on subsequent overlay opens.
-      let _userPrefersAudio = false;
-      try { _userPrefersAudio = localStorage.getItem('ski:idle-bg-audio') === '1'; } catch {}
+      // Audio is on by default. Browsers still block unmuted autoplay
+      // without a user gesture, so playback starts muted and flips to
+      // unmuted on the very first pointerdown/keydown/touchstart anywhere
+      // on the page. The only way to persist "off" is to click the mute
+      // toggle — that writes '0' to localStorage and subsequent loads
+      // honor it.
+      let _userPrefersAudio = true;
+      try {
+        const _saved = localStorage.getItem('ski:idle-bg-audio');
+        if (_saved === '0') _userPrefersAudio = false;
+      } catch {}
       const _setMuted = (muted: boolean) => {
         if (!_idleVideo) return;
         _idleVideo.muted = muted;
@@ -12741,8 +12750,25 @@ function bindEvents() {
         _idleVideo.play().catch(() => { /* still gated, will retry on next gesture */ });
       };
       _setMuted(true); // always start muted so autoplay works
-      // First gesture anywhere on the overlay lifts the mute (if user opted in).
-      _idleOverlay?.addEventListener('pointerdown', _tryUnmuteOnGesture, { once: false });
+      // Optimistic unmute attempt right now — on high-engagement sites
+      // (e.g. a previous visit) browsers may allow it with no gesture.
+      // play() throws silently if blocked; no harm in trying.
+      if (_userPrefersAudio && _idleVideo) {
+        requestAnimationFrame(() => {
+          if (!_idleVideo) return;
+          _idleVideo.muted = false;
+          _idleVideo.play().then(() => { _setMuted(false); }).catch(() => {
+            // Blocked — re-mute and wait for a gesture.
+            _idleVideo!.muted = true;
+          });
+        });
+      }
+      // First gesture anywhere on the page lifts the mute. Listening at
+      // the document level so a tap on anything (header, body, overlay)
+      // unblocks audio — not just clicks inside the overlay.
+      document.addEventListener('pointerdown', _tryUnmuteOnGesture, { once: false, passive: true });
+      document.addEventListener('keydown', _tryUnmuteOnGesture, { once: false });
+      document.addEventListener('touchstart', _tryUnmuteOnGesture, { once: false, passive: true });
 
       // Small mute / unmute toggle in the corner of the video.
       const _audioToggle = document.createElement('button');

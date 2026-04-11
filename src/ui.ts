@@ -11623,6 +11623,22 @@ function bindEvents() {
           const senderName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
           const recipients = draft.recipients;
           const msgText = draft.message;
+          // User typed an amount that's invalid — over budget, zero,
+          // or malformed. Fail the send outright instead of silently
+          // dropping the `$amount` and falling through to a free
+          // text thunder. The user's intent was a transfer, not a
+          // message with cash-like characters in it.
+          if (draft.amount !== undefined && draft.amountError) {
+            if (sendBtn) {
+              sendBtn.innerHTML = '\u26c8\ufe0f';
+              sendBtn.disabled = false;
+              sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send';
+              sendBtn.title = `Open Storm to ${nsLabel || ''}`;
+            }
+            _thunderComposeStage = 'confirmed';
+            showToast(draft.amountError);
+            return;
+          }
           const transferAmtUsd = (draft.amount && !draft.amountError) ? draft.amount : undefined;
           const origBtnHtml = sendBtn?.innerHTML || '\u26c8\ufe0f';
 

@@ -3400,21 +3400,26 @@ let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
 let nsLabel = (() => {
   try {
-    // Prefer user's primary SuiNS name
+    // Prefer user's primary SuiNS name — if they have one, it's
+    // what they'll want to see first.
     const ws = getState();
     if (ws.address) {
       const cached = localStorage.getItem(`ski:suins:${ws.address}`);
       if (cached) return cached.replace(/\.sui$/, '');
     }
-    // Fall back to saved label — but only if it was a taken/owned name, not a mintable one
+    // Fall back to saved label — but only if it was a taken/owned
+    // name the user was actively viewing. Never restore an
+    // 'available' name (half-typed shopping).
     const saved = localStorage.getItem('ski:ns-label') || '';
     const savedAvail = sessionStorage.getItem('ski:ns-resolve');
     const wasAvailable = savedAvail ? JSON.parse(savedAvail)?.avail === 'available' : false;
     if (saved && !wasAvailable) return saved;
-    // No primary name → default based on wallet type
-    if (ws.walletName && /waap/i.test(ws.walletName)) return 'waap';
-    return 'iusd';
-  } catch { return 'iusd'; }
+    // No primary + no saved label → empty. The target row below
+    // will surface the connected wallet's hex address as the
+    // default display, so the user sees their own identity
+    // immediately instead of a random bootstrap name like 'iusd'.
+    return '';
+  } catch { return ''; }
 })();
 const NS_LOOKUP_DEBOUNCE_MS = 450;   // delay after last keystroke before querying
 const NS_LOOKUP_POLL_MS     = 15_000; // periodic recheck interval for active label
@@ -4300,7 +4305,15 @@ function _nsRouteHtml(): string {
     return `<div class="wk-ns-target-row wk-ns-target-row--loading"><span class="wk-ns-target-icon">\u25ce</span><span class="wk-ns-target-addr">resolving\u2026</span></div>`;
   }
 
-  const shortAddr = `${displayAddr.slice(0, 6)}\u2026${displayAddr.slice(-6)}`;
+  // Expand to the full hex address when the user is looking at
+  // the idle / no-label state — their own wallet is what the
+  // bar shows, and they deserve to see it in full. Collapse to
+  // the short form only when a specific name is being resolved
+  // (so other names' targets stay compact).
+  const _isIdleView = !nsLabel || nsLabel.length < 3 || nsAvail === null;
+  const shortAddr = _isIdleView
+    ? displayAddr
+    : `${displayAddr.slice(0, 6)}\u2026${displayAddr.slice(-6)}`;
 
   // Check if current name is listed in a kiosk (Tradeport)
   const isKioskName = nsOwnedDomains.some(d => d.inKiosk && d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);

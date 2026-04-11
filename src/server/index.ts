@@ -437,7 +437,11 @@ const IKA_FUND_AMOUNT = 5_000_000_000n; // 5 IKA (9 decimals)
 // per MIN_INTERVAL_MS per address. Fixed amount per drip.
 const GAS_DRIP_MIST     = 20_000_000n; // 0.02 SUI ≈ 160 claim txs worth
 const GAS_DRIP_MIN_MIST = 15_000_000n; // drip only if below this
-const GAS_DRIP_COOLDOWN_MS = 60 * 60 * 1000; // 1 drip per addr per hour
+// 60 s is enough to prevent drip spam but short enough that
+// legitimate retries (sweep attempts, failed gas estimates) don't
+// get stuck behind a cooldown wall. Was 60 min which left users
+// unable to re-drip when a previous drip coin got spent elsewhere.
+const GAS_DRIP_COOLDOWN_MS = 60 * 1000;
 const _gasDripLog = new Map<string, number>(); // addr → last drip ts
 
 app.post('/api/fund-gas', async (c) => {

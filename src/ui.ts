@@ -13124,10 +13124,17 @@ function bindEvents() {
             const _transferNameTag = !isOut && _bareSender
               ? `<span class="ski-idle-bubble-sender" data-populate-name="${esc(_bareSender)}" data-no-bubble-click="1" title="Populate name input with @${esc(_bareSender)}">${esc(_bareSender)}</span>`
               : '';
-            const _inner = `${_transferNameTag}${_labelHtml}${_settlementPillHtml}`;
+            // "collected" pill — attached under a settled bubble to
+            // make it unambiguous that the money is out of escrow.
+            // Renders below the label + settlement-tx pill, with a
+            // checkmark. Only shown when _isKnownSettled.
+            const _collectedPillHtml = _isKnownSettled
+              ? `<span class="ski-idle-bubble-collected" data-no-bubble-click="1">\u2713 collected</span>`
+              : '';
+            const _inner = `${_transferNameTag}${_labelHtml}${_settlementPillHtml}${_collectedPillHtml}`;
             const _role = isOut ? 'sender' : 'recipient';
             const _bubbleTitle = _isKnownSettled
-              ? 'Settled'
+              ? 'Collected'
               : (_digest ? 'Click to claim / recall' : 'On-chain record (legacy)');
             return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_bubbleTitle}">${_inner}</div>`;
           }

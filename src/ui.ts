@@ -12907,23 +12907,30 @@ function bindEvents() {
               : (_digest ? 'Click to claim / recall' : 'On-chain record (legacy)');
             return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}" data-tx="${esc(_digest)}" data-iou-role="${_role}" title="${_bubbleTitle}">${_inner}</div>`;
           }
-          // Regular (non-transfer) bubble. Two possible payloads:
-          //   - text only → existing render
-          //   - text + attachments → text bubble first (if any),
-          //     then one attachment bubble per file. Each attachment
-          //     bubble carries a click handler that calls the SDK's
-          //     resolved handle.data() to download-and-decrypt on
-          //     demand. A Seal ✓ badge confirms the file was
-          //     successfully encrypted end-to-end (if the handle
-          //     came through the SDK path, which performs decrypt
-          //     on resolve, the ✓ is guaranteed).
+          // Regular (non-transfer) bubble with optional attachments.
+          // One bubble per message, containing:
+          //   - text line (if any)
+          //   - one attachment row per file
+          // Media types (image/*, video/*, audio/*) render an inline
+          // player / thumbnail slot that loads on click — first click
+          // decrypts the bytes via the SDK handle and swaps the icon
+          // cell for a live <video>/<audio>/<img> element. The 🔒 pill
+          // confirms Seal-encrypted end-to-end.
           const _attachments = Array.isArray((m as unknown as { attachments?: unknown[] }).attachments)
             ? (m as unknown as { attachments: Array<{ fileName?: string; mimeType?: string; fileSize?: number; wire?: { storageId?: string } }> }).attachments
             : [];
-          const _textHtml = m.text
-            ? `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`
+          if (_attachments.length === 0) {
+            // Plain text bubble, no attachments — fast path.
+            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
+          }
+          // Mixed / attachment-only bubble: one container with an
+          // optional text line, then the attachment rows. Keeps the
+          // message visually unified instead of fragmenting across
+          // multiple bubbles.
+          const _textLine = m.text
+            ? `<span class="ski-idle-bubble-text">${esc(m.text)}</span>`
             : '';
-          const _attachmentBubbles = _attachments.map((a, ai) => {
+          const _attachmentRows = _attachments.map((a, ai) => {
             const fileName = a.fileName || `file-${ai + 1}`;
             const mimeType = a.mimeType || 'application/octet-stream';
             const fileSize = Number(a.fileSize || 0);
@@ -12933,19 +12940,24 @@ function bindEvents() {
                 ? `${(fileSize / 1024).toFixed(0)} KB`
                 : `${fileSize} B`;
             const isImg = mimeType.startsWith('image/');
-            const isVid = mimeType.startsWith('video/');
+            const isVid = mimeType.startsWith('video/') || mimeType === 'video/webm';
+            const isAud = mimeType.startsWith('audio/');
+            const isMedia = isImg || isVid || isAud;
             const icon = isImg ? '\u{1F5BC}\u{FE0F}'
-              : isVid ? '\u{1F3AC}'
-              : mimeType.startsWith('audio/') ? '\u{1F3B5}'
+              : isVid ? '\u25B6\uFE0F'
+              : isAud ? '\u{1F3B5}'
               : mimeType.includes('pdf') ? '\u{1F4D1}'
               : '\u{1F4CE}';
-            // Use the wire.storageId as a stable key for the lazy
-            // data() call — we cache resolved blobs in the map
-            // _attachmentBlobCache keyed by storageId.
             const storageId = a.wire?.storageId || '';
-            return `<div class="ski-idle-bubble ${baseCls} ski-idle-bubble--attach" data-id="${esc(m.messageId)}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" title="Seal-encrypted attachment \u2014 click to download">${nameTag}<span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
+            const kindAttr = isImg ? 'image' : isVid ? 'video' : isAud ? 'audio' : 'file';
+            const mediaCls = isMedia ? ' ski-idle-attach-row--media' : '';
+            const playHintCls = isMedia ? ' ski-idle-attach-row--playable' : '';
+            const titleText = isMedia
+              ? `Seal-encrypted ${kindAttr} \u2014 click to play`
+              : 'Seal-encrypted attachment \u2014 click to download';
+            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${titleText}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
           }).join('');
-          return _textHtml + _attachmentBubbles;
+          return `<div class="ski-idle-bubble ${baseCls} ski-idle-bubble--mixed" data-id="${esc(m.messageId)}">${nameTag}${_textLine}${_attachmentRows}</div>`;
         }).join('');
         // If the fetch came back empty but we had optimistic bubbles, keep them.
         const bubbles = fetchedBubbles || existingBubbleHtml;
@@ -13077,23 +13089,37 @@ function bindEvents() {
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
-            // Attachment bubbles: download + decrypt via SDK, then
-            // either trigger a browser download (generic) or inline
-            // a preview (images). The Seal ✓ on the bubble is
-            // guaranteed because the SDK's AttachmentsManager.resolve
-            // path Seal-decrypts the wire record before surfacing
-            // the handle — our bubble data() call just pulls the
-            // already-decrypted bytes.
-            if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--attach')) {
+            // Attachment rows inside a mixed bubble: click-to-play
+            // for media (image/video/audio) or click-to-download for
+            // everything else. The row becomes an inline <img>,
+            // <video controls>, or <audio controls> element on first
+            // click, using bytes pulled from the SDK AttachmentHandle
+            // (which Seal-decrypts on resolve — so the 🔒 pill is
+            // guaranteed accurate).
+            if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--mixed')) {
+              const _target = ev.target as HTMLElement | null;
+              // Clicking the text line does nothing (delete confirm
+              // only applies to pure-text bubbles; mixed bubbles are
+              // treated as immutable until we wire a per-attachment
+              // delete).
+              if (_target?.classList.contains('ski-idle-bubble-text')) return;
+              const _row = _target?.closest<HTMLElement>('.ski-idle-attach-row');
+              if (!_row) return;
               ev.preventDefault();
+              ev.stopImmediatePropagation();
+              // Already loaded / playing? Let the native media
+              // controls handle the click.
+              if (_row.classList.contains('ski-idle-attach-row--loaded')) return;
+              if (_row.classList.contains('ski-idle-attach-row--loading')) return;
+
               const _bubEl = bubble as HTMLElement;
               const _msgId = _bubEl.dataset.id || '';
-              const _idxStr = _bubEl.dataset.attachIdx || '0';
-              const _fileName = _bubEl.dataset.filename || 'attachment';
-              const _mime = _bubEl.dataset.mime || 'application/octet-stream';
+              const _idxStr = _row.dataset.attachIdx || '0';
+              const _fileName = _row.dataset.filename || 'attachment';
+              const _mime = _row.dataset.mime || 'application/octet-stream';
+              const _kind = _row.dataset.kind || 'file';
               const _idx = Number(_idxStr) || 0;
-              if (_bubEl.classList.contains('ski-idle-bubble--attach-loading')) return;
-              _bubEl.classList.add('ski-idle-bubble--attach-loading');
+              _row.classList.add('ski-idle-attach-row--loading');
               try {
                 const { getThunders } = await import('./client/thunder.js');
                 const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
@@ -13104,13 +13130,29 @@ function bindEvents() {
                 const bytes = await handle.data();
                 const blob = new Blob([bytes], { type: _mime });
                 const url = URL.createObjectURL(blob);
-                if (_mime.startsWith('image/')) {
-                  // Inline thumbnail preview — replace the icon cell
-                  // with the actual image. Stays in the bubble; click
-                  // again to re-download.
-                  const iconSlot = _bubEl.querySelector('.ski-idle-bubble-attach-icon');
+                if (_kind === 'image') {
+                  // Replace the icon cell with the decoded <img>.
+                  const iconSlot = _row.querySelector('.ski-idle-bubble-attach-icon');
                   if (iconSlot) {
                     iconSlot.innerHTML = `<img class="ski-idle-bubble-attach-thumb" src="${url}" alt="${esc(_fileName)}">`;
+                  }
+                  _row.classList.add('ski-idle-attach-row--loaded');
+                } else if (_kind === 'video') {
+                  // Inline <video> player. Append below the meta
+                  // row and start playback. Stops existing click
+                  // intercepts with data-no-bubble-click.
+                  _row.innerHTML = `<video class="ski-idle-attach-player ski-idle-attach-player--video" controls preload="metadata" src="${url}" data-no-bubble-click="1"></video><span class="ski-idle-attach-row-label">\u{1F512} ${esc(_fileName)}</span>`;
+                  _row.classList.add('ski-idle-attach-row--loaded');
+                  const vid = _row.querySelector('video');
+                  if (vid instanceof HTMLVideoElement) {
+                    try { await vid.play(); } catch { /* autoplay blocked, user can press play */ }
+                  }
+                } else if (_kind === 'audio') {
+                  _row.innerHTML = `<audio class="ski-idle-attach-player ski-idle-attach-player--audio" controls preload="metadata" src="${url}" data-no-bubble-click="1"></audio><span class="ski-idle-attach-row-label">\u{1F512} ${esc(_fileName)}</span>`;
+                  _row.classList.add('ski-idle-attach-row--loaded');
+                  const aud = _row.querySelector('audio');
+                  if (aud instanceof HTMLAudioElement) {
+                    try { await aud.play(); } catch { /* autoplay blocked, user can press play */ }
                   }
                 } else {
                   // Generic download trigger
@@ -13125,9 +13167,9 @@ function bindEvents() {
                 showToast(`\u{1F512} ${_fileName} decrypted`);
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
-                if (!/reject|cancel/i.test(msg)) showToast(`Download failed: ${msg.slice(0, 120)}`);
+                if (!/reject|cancel/i.test(msg)) showToast(`Load failed: ${msg.slice(0, 120)}`);
               } finally {
-                _bubEl.classList.remove('ski-idle-bubble--attach-loading');
+                _row.classList.remove('ski-idle-attach-row--loading');
               }
               return;
             }

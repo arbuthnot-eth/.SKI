@@ -3805,10 +3805,75 @@ body {
   text-decoration: none;
 }
 
-/* Attachment bubble — Seal-encrypted file carried on a storm
- * message. Click → decrypt via the SDK handle → download or
- * inline-preview (images). The 🔒 pill confirms the file arrived
- * through the AttachmentsManager's Seal decrypt path. */
+/* Mixed bubble — regular text line PLUS attachments stacked
+ * below, all inside the same speech bubble. The 🔒 pill on each
+ * row confirms Seal-encrypted end-to-end. Click a row to
+ * play (media) or download (generic). */
+.ski-idle-bubble--mixed {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 10px;
+  max-width: 85%;
+}
+.ski-idle-bubble--mixed .ski-idle-bubble-text {
+  display: block;
+  line-height: 1.4;
+}
+.ski-idle-attach-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ski-idle-attach-row:hover {
+  background: rgba(0, 0, 0, 0.55);
+  border-color: rgba(96, 165, 250, 0.55);
+}
+.ski-idle-attach-row--playable .ski-idle-bubble-attach-icon {
+  color: #facc15;
+}
+.ski-idle-attach-row--loading {
+  opacity: 0.7;
+  cursor: wait;
+  animation: attach-pulse 1.2s ease-in-out infinite;
+}
+.ski-idle-attach-row--loaded {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 6px 8px 4px;
+  cursor: default;
+}
+.ski-idle-attach-player {
+  width: 100%;
+  max-width: 280px;
+  border-radius: 6px;
+  display: block;
+}
+.ski-idle-attach-player--video {
+  max-height: 220px;
+  background: #000;
+}
+.ski-idle-attach-player--audio {
+  height: 36px;
+}
+.ski-idle-attach-row-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.62rem;
+  opacity: 0.6;
+  text-align: center;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+/* Legacy class kept for the fast-path empty-text case and any
+ * old bubbles still in the DOM from pre-mixed-bubble sessions. */
 .ski-idle-bubble--attach {
   display: inline-flex !important;
   align-items: center;

@@ -13159,6 +13159,27 @@ function bindEvents() {
         _expandIdleConvo(_idleNsInput.value).catch(() => {});
       }
 
+      // When the wallet connects AFTER the overlay has already
+      // mounted (the common hard-refresh race), re-run the auto-open
+      // path. The first _expandIdleConvo from the restore block above
+      // may have bailed because the wallet address wasn't available
+      // yet; this retries once the address lands. Also re-runs the
+      // preview so the × purge button visibility and icon state sync
+      // with the freshly resolved storm-exists check.
+      const _onWalletForOverlay = () => {
+        try {
+          const _curName = (_idleNsInput?.value || '').toLowerCase();
+          if (_curName && _curName.length >= 3 && isValidNsLabel(_curName)) {
+            _expandIdleConvo(_curName).catch(() => {});
+          }
+          _renderThunderComposePreview?.();
+        } catch {}
+      };
+      // `once: true` so the listener auto-removes after the first
+      // wallet-connected event following overlay mount. Prevents
+      // accumulation across re-mounts without needing manual cleanup.
+      window.addEventListener('ski:wallet-connected', _onWalletForOverlay, { once: true });
+
       // Match header width to overlay width
       requestAnimationFrame(() => {
         if (!_idleOverlay) return;

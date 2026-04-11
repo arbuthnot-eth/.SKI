@@ -647,35 +647,19 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
             const tag = lamports % 1000000;
 
-            // Match deposit intents
+            // Match deposit intents → route through Phase 2 dispatch.
+            // The dispatcher is source-agnostic and handles attest,
+            // mint, and quest fill uniformly for SOL and USDC both.
             const match = pending.find(p => p.tag === tag);
             if (match) {
-              console.log(`[Helius Webhook] SOL deposit matched! ${lamports} lamports, tag: ${tag}, sig: ${tx.signature?.slice(0, 12)}…, → ${match.suiAddress.slice(0, 10)}…`);
-
+              console.log(`[Helius Webhook] SOL match: ${lamports} lamports tag=${tag} sig=${tx.signature?.slice(0, 12)}… → ${match.suiAddress.slice(0, 10)}…`);
               const solPrice = await this._fetchSolPrice();
               const solValue = (lamports / 1e9) * (solPrice || 83);
-              const collateralMist = BigInt(Math.floor(solValue * 1e9));
-
-              try {
-                const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
-                console.log(`[Helius Webhook] BAM Attest: SOL collateral $${solValue.toFixed(2)}, digest: ${attestResult.digest || 'failed'}`);
-              } catch (e) {
-                console.error(`[Helius Webhook] BAM Attest failed:`, e);
-              }
-
-              const allIntents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
-              const idx = allIntents.findIndex(i => i.suiAddress === match.suiAddress);
-              if (idx >= 0) {
-                allIntents[idx] = { ...allIntents[idx], status: 'matched', matchedTx: tx.signature, matchedLamports: lamports, attestedUsd: solValue };
-                this.setState({ ...this.state, deposit_intents: allIntents } as any);
-              }
-
-              const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
-              const openBounty = bounties.find(b => b.recipient === match.suiAddress && b.status === 'open');
-              if (openBounty) {
-                console.log(`[Helius Webhook] BAM Mint: filling Quest ${openBounty.id}`);
-                await this.fillQuestBounty(openBounty.id);
-              }
+              await this._dispatchMatchedIntent(match, {
+                usdValue: solValue,
+                sourceDigest: tx.signature || '',
+                sourceChain: 'sol',
+              });
               matched++;
             }
 
@@ -2960,39 +2944,19 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             // Match to a pending intent
             const match = pending.find(p => p.tag === tag);
             if (match) {
-              console.log(`[TreasuryAgents] SOL deposit matched! ${lamports} lamports, tag: ${tag}, → ${match.suiAddress.slice(0, 10)}…`);
+              console.log(`[TreasuryAgents] SOL deposit matched (poll): ${lamports} lamports tag=${tag} → ${match.suiAddress.slice(0, 10)}…`);
 
-              // BAM Event: Burn(lock) on Solana → Attest via Sibyl → Mint iUSD on Sui
-              // SOL stays on Solana as collateral. Sibyl attests. iUSD minted. NS swapped.
-
-              // 1. Calculate SOL value in MIST (for collateral attestation)
+              // Route through the Phase 2 dispatch so SOL deposits
+              // honor the intent's stored route/action/params just
+              // like USDC does. The dispatcher handles attest, mint,
+              // and quest fill uniformly.
               const solPrice = await this._fetchSolPrice();
               const solValue = (lamports / 1e9) * (solPrice || 83);
-              const collateralMist = BigInt(Math.floor(solValue / (solPrice || 83) * (solPrice || 83) * 1e9));
-
-              // 2. Attest SOL collateral on-chain via Sibyl's Timestream
-              try {
-                const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
-                console.log(`[TreasuryAgents] BAM Attest: SOL collateral $${solValue.toFixed(2)}, digest: ${attestResult.digest || 'failed'}`);
-              } catch (e) {
-                console.error(`[TreasuryAgents] BAM Attest failed:`, e);
-              }
-
-              // Mark intent as matched + attested
-              const allIntents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
-              const idx = allIntents.findIndex(i => i.suiAddress === match.suiAddress);
-              if (idx >= 0) {
-                allIntents[idx] = { ...allIntents[idx], status: 'matched', matchedTx: sig.signature, matchedLamports: lamports, attestedUsd: solValue };
-                this.setState({ ...this.state, deposit_intents: allIntents } as any);
-              }
-
-              // 3. Fill Quest — ultron uses SUI/USDC backed by the attested SOL collateral
-              const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
-              const openBounty = bounties.find(b => b.recipient === match.suiAddress && b.status === 'open');
-              if (openBounty) {
-                console.log(`[TreasuryAgents] BAM Mint: filling Quest ${openBounty.id} backed by SOL collateral`);
-                await this.fillQuestBounty(openBounty.id);
-              }
+              await this._dispatchMatchedIntent(match, {
+                usdValue: solValue,
+                sourceDigest: sig.signature,
+                sourceChain: 'sol',
+              });
             // Also check Kamino intents — same sub-cent tag matching
             const kaminoMatch = pendingKamino.find(p => p.tag === tag);
             if (kaminoMatch) {

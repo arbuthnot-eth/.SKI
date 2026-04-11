@@ -11513,6 +11513,132 @@ function bindEvents() {
       // Thunder input — doesn't dismiss, Enter confirms then sends
       const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+
+      // ─── Attachments: paste, drag-drop, paperclip picker ──────────────
+      // Collected files live here until the user hits send. sendThunder's
+      // `files` path routes through the SDK's AttachmentsManager → Seal
+      // encrypt → Walrus upload, so nothing here touches raw bytes beyond
+      // reading from the File object.
+      type _PendingFile = { fileName: string; mimeType: string; data: Uint8Array; previewUrl?: string };
+      const _pendingThunderFiles: _PendingFile[] = [];
+      const _MAX_ATTACH_BYTES = 10 * 1024 * 1024; // 10 MB per file (SDK default)
+      const _MAX_ATTACH_COUNT = 10;
+      const _attachChips = _idleOverlay.querySelector('#ski-idle-thunder-attach-chips') as HTMLElement | null;
+      const _attachBtn = _idleOverlay.querySelector('#ski-idle-thunder-attach') as HTMLButtonElement | null;
+      const _attachFileInput = _idleOverlay.querySelector('#ski-idle-thunder-file-input') as HTMLInputElement | null;
+
+      const _renderAttachChips = () => {
+        if (!_attachChips) return;
+        if (_pendingThunderFiles.length === 0) {
+          _attachChips.innerHTML = '';
+          _attachChips.setAttribute('hidden', '');
+          return;
+        }
+        _attachChips.removeAttribute('hidden');
+        _attachChips.innerHTML = _pendingThunderFiles.map((f, i) => {
+          const isImg = f.mimeType.startsWith('image/');
+          const thumb = isImg && f.previewUrl
+            ? `<img class="ski-idle-attach-thumb" src="${esc(f.previewUrl)}" alt="">`
+            : `<span class="ski-idle-attach-icon">\u{1F4CE}</span>`;
+          const sizeKb = (f.data.byteLength / 1024).toFixed(0);
+          return `<span class="ski-idle-attach-chip" data-idx="${i}" title="${esc(f.fileName)} \u00b7 ${sizeKb}KB">${thumb}<span class="ski-idle-attach-name">${esc(f.fileName)}</span><button class="ski-idle-attach-remove" type="button" data-idx="${i}" title="Remove">\u2715</button></span>`;
+        }).join('');
+      };
+
+      const _clearPendingFiles = () => {
+        for (const f of _pendingThunderFiles) {
+          if (f.previewUrl) { try { URL.revokeObjectURL(f.previewUrl); } catch {} }
+        }
+        _pendingThunderFiles.length = 0;
+        _renderAttachChips();
+      };
+
+      const _addPendingFile = async (file: File): Promise<void> => {
+        if (_pendingThunderFiles.length >= _MAX_ATTACH_COUNT) {
+          showToast(`Max ${_MAX_ATTACH_COUNT} attachments`);
+          return;
+        }
+        if (file.size > _MAX_ATTACH_BYTES) {
+          showToast(`${file.name} > 10 MB — too big`);
+          return;
+        }
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        const mimeType = file.type || 'application/octet-stream';
+        const previewUrl = mimeType.startsWith('image/') ? URL.createObjectURL(file) : undefined;
+        _pendingThunderFiles.push({
+          fileName: file.name || `paste-${Date.now()}`,
+          mimeType,
+          data: bytes,
+          previewUrl,
+        });
+        _renderAttachChips();
+      };
+
+      // Paperclip → open native file picker
+      _attachBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _attachFileInput?.click();
+      });
+      _attachFileInput?.addEventListener('change', async () => {
+        const files = _attachFileInput?.files;
+        if (!files || files.length === 0) return;
+        for (const f of Array.from(files)) await _addPendingFile(f);
+        _attachFileInput!.value = ''; // allow re-picking the same file
+      });
+
+      // Paste into the thunder input → scan clipboardData for files.
+      // Common flow: screenshot to clipboard, click input, paste.
+      _idleThunderInput?.addEventListener('paste', async (e) => {
+        const items = e.clipboardData?.items;
+        if (!items || items.length === 0) return;
+        const files: File[] = [];
+        for (const it of Array.from(items)) {
+          if (it.kind === 'file') {
+            const f = it.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+        if (files.length === 0) return;
+        // Files present — block the default text paste only if there's
+        // no text at all in the clipboard (pure image paste).
+        const hasText = Array.from(items).some(it => it.kind === 'string' && it.type === 'text/plain');
+        if (!hasText) e.preventDefault();
+        for (const f of files) await _addPendingFile(f);
+      });
+
+      // Drag-drop onto the thunder row
+      const _thunderRowEl = _idleOverlay.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
+      _thunderRowEl?.addEventListener('dragover', (e) => {
+        if (e.dataTransfer?.types.includes('Files')) {
+          e.preventDefault();
+          _thunderRowEl?.classList.add('ski-idle-thunder-row--drop');
+        }
+      });
+      _thunderRowEl?.addEventListener('dragleave', () => {
+        _thunderRowEl?.classList.remove('ski-idle-thunder-row--drop');
+      });
+      _thunderRowEl?.addEventListener('drop', async (e) => {
+        if (!e.dataTransfer?.files?.length) return;
+        e.preventDefault();
+        _thunderRowEl?.classList.remove('ski-idle-thunder-row--drop');
+        for (const f of Array.from(e.dataTransfer.files)) await _addPendingFile(f);
+      });
+
+      // Chip remove button
+      _attachChips?.addEventListener('click', (e) => {
+        const btn = (e.target as HTMLElement).closest<HTMLElement>('.ski-idle-attach-remove');
+        if (!btn) return;
+        e.stopPropagation();
+        const idx = Number(btn.dataset.idx);
+        if (Number.isFinite(idx) && _pendingThunderFiles[idx]) {
+          const f = _pendingThunderFiles[idx];
+          if (f.previewUrl) { try { URL.revokeObjectURL(f.previewUrl); } catch {} }
+          _pendingThunderFiles.splice(idx, 1);
+          _renderAttachChips();
+        }
+      });
+
       const _sendIdleThunder = async () => {
         const sendBtn = _idleThunderSend;
 
@@ -11714,7 +11840,8 @@ function bindEvents() {
                 // the Storm missing — we never trust the session cache for
                 // correctness, only as a UX hint for which toast to show.
                 const _sendText = msgText || draft.raw || '';
-                if (!_sendText.trim()) continue;
+                const _hasAttachments = _pendingThunderFiles.length > 0;
+                if (!_sendText.trim() && !_hasAttachments) continue;
                 const recipAddr = await lookupRecipientAddress(recip);
                 const _cacheSaysExists = _stormExistsCache[groupUuid] === true;
                 // Non-WaaP wallets get ultron-sponsored gas for thunder
@@ -11729,6 +11856,13 @@ function bindEvents() {
                   senderName,
                   recipientName: recip,
                   sponsored: _sponsorThunder,
+                  files: _hasAttachments
+                    ? _pendingThunderFiles.map(f => ({
+                        fileName: f.fileName,
+                        mimeType: f.mimeType,
+                        data: f.data,
+                      }))
+                    : undefined,
                   signAndExecute: async (txOrBytes: any) => {
                     showToast(_cacheSaysExists
                       ? `\u26a1 Sending to ${recip}`
@@ -11765,6 +11899,7 @@ function bindEvents() {
               _liveInput.value = '';
               _liveInput.dispatchEvent(new Event('input', { bubbles: true }));
             }
+            _clearPendingFiles();
             const names = recipients.join(', ');
             if (transferAmtUsd) {
               showToast(`$${transferAmtUsd} iUSD Thunder to ${names} sent`);

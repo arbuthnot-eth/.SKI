@@ -16,7 +16,7 @@ import { Agent, callable } from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { normalizeSuiAddress } from '@mysten/sui/utils';
+import { normalizeSuiAddress, toBase64 } from '@mysten/sui/utils';
 import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
 import { createSplMint, mintSplTokens, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
 import { deriveAddress, chainsForCurve, IkaCurve } from '../../client/chains.js';
@@ -449,37 +449,54 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Deposit intent — register a Sui address, get a steganographic tag + exact SOL amount.
     // Sub-cent lamports encode the tag so the watcher knows which Sui address to credit.
+    //
+    // Phase 2 (Porygon2 Lv. 62): tag carries a structured
+    //   (route, action, nonce) triple. The body accepts optional
+    //   `route`, `action`, `params` fields — defaults to
+    //   route=0 (iusd-cache) / action=0 for backward compatibility
+    //   with every pre-Phase-2 client.
     if ((url.pathname.endsWith('/deposit-intent') || url.searchParams.has('deposit-intent')) && request.method === 'POST') {
       try {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
-        const body = await request.json() as { suiAddress: string; amountUsd: number };
+        const body = await request.json() as {
+          suiAddress: string;
+          amountUsd: number;
+          route?: number;
+          action?: number;
+          params?: Record<string, unknown>;
+        };
         if (!body.suiAddress || !body.amountUsd) throw new Error('Missing suiAddress or amountUsd');
 
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
         const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
 
-        // Derive a 6-digit tag from the Sui address hash. Deterministic
-        // per-address by default so reprompting the same user in quick
-        // succession yields the same QR — but if that tag is ALREADY
-        // pending for a different intent (vanishingly rare collision),
-        // we perturb by a nonce 1..9 so the new intent lands in a free
-        // slot. Giving up after 10 attempts falls through to the 503
-        // path so the client retries.
-        const addrBytes = new TextEncoder().encode(body.suiAddress);
-        const hashBuf = await crypto.subtle.digest('SHA-256', addrBytes);
-        const hashArr = new Uint8Array(hashBuf);
-        const baseTag = ((hashArr[0] << 16) | (hashArr[1] << 8) | hashArr[2]) % 1000000;
+        // Validate route/action against the schema. Default both to
+        // 0 so a plain {suiAddress, amountUsd} body still hits the
+        // iusd-cache flow that Phase 1 clients rely on.
+        const { ROUTES, encodeTag, formatTag, deriveNonceFromAddress, composeAmount, formatAmount } = await import('../subcent-tag.js');
+        const route = Math.max(0, Math.min(9, Number(body.route ?? ROUTES.IUSD_CACHE)));
+        const action = Math.max(0, Math.min(99, Number(body.action ?? 0)));
+
+        // Derive a base nonce from the address hash so re-requests
+        // from the same address yield the same tag. On collision we
+        // perturb by +1 up to 9 times (2-digit safety window) before
+        // giving up. Width=6 is USDC's hard ceiling; iUSD/SOL encoded
+        // amounts lift the same nonce into their wider 8-digit tag
+        // at encode time so the match table stays unified.
+        const baseNonce = await deriveNonceFromAddress(body.suiAddress, 6);
         const _existingIntents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
-        let tag = baseTag;
-        for (let nonce = 0; nonce < 10; nonce++) {
-          const candidate = (baseTag + nonce) % 1000000;
+        let tag = 0;
+        let finalNonce = baseNonce;
+        for (let perturb = 0; perturb < 10; perturb++) {
+          const candidateNonce = (baseNonce + perturb) % 1000;
+          const candidate = encodeTag({ route, action, nonce: candidateNonce, width: 6 });
           const clash = _existingIntents.some(i =>
             i.status === 'pending'
             && i.tag === candidate
             && i.suiAddress !== body.suiAddress,
           );
-          if (!clash) { tag = candidate; break; }
-          if (nonce === 9) {
+          if (!clash) { tag = candidate; finalNonce = candidateNonce; break; }
+          if (perturb === 9) {
             throw new Error('Tag space exhausted for this address — retry in a moment');
           }
         }
@@ -502,20 +519,30 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         }
         if (!solPrice) throw new Error('Sibyl could not determine SOL price');
 
-        // Calculate exact lamport amount with tag encoded in sub-cent digits
-        const solAmount = body.amountUsd / solPrice;
-        const baseLamports = Math.floor(solAmount * 1e9);
-        // Zero out last 4 digits, replace with tag
-        // Embed 6-digit tag in sub-cent lamports. Any amount works — tag is in the last 6 digits.
-        const taggedLamports = Math.floor(baseLamports / 1000000) * 1000000 + tag;
+        // Calculate exact lamport amount with tag encoded in sub-cent digits.
+        // SOL has 9 decimals so it carries the wider 8-digit tag
+        // (route in tens, action in ones of the top 4 digits).
+        // Tag is recomputed at width=8 from the same (route, action,
+        // nonce) so 6-digit USDC and 8-digit SOL decode to the same
+        // intent row.
+        const solDecimals = 9;
+        const tagSol = encodeTag({ route, action, nonce: finalNonce, width: 8 });
+        const baseLamports = BigInt(Math.floor((body.amountUsd / solPrice) * 10 ** solDecimals));
+        const baseWhole = (baseLamports / 100_000_000n) * 100_000_000n;
+        const taggedLamportsBig = baseWhole + BigInt(tagSol) * 10n;  // slack=1 for 9→8 shift
+        const taggedLamports = Number(taggedLamportsBig);
 
-        // Store the intent
+        // Store the intent — carries route/action/params alongside
+        // the Phase 1 fields so the match dispatch can route.
         const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
-        // Deduplicate — update if same address
         const existing = intents.findIndex(i => i.suiAddress === body.suiAddress);
         const intent = {
           suiAddress: body.suiAddress,
-          tag,
+          tag,              // 6-digit canonical — matches USDC watcher
+          tagSol,           // 8-digit SOL variant — matches Helius watcher
+          route,
+          action,
+          params: body.params ?? null,
           amountUsd: body.amountUsd,
           lamports: taggedLamports,
           solAmount: taggedLamports / 1e9,
@@ -526,15 +553,15 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         else intents.push(intent);
         this.setState({ ...this.state, deposit_intents: intents } as any);
 
-        const tagStr = String(tag).padStart(6, '0');
+        const tagStr = formatTag(tag, 6);
 
-        // iUSD tagged amount (9 decimals): $7.77 + 6-digit tag in sub-cent = 7.770006296 iUSD
-        const iusdBase = Math.floor(body.amountUsd * 100); // cents
-        const iusdTaggedRaw = BigInt(iusdBase) * 10_000_000n + BigInt(tag); // 9 decimals: cents(7 digits) + tag(6 digits shifted)
-        const iusdTaggedStr = `${body.amountUsd.toFixed(2)}${tagStr}`;
+        // iUSD tagged amount (9 decimals): compose via the shared helper.
+        const iusdRaw = composeAmount(body.amountUsd, encodeTag({ route, action, nonce: finalNonce, width: 8 }), 9, 8);
+        const iusdTaggedStr = formatAmount(iusdRaw, 9);
 
-        // USDC tagged amount (6 decimals): 10.006296 USDC — tag in sub-cent
-        const usdcTagged = (Math.floor(body.amountUsd * 1e6) / 1e6 + tag / 1e6).toFixed(6);
+        // USDC tagged amount (6 decimals): compose via the shared helper.
+        const usdcRaw = composeAmount(body.amountUsd, tag, 6, 6);
+        const usdcTagged = formatAmount(usdcRaw, 6);
 
         // Prism URI — opens sui.ski, auto-builds USDC transfer with tagged amount
         const prismUri = `https://sui.ski/?prism=usdc:${usdcTagged}`;
@@ -3125,6 +3152,119 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
   }
 
+  /** Sub-cent Phase 2 — dispatch a matched deposit intent to its
+   *  handler based on the stored route code. Centralizes the
+   *  "credit the intent + mark matched + fill any paired quest"
+   *  tail so both the USDC watcher and the Helius webhook use the
+   *  same path. Route handlers stay small — complex flows live in
+   *  dedicated methods called from here.
+   *
+   *  Routes wired in this phase:
+   *    0 IUSD_CACHE — attest USDC as collateral, mint iUSD, fill quest
+   *    7 PAY        — forward USDC straight to the target address
+   *
+   *  All other routes fall through to IUSD_CACHE so a misconfigured
+   *  intent still credits the sender rather than vanishing. Unknown
+   *  routes are logged so spawn agents can catch the gap.
+   */
+  private async _dispatchMatchedIntent(
+    intent: Record<string, any>,
+    coin: { address: string; balance: bigint; digest: string },
+  ): Promise<void> {
+    const route = Number(intent.route ?? 0);
+    const action = Number(intent.action ?? 0);
+    const routeName_ = (route === 0 ? 'iusd-cache'
+      : route === 1 ? 'rumble'
+      : route === 2 ? 'quest'
+      : route === 3 ? 'shade'
+      : route === 4 ? 'deepbook'
+      : route === 5 ? 'storm'
+      : route === 6 ? 'satellite'
+      : route === 7 ? 'pay'
+      : `unknown(${route})`);
+
+    // Always mark the intent `matched` first so the reconciler
+    // doesn't double-process it on the next tick even if dispatch
+    // fails below.
+    const all = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+    const idx = all.findIndex(i => i.suiAddress === intent.suiAddress && i.status === 'pending');
+    if (idx >= 0) {
+      all[idx] = {
+        ...all[idx],
+        status: 'matched',
+        matchedTx: coin.digest,
+        matchedUsdcRaw: String(coin.balance),
+        attestedUsd: Number(coin.balance) / 1e6,
+        matchedAt: Date.now(),
+      };
+      this.setState({ ...this.state, deposit_intents: all } as any);
+    }
+
+    try {
+      switch (route) {
+        case 7: { // PAY — forward USDC to the target address untouched
+          console.log(`[treasury/dispatch:pay] ${coin.balance} raw USDC → ${intent.suiAddress.slice(0, 10)}…`);
+          await this._forwardUsdcToTarget(coin, intent.suiAddress);
+          break;
+        }
+        case 0: // IUSD_CACHE (default)
+        default: {
+          if (route !== 0 && route !== 7) {
+            console.warn(`[treasury/dispatch:${routeName_}] route not yet implemented — falling back to iusd-cache`);
+          }
+          // USDC is 1:1 stable — collateral MIST (9-decimal) = raw * 1000.
+          const collateralMist = coin.balance * 1000n;
+          try {
+            const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
+            console.log(`[treasury/dispatch:iusd-cache] attest ${Number(coin.balance) / 1e6} USDC digest=${attestResult.digest || 'failed'}`);
+          } catch (e) {
+            console.error('[treasury/dispatch:iusd-cache] attest failed:', e);
+          }
+          // Fill any open quest for the same recipient. Mirrors the SOL
+          // path so tagged USDC can complete a name registration E2E.
+          const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+          const openBounty = bounties.find(b => b.recipient === intent.suiAddress && b.status === 'open');
+          if (openBounty) {
+            console.log(`[treasury/dispatch:iusd-cache] filling Quest ${openBounty.id}`);
+            try { await this.fillQuestBounty(openBounty.id); } catch (e) {
+              console.error('[treasury/dispatch:iusd-cache] quest fill failed:', e);
+            }
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      console.error(`[treasury/dispatch:${routeName_}] threw:`, e instanceof Error ? e.message : e);
+    }
+    void action;
+  }
+
+  /** PAY route handler — ultron signs a USDC transfer from its own
+   *  balance to the target address. The incoming coin has already
+   *  landed in ultron's wallet, so we just split + forward. Fee-free
+   *  from the user's perspective.
+   */
+  private async _forwardUsdcToTarget(
+    coin: { address: string; balance: bigint; digest: string },
+    target: string,
+  ): Promise<void> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+    try {
+      const tx = new Transaction();
+      tx.setSender(ultronAddr);
+      tx.transferObjects([tx.object(coin.address)], tx.pure.address(normalizeSuiAddress(target)));
+      const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      const txBytes = await tx.build({ client: transport as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const { digest } = await raceExecuteTransaction(toBase64(txBytes), [signature]);
+      console.log(`[treasury/dispatch:pay] forwarded USDC to ${target.slice(0, 10)}… digest=${digest}`);
+    } catch (e) {
+      console.error('[treasury/dispatch:pay] transfer failed:', e instanceof Error ? e.message : e);
+    }
+  }
+
   /** Sub-cent intents — Phase 1c. Sui-side USDC watcher.
    *
    *  Polls ultron's USDC coin objects via GraphQL and matches
@@ -3202,53 +3342,22 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
       if (fresh.length === 0) return;
 
+      // Phase 2: tag is still the same 6-digit canonical value as
+      // Phase 1, just with an internal (route, action, nonce) split.
+      // The USDC match key stays `balance % 1_000_000` = intent.tag.
+      // Routing happens in _dispatchMatchedIntent based on the
+      // intent's stored route field (defaults to 0 = iusd-cache for
+      // every Phase 1 entry in the table).
+      const { routeName } = await import('../subcent-tag.js');
       let matched = 0;
       for (const coin of fresh) {
-        // Tag = balance modulo 1M (works on both 6-decimal USDC and
-        // any future higher-precision variant because we only read
-        // the bottom 6 digits).
         const tag = Number(coin.balance % 1_000_000n);
         if (tag === 0) continue;
         const match = pending.find(p => p.tag === tag);
         if (!match) continue;
-
-        // USDC is a 1:1 stable — collateral value in MIST (9 decimals
-        // of iUSD) is raw_balance (6 decimals) * 1000 to lift to 9.
-        const collateralMist = coin.balance * 1000n;
-        try {
-          const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
-          console.log(`[TreasuryAgents] Sui USDC deposit matched! balance=${coin.balance} tag=${tag} → ${String(match.suiAddress).slice(0, 10)}… attest=${attestResult.digest || 'failed'}`);
-        } catch (e) {
-          console.error(`[TreasuryAgents] Sui USDC attest failed:`, e);
-        }
-
-        // Mark intent matched
-        const all = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
-        const idx = all.findIndex(i => i.suiAddress === match.suiAddress && i.status === 'pending');
-        if (idx >= 0) {
-          all[idx] = {
-            ...all[idx],
-            status: 'matched',
-            matchedTx: coin.digest,
-            matchedUsdcRaw: String(coin.balance),
-            attestedUsd: Number(coin.balance) / 1e6,
-            matchedAt: Date.now(),
-          };
-          this.setState({ ...this.state, deposit_intents: all } as any);
-        }
-
-        // Fill any open quest bounty for the same recipient —
-        // mirrors the SOL-deposit path so a tagged USDC deposit can
-        // complete an on-chain name registration end-to-end.
-        const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
-        const openBounty = bounties.find(b => b.recipient === match.suiAddress && b.status === 'open');
-        if (openBounty) {
-          console.log(`[TreasuryAgents] USDC fill: filling Quest ${openBounty.id} backed by USDC`);
-          try { await this.fillQuestBounty(openBounty.id); } catch (e) {
-            console.error('[TreasuryAgents] USDC fill quest failed:', e);
-          }
-        }
-
+        const routeCode = Number(match.route ?? 0);
+        console.log(`[TreasuryAgents] Sui USDC match: tag=${tag} route=${routeName(routeCode)} action=${match.action ?? 0} → ${String(match.suiAddress).slice(0, 10)}…`);
+        await this._dispatchMatchedIntent(match, coin);
         matched++;
       }
 

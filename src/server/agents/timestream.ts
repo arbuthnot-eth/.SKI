@@ -12,6 +12,7 @@
  */
 
 import { Agent } from 'agents';
+import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 
 /** Wire-format attachment record from @mysten/sui-stack-messaging. */
 interface StoredAttachment {
@@ -83,6 +84,46 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
         participants: Array.isArray(s?.participants) ? s!.participants : [],
       });
     }
+  }
+
+  // ─── WebSocket subscribe path (Jolteon Lv. 25) ─────────────────────
+  // Clients connect to /api/timestream/<gid>/ws and receive real-time
+  // thunder events as JSON frames instead of polling. Broadcast helper
+  // sends to every open connection on this DO instance. Hibernation
+  // is handled by the base Server class — idle sockets don't pin RAM.
+
+  /** Send a JSON event to every connected websocket on this DO. */
+  private _broadcast(event: unknown) {
+    try {
+      this.broadcast(JSON.stringify(event));
+    } catch { /* no connections or send failed — best-effort */ }
+  }
+
+  onConnect(connection: Connection, _ctx: ConnectionContext) {
+    // Send an initial snapshot so the client can paint immediately
+    // without a separate fetch round-trip. The receiver decrypts
+    // client-side; we only carry ciphertext + metadata.
+    try {
+      this._ensureState();
+      const msgs = this.state.messages
+        .filter(m => !m.isDeleted)
+        .sort((a, b) => a.order - b.order)
+        .slice(-50);
+      connection.send(JSON.stringify({
+        kind: 'snapshot',
+        messages: msgs,
+        participants: this._participants,
+      }));
+    } catch (e) {
+      try { connection.send(JSON.stringify({ kind: 'error', error: e instanceof Error ? e.message : String(e) })); } catch {}
+    }
+  }
+
+  onMessage(_connection: Connection, _message: WSMessage) {
+    // Clients are currently pure subscribers — no inbound messages
+    // expected over the WS. Sends still go over the existing POST
+    // endpoints so the failure / validation / retry story stays
+    // uniform across browsers and server agents alike.
   }
 
   async onRequest(request: Request): Promise<Response> {
@@ -221,6 +262,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
 
     const messages = [...this.state.messages, msg];
     this.setState({ ...this.state, messages, nextOrder: order + 1 });
+    this._broadcast({ kind: 'thunder', message: msg, participants: this._participants });
 
     return Response.json({ messageId });
   }
@@ -301,6 +343,7 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const messages = [...this.state.messages];
     messages[idx] = updated;
     this.setState({ ...this.state, messages });
+    this._broadcast({ kind: 'edit', message: updated });
 
     return Response.json({ messageId: updated.messageId });
   }
@@ -320,25 +363,55 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     // nonce, key version, and any attachment references are all dropped.
     // Delete-for-everyone is the ONLY delete — no soft-delete tombstones,
     // no recoverable ghosts in persisted DO storage.
+    const deletedId = this.state.messages[idx].messageId;
     const messages = this.state.messages.filter((_, i) => i !== idx);
     this.setState({ ...this.state, messages });
+    this._broadcast({ kind: 'delete', messageId: deletedId });
 
     return Response.json({ deleted: true });
   }
 
   /**
    * Hard-wipe every thunder in this storm. Called from the × purge
-   * button. Caller must be a participant. Messages array is reset to
-   * empty and nextOrder is preserved (new thunders after purge get
-   * strictly monotonic order regardless — no replay risk).
+   * button. Caller must prove storm membership by sending from an
+   * address that either (a) is already in the participants list, or
+   * (b) matches the senderAddress on one of the existing messages.
+   * Condition (b) handles the "I sent messages to this DO but was
+   * never explicitly added as a participant" race where the add-
+   * participant call lost to the delete request.
+   *
+   * Messages array is reset to empty. nextOrder is preserved so new
+   * thunders after purge keep strict monotonic order — no replay
+   * risk against old message IDs.
    */
   private async _handlePurgeAll(request: Request): Promise<Response> {
     const body = await request.json().catch(() => ({})) as { senderAddress?: string };
-    if (body.senderAddress && !this._isParticipant(body.senderAddress)) {
-      return Response.json({ error: 'Not a participant' }, { status: 403 });
+    const addr = body.senderAddress || '';
+    if (!addr) return Response.json({ error: 'senderAddress required' }, { status: 400 });
+
+    const isMember = this._isParticipant(addr);
+    const hasSentBefore = this.state.messages.some(m => {
+      const sa = (m as any).senderAddress;
+      if (sa && normAddr(sa) === normAddr(addr)) return true;
+      return false;
+    });
+    if (!isMember && !hasSentBefore) {
+      return Response.json({
+        error: 'Not authorized',
+        debug: {
+          addr: normAddr(addr),
+          participants: this._participants.map(p => normAddr(p)),
+          messageCount: this.state.messages.length,
+        },
+      }, { status: 403 });
     }
+    // Auto-promote a proven sender to a first-class participant so
+    // future operations don't need this fallback.
+    if (!isMember) this._addParticipant(addr);
+
     const purgedCount = this.state.messages.length;
     this.setState({ ...this.state, messages: [] });
+    this._broadcast({ kind: 'purge', purged: purgedCount });
     return Response.json({ purged: purgedCount });
   }
 

@@ -12911,12 +12911,17 @@ function bindEvents() {
               // Sender-side recall uses a two-click confirm pattern:
               //   1st click → paint red, arm for 3s (no tx yet)
               //   2nd click → fire recall, on success delete bubble
-              //   timeout  → auto-revert to green live state
-              // First-click-only prevents accidental click-to-recall.
+              //   timeout  → auto-reset to live state, no tx, no nav
+              // First-click-only prevents accidental click-to-recall
+              // and there is NO navigation to the explorer at any
+              // point during this dance — clicking a live or armed
+              // bubble is always an action, never a link.
               if (_role === 'sender' && !_bubEl.classList.contains('ski-idle-bubble--recall-armed')) {
                 _bubEl.classList.add('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
+                _bubEl.title = 'Click again to recall \u00b7 resets in 3s';
                 const _revertTimer = setTimeout(() => {
                   _bubEl.classList.remove('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
+                  _bubEl.title = '';
                 }, 3000);
                 // Stash timer handle so the second click can clear it.
                 (_bubEl as unknown as { _recallRevertTimer?: ReturnType<typeof setTimeout> })._recallRevertTimer = _revertTimer;
@@ -12927,6 +12932,7 @@ function bindEvents() {
               if (_role === 'sender' && _bubEl.classList.contains('ski-idle-bubble--recall-armed')) {
                 const t = (_bubEl as unknown as { _recallRevertTimer?: ReturnType<typeof setTimeout> })._recallRevertTimer;
                 if (t) { clearTimeout(t); (_bubEl as unknown as { _recallRevertTimer?: ReturnType<typeof setTimeout> })._recallRevertTimer = undefined; }
+                _bubEl.title = '';
               }
 
               // Recipient: optimistic gray paint immediately.
@@ -12945,12 +12951,16 @@ function bindEvents() {
                   const { lookupAnyVaultFromDigest, buildClaimIouTx, buildRecallIouTx, fetchThunderSponsorInfo } = await import('./client/thunder.js');
                   const ref = await lookupAnyVaultFromDigest(_txDigest);
                   if (!ref) {
-                    // Vault already consumed — mark the bubble gray
-                    // if we hadn't already, then open the on-chain
-                    // record so the user can see the settling tx.
+                    // Vault already consumed. Clear any transient
+                    // paint states (red armed, or optimistic gray)
+                    // and land on the terminal settled look. Do NOT
+                    // open the explorer — clicking a live bubble is
+                    // an action, not a link. The stamped claim-tx
+                    // pill (if any) is the one user-visible affordance
+                    // that navigates to Suivision.
+                    _bubEl.classList.remove('ski-idle-bubble--transfer-recalling', 'ski-idle-bubble--recall-armed');
                     _bubEl.classList.add('ski-idle-bubble--transfer-settled');
-                    showToast('Escrow already settled — opening explorer');
-                    _openExplorer();
+                    showToast('Escrow already settled');
                     return;
                   }
                   const _isShielded = ref.kind === 'shielded';

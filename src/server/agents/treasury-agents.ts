@@ -795,6 +795,183 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     // Manual rescan — recovery for missed deposits
+    // Snorunt Lv.30 — directly attest a SOL-chain collateral delta.
+    // Writes to the 'SOL' asset key so it doesn't collide with the
+    // Sui-side 'SUI' key (which attestLiveCollateral owns). This is
+    // how cross-chain deposits should have been routed all along.
+    if (url.pathname.endsWith('/attest-sol-collateral') && request.method === 'POST') {
+      try {
+        const body = await request.json() as { valueUsdCents: number };
+        if (!body.valueUsdCents || body.valueUsdCents <= 0) {
+          return new Response(JSON.stringify({ error: 'valueUsdCents required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+        const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+        // cents -> 9-dec USD mist: cents * 10^7
+        const valueMist = BigInt(body.valueUsdCents) * 10_000_000n;
+        const tx = new Transaction();
+        tx.setSender(ultronAddr);
+        tx.moveCall({
+          package: TreasuryAgents.IUSD_PKG,
+          module: 'iusd',
+          function: 'update_collateral',
+          arguments: [
+            tx.object(TreasuryAgents.IUSD_TREASURY),
+            tx.pure.vector('u8', Array.from(new TextEncoder().encode('SOL'))),
+            tx.pure.vector('u8', Array.from(new TextEncoder().encode('solana'))),
+            tx.pure.address('0x0000000000000000000000000000000000000000000000000000000000000000'),
+            tx.pure.u64(valueMist),
+            tx.pure.u8(0),
+            tx.object('0x6'),
+          ],
+        });
+        const txBytes = await tx.build({ client: transport as never });
+        const sig = await keypair.signTransaction(txBytes);
+        const digest = await this._submitTx(txBytes, sig.signature);
+        return new Response(JSON.stringify({ digest, asset: 'SOL', valueMist: String(valueMist), humanUsd: `$${body.valueUsdCents / 100}` }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Snorunt Lv.30 — manually dispatch a known Solana deposit by sig.
+    // Unsticks deposits whose getSignaturesForAddress RPC returns empty
+    // from the worker even though the tx is real. Only trusts the caller
+    // because authedTreasuryStub's x-treasury-auth gate.
+    if (url.pathname.endsWith('/force-dispatch-sol') && request.method === 'POST') {
+      try {
+        const body = await request.json() as { sig: string; lamports: number; suiAddress: string };
+        if (!body.sig || !body.lamports || !body.suiAddress) {
+          return new Response(JSON.stringify({ error: 'sig, lamports, suiAddress required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        const tag = body.lamports % 1000000;
+        const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+        const match = intents.find(i => i.status === 'pending' && i.tag === tag && i.suiAddress === body.suiAddress);
+        if (!match) {
+          return new Response(JSON.stringify({
+            error: 'no matching pending intent',
+            tag,
+            pendingCount: intents.filter(i => i.status === 'pending').length,
+            pendingTags: intents.filter(i => i.status === 'pending').map(i => ({ tag: i.tag, sui: i.suiAddress?.slice(0, 10) })),
+          }), { status: 404, headers: { 'content-type': 'application/json' } });
+        }
+        const solPrice = await this._fetchSolPrice();
+        const solValue = (body.lamports / 1e9) * (solPrice || 85);
+        await this._dispatchMatchedIntent(match, {
+          usdValue: solValue,
+          sourceDigest: body.sig,
+          sourceChain: 'sol',
+        });
+        return new Response(JSON.stringify({
+          ok: true,
+          tag,
+          solValue,
+          dispatched: 'see _dispatchMatchedIntent logs',
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err), stack: (err as Error)?.stack?.slice(0, 500) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Snorunt Lv.30 — debug dump of what _watchSolDeposits sees.
+    if (url.pathname.endsWith('/debug-sol-watch') && request.method === 'POST') {
+      try {
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+        const pending = intents.filter(i => i.status === 'pending');
+        const result: any = {
+          solAddr,
+          pendingCount: pending.length,
+          pendingTags: pending.map(p => ({ tag: p.tag, suiAddress: p.suiAddress?.slice(0, 10), created: p.created })),
+          lastSolSig: (this.state as any).last_sol_sig ?? null,
+        };
+
+        const SOL_RPCS = [
+          ...(this.env.HELIUS_API_KEY ? [`https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`] : []),
+          'https://api.mainnet-beta.solana.com',
+        ];
+
+        let signatures: Array<{ signature: string; blockTime: number }> = [];
+        for (const rpc of SOL_RPCS) {
+          try {
+            const r = await fetch(rpc, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0', id: 1,
+                method: 'getSignaturesForAddress',
+                params: [solAddr, { limit: 10 }],
+              }),
+              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            });
+            const d = await r.json() as any;
+            if (d.result?.length) { signatures = d.result; result.rpcUsed = rpc.replace(/key=.*/, 'key=***'); break; }
+          } catch { /* try next */ }
+        }
+        result.sigCount = signatures.length;
+        result.sigs = signatures.map(s => s.signature.slice(0, 20));
+
+        // Inspect the first matching tx in detail
+        for (const sig of signatures) {
+          try {
+            let txData: any = null;
+            for (const rpc of SOL_RPCS) {
+              try {
+                const r = await fetch(rpc, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    jsonrpc: '2.0', id: 1,
+                    method: 'getTransaction',
+                    params: [sig.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }],
+                  }),
+                  signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+                });
+                const d = await r.json() as any;
+                if (d.result) { txData = d.result; break; }
+              } catch { /* try next */ }
+            }
+            if (!txData) { (result.txDetails ??= []).push({ sig: sig.signature.slice(0, 20), err: 'no txData' }); continue; }
+            const ixs = txData.transaction?.message?.instructions ?? [];
+            const ixInfo = ixs.map((ix: any) => ({
+              program: ix.program ?? ix.programId?.slice(0, 10) ?? '?',
+              type: ix.parsed?.type ?? '?',
+              dest: ix.parsed?.info?.destination?.slice(0, 20) ?? null,
+              lamports: ix.parsed?.info?.lamports ?? null,
+              destMatchesUltron: ix.parsed?.info?.destination === solAddr,
+              amount: ix.parsed?.info?.amount ?? null,
+            }));
+            (result.txDetails ??= []).push({
+              sig: sig.signature.slice(0, 20),
+              ixCount: ixs.length,
+              ixs: ixInfo,
+            });
+          } catch (e) {
+            (result.txDetails ??= []).push({ sig: sig.signature.slice(0, 20), parseErr: String(e) });
+          }
+        }
+        return new Response(JSON.stringify(result, null, 2), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Snorunt Lv.30 — clear the sol-watcher cursor so stuck pending
+    // deposits get re-scanned from fresh. Call ONCE to unblock.
+    if (url.pathname.endsWith('/reset-sol-cursor') && request.method === 'POST') {
+      try {
+        const prev = (this.state as any).last_sol_sig;
+        this.setState({ ...this.state, last_sol_sig: undefined } as any);
+        return new Response(JSON.stringify({ ok: true, previousCursor: prev ?? null }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     if (url.pathname.endsWith('/rescan-deposits') && request.method === 'POST') {
       try {
         await this._watchSolDeposits();
@@ -3408,11 +3585,28 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     if (signatures.length === 0) return;
 
-    // Check last processed signature to avoid re-processing
+    // Walk back through signatures (newest first) until we hit the
+    // last one we processed. Everything newer than lastProcessed is
+    // "new". If lastProcessed isn't in the returned page at all we
+    // default to processing the top 10 — either the watcher hasn't
+    // run yet or lastProcessed is so old it fell off the page, and
+    // in both cases processing the top 10 is the right call.
+    //
+    // PREVIOUS BUG (Snorunt Lv.30): `.filter(s => s.signature !== lastProcessed)`
+    // only excluded the single sig equal to lastProcessed, not
+    // everything older. And since the end of this method sets
+    // `last_sol_sig = signatures[0]` (the newest), any deposit
+    // processed once with success-OR-partial-failure became
+    // permanently filtered out of subsequent scans, because it was
+    // the one sig the filter was targeting. Fix: walk forward from
+    // the top to the lastProcessed position, take only those sigs.
     const lastProcessed = (this.state as any).last_sol_sig as string | undefined;
-    const newSigs = lastProcessed
-      ? signatures.filter(s => s.signature !== lastProcessed).slice(0, 10)
-      : signatures.slice(0, 5);
+    const lastIdx = lastProcessed
+      ? signatures.findIndex(s => s.signature === lastProcessed)
+      : -1;
+    const newSigs = lastIdx >= 0
+      ? signatures.slice(0, lastIdx)       // everything strictly newer
+      : signatures.slice(0, 10);           // cold-start or fell-off-page
 
     if (newSigs.length === 0) return;
 

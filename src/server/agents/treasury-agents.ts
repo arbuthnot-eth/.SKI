@@ -3160,23 +3160,31 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   }
 
   /** Sub-cent Phase 2 — dispatch a matched deposit intent to its
-   *  handler based on the stored route code. Centralizes the
-   *  "credit the intent + mark matched + fill any paired quest"
-   *  tail so both the USDC watcher and the Helius webhook use the
-   *  same path. Route handlers stay small — complex flows live in
-   *  dedicated methods called from here.
+   *  handler based on the stored route code.
    *
-   *  Routes wired in this phase:
-   *    0 IUSD_CACHE — attest USDC as collateral, mint iUSD, fill quest
-   *    7 PAY        — forward USDC straight to the target address
+   *  Source-agnostic: callers pass a `deposit` struct that captures
+   *  the USD value + source chain + optional Sui coin ref (only set
+   *  when the deposit arrived as a native Sui coin, enabling the
+   *  PAY route's forward-the-exact-coin path). SOL deposits pass
+   *  usdValue directly and no coin ref.
    *
-   *  All other routes fall through to IUSD_CACHE so a misconfigured
-   *  intent still credits the sender rather than vanishing. Unknown
-   *  routes are logged so spawn agents can catch the gap.
+   *  Routes wired:
+   *    0 IUSD_CACHE — attest collateral + mint iUSD 1:1 to recipient
+   *    2 QUEST      — attest + fill targeted or auto-discovered bounty
+   *    7 PAY        — forward Sui-USDC coin if available, else mint
+   *                   iUSD to recipient (identical to iusd-cache)
+   *    other        — fall through to IUSD_CACHE with a warning
    */
   private async _dispatchMatchedIntent(
     intent: Record<string, any>,
-    coin: { address: string; balance: bigint; digest: string },
+    deposit: {
+      usdValue: number;
+      sourceDigest: string;
+      sourceChain: 'sui' | 'sol';
+      /** Only set for Sui-USDC deposits: the coin object ultron
+       *  received, available for PAY-route direct forwarding. */
+      suiCoin?: { address: string; balance: bigint };
+    },
   ): Promise<void> {
     const route = Number(intent.route ?? 0);
     const action = Number(intent.action ?? 0);
@@ -3190,6 +3198,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       : route === 7 ? 'pay'
       : `unknown(${route})`);
 
+    // iUSD has 9 decimals; collateral value in MIST = usd * 1e9.
+    const usdMist = BigInt(Math.floor(deposit.usdValue * 1e9));
+
     // Always mark the intent `matched` first so the reconciler
     // doesn't double-process it on the next tick even if dispatch
     // fails below.
@@ -3199,33 +3210,72 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       all[idx] = {
         ...all[idx],
         status: 'matched',
-        matchedTx: coin.digest,
-        matchedUsdcRaw: String(coin.balance),
-        attestedUsd: Number(coin.balance) / 1e6,
+        matchedTx: deposit.sourceDigest,
+        matchedUsdValue: deposit.usdValue,
+        matchedSourceChain: deposit.sourceChain,
         matchedAt: Date.now(),
       };
       this.setState({ ...this.state, deposit_intents: all } as any);
     }
 
+    // Helper used by iusd-cache, PAY-fallback, and QUEST: attest
+    // collateral and mint 1:1 iUSD to the recipient's Sui address.
+    const attestAndMint = async (label: string) => {
+      try {
+        const r = await this.mintIusd({
+          recipient: intent.suiAddress,
+          collateralValueMist: String(usdMist),
+          mintAmount: String(usdMist),
+        });
+        if (r.error) throw new Error(r.error);
+        console.log(`[treasury/dispatch:${label}] mintIusd $${deposit.usdValue} → ${String(intent.suiAddress).slice(0, 10)}… d1=${r.digest1?.slice(0, 10) || '?'} d2=${r.digest2?.slice(0, 10) || '?'}`);
+      } catch (e) {
+        // Fallback: pure attest so the cache still sees the
+        // collateral even if the mint leg failed (e.g. treasury
+        // undercollateralized or key-rotation mid-tick).
+        console.warn(`[treasury/dispatch:${label}] mintIusd failed, attesting only:`, e instanceof Error ? e.message : e);
+        try {
+          const a = await this.attestCollateral({ collateralValueMist: String(usdMist) });
+          console.log(`[treasury/dispatch:${label}] attest ${deposit.usdValue} USD digest=${a.digest || 'failed'}`);
+        } catch (e2) {
+          console.error(`[treasury/dispatch:${label}] attest failed:`, e2);
+        }
+      }
+    };
+
+    // Fill any open quest bounty for the recipient — shared by
+    // iusd-cache and quest routes.
+    const tryFillOpenQuest = async (label: string) => {
+      const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+      const open = bounties.find(b => b.recipient === intent.suiAddress && b.status === 'open');
+      if (!open) return;
+      console.log(`[treasury/dispatch:${label}] filling Quest ${open.id}`);
+      try { await this.fillQuestBounty(open.id); } catch (e) {
+        console.error(`[treasury/dispatch:${label}] quest fill failed:`, e);
+      }
+    };
+
     try {
       switch (route) {
-        case 7: { // PAY — forward USDC to the target address untouched
-          console.log(`[treasury/dispatch:pay] ${coin.balance} raw USDC → ${intent.suiAddress.slice(0, 10)}…`);
-          await this._forwardUsdcToTarget(coin, intent.suiAddress);
+        case 7: { // PAY
+          if (deposit.suiCoin) {
+            // Sui-USDC source → forward the exact coin to the target.
+            // Zero conversion, fee-free, recipient gets USDC.
+            console.log(`[treasury/dispatch:pay] forward ${deposit.suiCoin.balance} USDC → ${intent.suiAddress.slice(0, 10)}…`);
+            await this._forwardUsdcToTarget(
+              { address: deposit.suiCoin.address, balance: deposit.suiCoin.balance, digest: deposit.sourceDigest },
+              intent.suiAddress,
+            );
+          } else {
+            // SOL source → can't forward SOL on Sui. Mint iUSD to the
+            // target so the recipient still gets 1:1 value in-wallet.
+            console.log(`[treasury/dispatch:pay] SOL source, falling back to iUSD mint to ${intent.suiAddress.slice(0, 10)}…`);
+            await attestAndMint('pay');
+          }
           break;
         }
-        case 2: { // QUEST — explicit quest-fill path.
-          // Still attest the collateral so the iUSD cache reflects
-          // the deposit, then fill the specific bounty if the intent
-          // carries a bountyId in params, else fall through to the
-          // auto-find-and-fill path used by iusd-cache.
-          const collateralMist = coin.balance * 1000n;
-          try {
-            const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
-            console.log(`[treasury/dispatch:quest] attest ${Number(coin.balance) / 1e6} USDC digest=${attestResult.digest || 'failed'}`);
-          } catch (e) {
-            console.error('[treasury/dispatch:quest] attest failed:', e);
-          }
+        case 2: { // QUEST
+          await attestAndMint('quest');
           const bountyId = (intent.params as Record<string, unknown> | null)?.bountyId as string | undefined;
           if (bountyId) {
             console.log(`[treasury/dispatch:quest] filling targeted bounty ${bountyId}`);
@@ -3233,16 +3283,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               console.error('[treasury/dispatch:quest] targeted fill failed:', e);
             }
           } else {
-            const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
-            const open = bounties.find(b => b.recipient === intent.suiAddress && b.status === 'open');
-            if (open) {
-              console.log(`[treasury/dispatch:quest] filling discovered bounty ${open.id}`);
-              try { await this.fillQuestBounty(open.id); } catch (e) {
-                console.error('[treasury/dispatch:quest] auto fill failed:', e);
-              }
-            } else {
-              console.log(`[treasury/dispatch:quest] no open bounty for ${intent.suiAddress.slice(0, 10)}… — attested only`);
-            }
+            await tryFillOpenQuest('quest');
           }
           break;
         }
@@ -3251,24 +3292,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           if (route !== 0 && route !== 2 && route !== 7) {
             console.warn(`[treasury/dispatch:${routeName_}] route not yet implemented — falling back to iusd-cache`);
           }
-          // USDC is 1:1 stable — collateral MIST (9-decimal) = raw * 1000.
-          const collateralMist = coin.balance * 1000n;
-          try {
-            const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
-            console.log(`[treasury/dispatch:iusd-cache] attest ${Number(coin.balance) / 1e6} USDC digest=${attestResult.digest || 'failed'}`);
-          } catch (e) {
-            console.error('[treasury/dispatch:iusd-cache] attest failed:', e);
-          }
-          // Fill any open quest for the same recipient. Mirrors the SOL
-          // path so tagged USDC can complete a name registration E2E.
-          const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
-          const openBounty = bounties.find(b => b.recipient === intent.suiAddress && b.status === 'open');
-          if (openBounty) {
-            console.log(`[treasury/dispatch:iusd-cache] filling Quest ${openBounty.id}`);
-            try { await this.fillQuestBounty(openBounty.id); } catch (e) {
-              console.error('[treasury/dispatch:iusd-cache] quest fill failed:', e);
-            }
-          }
+          await attestAndMint('iusd-cache');
+          await tryFillOpenQuest('iusd-cache');
           break;
         }
       }
@@ -3396,7 +3421,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!match) continue;
         const routeCode = Number(match.route ?? 0);
         console.log(`[TreasuryAgents] Sui USDC match: tag=${tag} route=${routeName(routeCode)} action=${match.action ?? 0} → ${String(match.suiAddress).slice(0, 10)}…`);
-        await this._dispatchMatchedIntent(match, coin);
+        // USDC is 1:1 USD at 6 decimals — divide raw by 1e6.
+        await this._dispatchMatchedIntent(match, {
+          usdValue: Number(coin.balance) / 1e6,
+          sourceDigest: coin.digest,
+          sourceChain: 'sui',
+          suiCoin: { address: coin.address, balance: coin.balance },
+        });
         matched++;
       }
 

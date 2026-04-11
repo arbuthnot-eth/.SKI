@@ -2723,11 +2723,11 @@ body {
   cursor: pointer;
   animation: ski-idle-fade 0.5s ease-in;
   transform-origin: top right;
-  /* Floor the overlay width so the name row keeps the input + Storm
-   * action button + × purge on one line without clipping the typed
-   * name. 320px gives the input ~170px of usable width — enough for
-   * "superteam" + the .sui label + breathing room. */
-  min-width: 320px;
+  /* Floor the overlay width just enough to keep the name row usable.
+   * 280 is the sweet spot: input can show ~9-10 chars of a typed
+   * name, Storm action button fits inline, and the overlay doesn't
+   * sprawl. */
+  min-width: 280px;
   overflow: visible;
 }
 @keyframes ski-idle-fade {
@@ -2860,11 +2860,15 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;
   font-weight: 600;
-  padding: 5px 30px 5px 10px;
+  /* Tight right-padding (20px instead of 30) leaves more rendering
+   * room for the typed name before the .sui label overlaps. The
+   * label is absolutely positioned 6px from the right edge. */
+  padding: 5px 20px 5px 8px;
   box-sizing: border-box;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   text-align: left;
+  text-overflow: ellipsis;
 }
 .ski-idle-ns-input:focus { border-color: rgba(96, 165, 250, 0.5); background: rgba(10, 10, 15, 0.85); }
 .ski-idle-ns-input::placeholder { color: rgba(255, 255, 255, 0.3); }

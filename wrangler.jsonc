@@ -46,6 +46,10 @@
       {
         "name": "TimestreamAgent",
         "class_name": "TimestreamAgent"
+      },
+      {
+        "name": "NameIndex",
+        "class_name": "NameIndex"
       }
     ]
   },
@@ -78,6 +82,10 @@
     {
       "tag": "v7",
       "new_sqlite_classes": ["TimestreamAgent"]
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["NameIndex"]
     }
   ],
 

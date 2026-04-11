@@ -2694,16 +2694,23 @@ async function lookupSuiNS(address: string): Promise<string | null> {
       return candidates[0].name;
     }
 
-    // Last-resort fallback: a client-populated cache of names that
-    // resolved to this address at some point in the session (or in a
-    // prior session via localStorage). Catches the "target of a name
-    // with no primary and no owned NFT" case — as long as somebody's
-    // client has ever resolved the name → address pair, we render the
-    // friendly name. See rememberTargetReverse in thunder-stack.ts.
+    // Last-resort fallback: client-local cache first, then the
+    // global server-side NameIndex. Catches the "target of a name
+    // with no primary and no owned NFT" case. The global index is
+    // populated by every visitor whenever their client resolves
+    // `@name → address` anywhere in the app, so once anyone has ever
+    // touched the name, all future visitors see it rendered properly.
     try {
-      const { getTargetReverseName } = await import('./client/thunder.js');
-      const cached = getTargetReverseName(normalized);
-      if (cached) return `${cached}.sui`;
+      const { getTargetReverseName, fetchGlobalTargetReverse, rememberTargetReverse } = await import('./client/thunder.js');
+      const local = getTargetReverseName(normalized);
+      if (local) return `${local}.sui`;
+      const globalNames = await fetchGlobalTargetReverse(normalized);
+      if (globalNames.length > 0) {
+        // Mirror the global hit into the local cache so subsequent
+        // renders skip the network round-trip for this address.
+        rememberTargetReverse(normalized, globalNames[0]);
+        return `${globalNames[0]}.sui`;
+      }
     } catch {}
     return null;
   } catch {

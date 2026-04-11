@@ -29,6 +29,7 @@ export {
   lookupRecipientAddressCached,
   rememberTargetReverse,
   getTargetReverseName,
+  fetchGlobalTargetReverse,
   makeThunderGroupId,
   reverseLookupName,
   type ThunderMessage,

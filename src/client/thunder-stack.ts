@@ -1509,6 +1509,32 @@ export function rememberTargetReverse(address: string, bareName: string): void {
   filtered.unshift(name);
   _targetReverseCache[key] = filtered.slice(0, 8);
   _persistTargetReverse();
+  // Fire-and-forget global index write — shared across all visitors.
+  // No auth, no sigs: the resolve only wrote what SuiNS already says,
+  // and the DO normalizes + dedupes its inputs.
+  try {
+    void fetch('/api/name-index/set', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: key, name }),
+    }).catch(() => {});
+  } catch {}
+}
+
+/**
+ * Fetch names from the global server-side NameIndex for an address.
+ * Returns up to 8 names (bare, lowercase), most-recent first. Used
+ * only as a last-resort fallback — the local cache is checked first
+ * so we don't hit the worker on every profile render.
+ */
+export async function fetchGlobalTargetReverse(address: string): Promise<string[]> {
+  if (!address) return [];
+  try {
+    const r = await fetch(`/api/name-index/get/${address}`);
+    if (!r.ok) return [];
+    const j = await r.json() as { names?: string[] };
+    return Array.isArray(j.names) ? j.names : [];
+  } catch { return []; }
 }
 
 export function getTargetReverseName(address: string): string | null {

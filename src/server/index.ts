@@ -11,6 +11,7 @@ interface Env {
   TreasuryAgents: DurableObjectNamespace;
   Chronicom: DurableObjectNamespace;
   TimestreamAgent: DurableObjectNamespace;
+  NameIndex: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
@@ -1465,6 +1466,40 @@ app.get('/api/thunder/chronicom', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// NameIndex — global target-reverse map shared across all sui.ski visitors.
+// Client writes mappings whenever it resolves `@name → address`, and
+// reads them as a last-resort fallback when SuiNS primary + owned-NFT
+// lookups both return null. Singleton DO (idFromName('singleton')).
+app.post('/api/name-index/set', async (c) => {
+  const stub = c.env.NameIndex.get(c.env.NameIndex.idFromName('singleton'));
+  const body = await c.req.text();
+  const res = await stub.fetch(new Request('https://do/set', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+  }));
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+});
+
+app.post('/api/name-index/bulk', async (c) => {
+  const stub = c.env.NameIndex.get(c.env.NameIndex.idFromName('singleton'));
+  const body = await c.req.text();
+  const res = await stub.fetch(new Request('https://do/bulk', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+  }));
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+});
+
+app.get('/api/name-index/get/:address', async (c) => {
+  const address = c.req.param('address');
+  if (!/^0x[0-9a-fA-F]{64}$/.test(address)) return c.json({ error: 'bad address' }, 400);
+  const stub = c.env.NameIndex.get(c.env.NameIndex.idFromName('singleton'));
+  const res = await stub.fetch(new Request(`https://do/get/${address}`, { method: 'GET' }));
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+});
+
 // Timestream — per-group encrypted message transport (Thunder Timestream)
 app.post('/api/timestream/:groupId/:action', async (c) => {
   const groupId = c.req.param('groupId');
@@ -1817,3 +1852,4 @@ export { ShadeExecutorAgent } from './agents/shade-executor.js';
 export { TreasuryAgents } from './agents/treasury-agents.js';
 export { Chronicom } from './agents/chronicom.js';
 export { TimestreamAgent } from './agents/timestream.js';
+export { NameIndex } from './agents/name-index.js';

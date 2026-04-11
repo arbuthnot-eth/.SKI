@@ -9459,6 +9459,12 @@ function bindEvents() {
         }
       };
 
+      // Track storms the user has explicitly closed via the Storm
+      // button so the auto-open path doesn't immediately re-open them.
+      // Keyed by bare name (lowercase). Cleared when a fresh open is
+      // intentionally triggered (Storm button / quick-action lightning).
+      const _userClosedStorms = new Set<string>();
+
       const _renderThunderComposePreview = () => {
         const raw = _idleThunderInput?.value.trim() || '';
         const draft = _parseThunderCompose(raw);
@@ -9475,11 +9481,17 @@ function bindEvents() {
             const _curGid = _curMeHex && _curTgtHex ? `t-${[_curMeHex, _curTgtHex].sort().join('')}` : '';
             if (_curGid) _checkStormExists(_curGid);
             const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
+            const _convoVisible = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+            // Auto-open the storm when we know it exists on-chain and
+            // the convo isn't already visible. User-closed convos are
+            // tracked separately so we don't fight a manual close.
+            if (_curHasStorm && !_convoVisible && _curTarget && !_userClosedStorms.has(_curTarget)) {
+              _expandIdleConvo(_curTarget).catch(() => {});
+            }
             // Icon depends on whether the storm is open in the UI. If
             // the convo panel is already visible and decrypted, the
             // button represents "thunder" (ready to fire) — ⚡ bolt +
             // "Thunder <name>" tooltip. Otherwise ⛈️ "open storm".
-            const _convoVisible = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
             _idleThunderSend.innerHTML = _convoVisible ? '\u26a1' : '\u26c8\ufe0f';
             _idleThunderSend.title = _convoVisible
               ? `Thunder ${_curTarget}`
@@ -10034,6 +10046,10 @@ function bindEvents() {
       _idleNsInput?.addEventListener('input', () => {
         const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
         _idleNsInput!.value = val;
+        // Typing a new name is an intentional switch — any "user closed"
+        // flag from a previous target shouldn't carry over. Clear on
+        // label change so the auto-opener fires for the new storm.
+        if (val !== nsLabel) _userClosedStorms.clear();
         nsLabel = val;
         try { localStorage.setItem('ski:ns-label', val); } catch {}
         if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
@@ -10419,9 +10435,14 @@ function bindEvents() {
             convoEl.setAttribute('hidden', '');
             _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
             try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+            // Mark as user-closed so the preview auto-opener leaves it alone.
+            if (label) _userClosedStorms.add(label.toLowerCase());
             // Icon flips back to ⛈️ once the convo is closed.
             _renderThunderComposePreview?.();
           } else if (label) {
+            // Intentional open — clear the user-closed flag so the
+            // preview auto-opener doesn't fight the button.
+            _userClosedStorms.delete(label.toLowerCase());
             _expandIdleConvo(label).catch(() => {});
             // Force the convo visible even if the fetch is still in flight.
             if (convoEl && convoEl.hasAttribute('hidden')) convoEl.removeAttribute('hidden');
@@ -12442,6 +12463,8 @@ function bindEvents() {
         if (_idleThunderSend?.dataset.questMode) { _sendIdleThunder(); return; }
 
         if (convoEl && cardName) {
+          // Intentional open via the ⚡ quick action — clear any user-closed flag.
+          _userClosedStorms.delete(cardName.toLowerCase());
           if (convoEl.hasAttribute('hidden')) {
             _expandIdleConvo(cardName);
             if (convoEl.hasAttribute('hidden')) {

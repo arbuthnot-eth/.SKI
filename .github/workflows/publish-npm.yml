@@ -94,11 +94,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
-      - name: Create GitHub Release
-        run: gh release create "v${{ steps.version.outputs.value }}" --title "v${{ steps.version.outputs.value }}" --generate-notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      # Commit the version bump + tag BEFORE creating the release so
+      # that a failed release step can never leave the git state out
+      # of sync with npm (which happened on 2026-04-09 and blocked
+      # every subsequent run — v3.1.43 tag existed but pointed at the
+      # v3.1.42 bump commit, so `gh release create v3.1.43` 422'd).
       - name: Commit version bump and tag
         run: |
           git checkout -- .npmrc 2>/dev/null || true
@@ -106,3 +106,17 @@ jobs:
           git commit -m "chore(release): v${{ steps.version.outputs.value }} [skip ci]"
           git tag "v${{ steps.version.outputs.value }}"
           git push origin HEAD:master --follow-tags
+
+      # Idempotent: if a release with this tag already exists (from a
+      # partial earlier run or manual cleanup), skip and keep going
+      # instead of failing the whole workflow post-publish.
+      - name: Create GitHub Release
+        run: |
+          VERSION="v${{ steps.version.outputs.value }}"
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — skipping create."
+          else
+            gh release create "$VERSION" --title "$VERSION" --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

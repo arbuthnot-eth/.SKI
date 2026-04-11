@@ -12764,11 +12764,21 @@ function bindEvents() {
         });
       }
       // First gesture anywhere on the page lifts the mute. Listening at
-      // the document level so a tap on anything (header, body, overlay)
-      // unblocks audio — not just clicks inside the overlay.
-      document.addEventListener('pointerdown', _tryUnmuteOnGesture, { once: false, passive: true });
-      document.addEventListener('keydown', _tryUnmuteOnGesture, { once: false });
-      document.addEventListener('touchstart', _tryUnmuteOnGesture, { once: false, passive: true });
+      // the document level so any movement or tap unblocks audio — not
+      // just clicks inside the overlay. Mousemove is included because
+      // most browsers accept a pointer movement inside the document as
+      // "user activation" for autoplay purposes.
+      const _unmuteEvents = ['pointerdown', 'pointermove', 'mousemove', 'keydown', 'touchstart'] as const;
+      const _unmuteOnce = (ev: Event) => {
+        void ev;
+        if (!_userPrefersAudio || !_idleVideo) return;
+        if (!_idleVideo.muted) return; // already unmuted
+        _setMuted(false);
+        _idleVideo.play().catch(() => { /* still gated, next gesture will try again */ });
+      };
+      for (const _ev of _unmuteEvents) {
+        document.addEventListener(_ev, _unmuteOnce, { passive: true });
+      }
 
       // Small mute / unmute toggle in the corner of the video.
       const _audioToggle = document.createElement('button');
@@ -12780,20 +12790,12 @@ function bindEvents() {
       _audioToggle.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!_idleVideo) return;
-        // Mute state is bound 1:1 to which background video plays:
-        //   muted   → ski-idle (silent snow idle)
-        //   unmuted → basmr    (ambient audio track)
-        // The video element itself has pointer-events: none, so the
-        // audio toggle is the only control that cycles backgrounds.
+        // Plain mute/unmute toggle — the audio toggle no longer cycles
+        // the background video. Whatever's playing stays playing.
         const nextMuted = !_idleVideo.muted;
         _setMuted(nextMuted);
         _userPrefersAudio = !nextMuted;
         try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
-        const nextBgId = nextMuted ? 'ski-idle' : 'basmr';
-        const nextBg = IDLE_BACKGROUNDS.find(b => b.id === nextBgId) ?? IDLE_BACKGROUNDS[0];
-        _currentBgIdx = IDLE_BACKGROUNDS.indexOf(nextBg);
-        void _loadIdleBg(nextBg);
-        showToast(`\u{1F3AC} ${nextBg.label}`);
         if (!nextMuted) {
           // Resume playback under user gesture so browsers lift the
           // autoplay mute gate. Catch + ignore if still blocked.

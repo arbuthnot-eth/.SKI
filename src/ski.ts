@@ -722,7 +722,7 @@ import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
         const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
         const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
         const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
-        const IUSD_TYPE = '0xa927a4c4e83ee902b81f05a0455a92c77b68f44ed0b48ac9d0a259f680b9573e::iusd::IUSD';
+        const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
 
         /** Build the cache PTB: NS → USDC → iUSD → sender. */
         const buildSweepTx = (opts: { gasOwner?: string; gasCoins?: Array<{ objectId: string; version: string; digest: string }> }) => {

@@ -1111,6 +1111,126 @@ app.post('/api/iusd/swap', async (c) => {
 });
 
 // ── Start treasury agents tick ───────────────────────────────────────
+// ── One-off refund of stranded NS in ultron's wallet ────────────────
+// Specifically to recover the 406.30 NS sent to brando on 2026-04-03
+// via the failed quest fill that then got manually swept to ultron
+// on 2026-04-11 (digest 9TsU2E6VkkEbesP7qjbJJzkXrt3nBhDbtdDPCKnQHLos).
+// That sweep predated the client-side NS→USDC→iUSD PTB, so the NS
+// went to ultron instead of back to brando as iUSD.
+//
+// This endpoint runs ultron-signed + ultron-paid: no user signature
+// needed. PTB: merge all ultron's NS → NS/USDC swap → USDC/iUSD
+// swap → transfer iUSD to the requested recipient. One-shot, hard-
+// gated to the stranded-sweep recipient so nobody else can drain
+// ultron's NS balance via this endpoint.
+app.post('/api/cache/refund-stranded-ns', async (c) => {
+  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
+  if (!key) return c.json({ error: 'Not configured' }, 503);
+  // Hardcoded recipient — this is a one-off refund for a specific
+  // on-chain event, not a general admin endpoint.
+  const RECIPIENT = '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057';
+  const NS_TYPE = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
+  const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+  const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+  const DB_PACKAGE = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
+  const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+  const DB_NS_USDC_POOL = '0x0c0fdd4008740d81a8a7d4281322aee71a1b62c449eb5b142656753d89ebc060';
+  const DB_NS_USDC_POOL_INITIAL_SHARED_VERSION = 414947421;
+  const DB_IUSD_USDC_POOL = '0x38df72f5d07607321d684ed98c9a6c411c0b8968e100a1cd90a996f912cd6ce1';
+  const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
+
+  try {
+    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const ultronAddress = normalizeSuiAddress(keypair.toSuiAddress());
+    const graphql = new SuiGraphQLClient({ url: SUINS_GQL_URL, network: 'mainnet' });
+
+    // The 406.30 NS stranded earlier was already converted to
+    // USDC by the existing _sweepNsToIusd alarm tick (ultron's
+    // NS balance dropped from ~406 to ~0.07 and its USDC balance
+    // rose by ~7.43). So the refund path is now: transfer the
+    // equivalent USDC (7_430_000 raw = $7.43) from ultron to the
+    // recipient directly. No swap needed.
+    //
+    // Unused constants for the no-longer-taken swap path, kept
+    // for when this endpoint is ever repurposed for a live sweep.
+    void NS_TYPE; void IUSD_TYPE; void DB_PACKAGE; void DB_DEEP_TYPE;
+    void DB_NS_USDC_POOL; void DB_NS_USDC_POOL_INITIAL_SHARED_VERSION;
+    void DB_IUSD_USDC_POOL; void DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION;
+
+    const REFUND_USDC_RAW = 7_430_000n; // $7.43 at 6 decimals
+
+    // Fetch ultron's USDC coins; merge and split off the refund amount.
+    const usdcRes = await fetch(SUINS_GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($a:SuiAddress!){
+          address(address:$a){
+            objects(filter:{ type: "0x2::coin::Coin<${USDC_TYPE}>" }, first: 50) {
+              nodes { address version digest contents { json } }
+            }
+          }
+        }`,
+        variables: { a: ultronAddress },
+      }),
+    });
+    const usdcJson = await usdcRes.json() as {
+      data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } };
+    };
+    const usdcNodes = usdcJson?.data?.address?.objects?.nodes ?? [];
+    const usdcCoins = usdcNodes
+      .map(n => ({ objectId: n.address, version: n.version, digest: n.digest, balance: BigInt(n.contents?.json?.balance ?? '0') }))
+      .filter(n => n.balance > 0n)
+      .sort((a, b) => (a.balance > b.balance ? -1 : 1));
+    if (usdcCoins.length === 0) {
+      return c.json({ error: 'Ultron has no USDC to refund' }, 404);
+    }
+    const totalUsdc = usdcCoins.reduce((s, c2) => s + c2.balance, 0n);
+    if (totalUsdc < REFUND_USDC_RAW) {
+      return c.json({ error: `Ultron only has ${Number(totalUsdc) / 1e6} USDC, need ${Number(REFUND_USDC_RAW) / 1e6}` }, 503);
+    }
+
+    const tx = new Transaction();
+    tx.setSender(ultronAddress);
+
+    const usdcPrimary = tx.objectRef(usdcCoins[0]);
+    if (usdcCoins.length > 1) {
+      tx.mergeCoins(usdcPrimary, usdcCoins.slice(1).map(cc => tx.objectRef(cc)));
+    }
+    const [refundCoin] = tx.splitCoins(usdcPrimary, [tx.pure.u64(REFUND_USDC_RAW.toString())]);
+    tx.transferObjects([refundCoin], tx.pure.address(normalizeSuiAddress(RECIPIENT)));
+    // Leftover merged coin stays with ultron.
+    const totalNs = 0n;
+
+    const txBytes = await tx.build({ client: graphql as never });
+    const { signature } = await keypair.signTransaction(txBytes);
+    const b64 = btoa(String.fromCharCode(...txBytes));
+    const submitRes = await fetch(SUI_RPC_URLS[0], {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_executeTransactionBlock',
+        params: [b64, [signature], { showEffects: true, showBalanceChanges: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as { result?: { digest?: string; balanceChanges?: Array<Record<string, unknown>> }; error?: unknown };
+    const digest = submitJson?.result?.digest;
+    if (!digest) return c.json({ error: 'Refund failed', detail: submitJson?.error }, 500);
+
+    return c.json({
+      success: true,
+      digest,
+      totalNsSwept: String(totalNs),
+      totalNsUi: Number(totalNs) / 1e6,
+      recipient: RECIPIENT,
+      balanceChanges: submitJson.result?.balanceChanges,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 app.post('/api/cache/start', async (c) => {
   try {
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?start', {

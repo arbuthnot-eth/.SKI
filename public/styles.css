@@ -2900,11 +2900,11 @@ body {
   flex-shrink: 0;
   padding: 5px 6px;
   border-radius: 6px;
-  /* Pinned to the right end of the row, with the × purge button
-   * sitting immediately after it. The input-wrap's flex: 1 consumes
-   * all the slack on the left so the input extends as far as
-   * possible before hitting the Storm button. */
-  margin-left: auto;
+  /* NO margin-left: auto here. In flexbox, auto margins absorb
+   * free space BEFORE flex-grow distribution — so setting auto
+   * would starve the input-wrap's flex: 1 0 0 growth and leave
+   * the .sui label short of the Storm button. Position is driven
+   * purely by the wrap's flex-grow consuming all available slack. */
   box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
   font-size: 0.75rem;

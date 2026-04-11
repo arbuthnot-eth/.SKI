@@ -238,6 +238,12 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       }
     }
 
+    // Self-healing migration: any soft-deleted tombstones lingering from
+    // before the hard-delete switch get pruned on first fetch, so the
+    // `!isDeleted` filter stops carrying weight once the DO is drained.
+    if (this.state.messages.some(m => m.isDeleted)) {
+      this.setState({ ...this.state, messages: this.state.messages.filter(m => !m.isDeleted) });
+    }
     let msgs = this.state.messages.filter(m => !m.isDeleted);
     if (body.afterOrder !== undefined) msgs = msgs.filter(m => m.order > body.afterOrder!);
     if (body.beforeOrder !== undefined) msgs = msgs.filter(m => m.order < body.beforeOrder!);
@@ -302,13 +308,16 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     const idx = this.state.messages.findIndex(m => m.messageId === body.messageId);
     if (idx < 0) return Response.json({ error: 'Not found' }, { status: 404 });
 
-    // Any participant can delete (both sides can remove messages)
+    // Any participant can delete — both sides can prune messages.
     if (body.senderAddress && !this._isParticipant(body.senderAddress)) {
       return Response.json({ error: 'Not a participant' }, { status: 403 });
     }
 
-    const messages = [...this.state.messages];
-    messages[idx] = { ...messages[idx], isDeleted: true, updatedAt: jitterTs(Date.now()) };
+    // Hard delete: splice the entry out of DO state entirely. Ciphertext,
+    // nonce, key version, and any attachment references are all dropped.
+    // Delete-for-everyone is the ONLY delete — no soft-delete tombstones,
+    // no recoverable ghosts in persisted DO storage.
+    const messages = this.state.messages.filter((_, i) => i !== idx);
     this.setState({ ...this.state, messages });
 
     return Response.json({ deleted: true });

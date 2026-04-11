@@ -18,3 +18,4 @@ contracts/*/Move.lock
 .superpowers/
 *.key
 drafts/
+.claude/worktrees/

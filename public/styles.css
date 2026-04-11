@@ -3758,14 +3758,47 @@ body {
   color: #22c55e !important;
   font-weight: 700;
 }
-/* Recalling state — sender-initiated refund in flight. Red palette
- * matches the "taking back" semantic; swaps to the gray settled
- * state on tx success, reverts to green live on failure. */
+/* Recalling state — sender-initiated refund armed. Red palette
+ * matches the "taking back" semantic. First click on an outgoing
+ * transfer bubble flips this on, starts a 3s confirm timer, and
+ * shows a ✕ badge at the top-right corner. Second click within
+ * the window fires the recall PTB; timeout reverts to green live.
+ *
+ * padding-right is bumped so the ✕ badge doesn't overlap the
+ * label text. ::after is positioned absolutely at the top-right
+ * outside the normal content flow so the badge always sits in
+ * the same spot regardless of bubble width. */
 .ski-idle-bubble--transfer-recalling {
   background: rgba(60, 15, 20, 0.88) !important;
   border-color: rgba(239, 68, 68, 0.65) !important;
   color: #fca5a5 !important;
   opacity: 0.85;
+  padding-right: 26px !important;
+  position: relative;
+  animation: recall-pulse 1.5s ease-in-out infinite;
+}
+.ski-idle-bubble--transfer-recalling::after {
+  content: '\2715';
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(239, 68, 68, 0.28);
+  border: 1px solid rgba(239, 68, 68, 0.7);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  color: #fca5a5;
+  line-height: 1;
+  pointer-events: none;
+}
+@keyframes recall-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  50%      { box-shadow: 0 0 12px 0 rgba(239, 68, 68, 0.4); }
 }
 .ski-idle-bubble--transfer-recalling .ski-idle-bubble-mention {
   color: #fca5a5 !important;

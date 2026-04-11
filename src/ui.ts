@@ -12862,6 +12862,10 @@ function bindEvents() {
                   const { lookupAnyVaultFromDigest, buildClaimIouTx, buildRecallIouTx, fetchThunderSponsorInfo } = await import('./client/thunder.js');
                   const ref = await lookupAnyVaultFromDigest(_txDigest);
                   if (!ref) {
+                    // Vault already consumed — mark the bubble gray
+                    // if we hadn't already, then open the on-chain
+                    // record so the user can see the settling tx.
+                    _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                     showToast('Escrow already settled — opening explorer');
                     _openExplorer();
                     return;
@@ -12954,8 +12958,8 @@ function bindEvents() {
                     }
                   } else {
                     // Sender-side click. Try recall (only works after
-                    // TTL). On ENotExpired, fall through to the
-                    // explorer so the sender can still inspect.
+                    // TTL). On ENotExpired, stay put — no explorer.
+                    // Clicking a live bubble is an action, not a link.
                     try {
                       let bytes: Uint8Array;
                       if (_isShielded) {
@@ -12980,8 +12984,7 @@ function bindEvents() {
                       const msg = err instanceof Error ? err.message : String(err);
                       if (/reject|cancel/i.test(msg)) return;
                       if (/abort code:\s*2/i.test(msg) || /ENotExpired/i.test(msg)) {
-                        showToast('Not yet recallable — opening explorer');
-                        _openExplorer();
+                        showToast('Escrow still live — waiting for claim or TTL');
                       } else {
                         showToast(`Recall failed: ${msg.slice(0, 120)}`);
                       }
@@ -12989,7 +12992,7 @@ function bindEvents() {
                   }
                 } catch (e) {
                   console.warn('[iou] click handler threw:', e);
-                  _openExplorer();
+                  showToast('Escrow action failed');
                 }
               })();
               return;

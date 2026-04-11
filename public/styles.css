@@ -2962,6 +2962,44 @@ body {
   border: 1px solid rgba(129, 140, 248, 0.55);
   color: #818cf8;
 }
+/* X clear button that sits next to the Storm action button. First
+ * click arms the purge (all bubbles turn red). Second click fires
+ * the bulk delete + pulls the local cache down with them. */
+.ski-idle-storm-purge {
+  all: unset;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(10, 10, 15, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ski-idle-storm-purge:hover {
+  color: rgba(239, 68, 68, 0.9);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.ski-idle-storm-purge--armed {
+  color: #fff;
+  background: rgba(239, 68, 68, 0.85);
+  border-color: rgba(239, 68, 68, 1);
+}
+.ski-idle-storm-purge[hidden] { display: none; }
+/* Red-mark all bubbles when purge is armed. Second click clears. */
+.ski-idle-thunder-convo--purge-armed .ski-idle-bubble {
+  background: rgba(239, 68, 68, 0.22) !important;
+  border-color: rgba(239, 68, 68, 0.6) !important;
+  color: #fecaca !important;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
 .ski-idle-ns-action--trade {
   background: linear-gradient(135deg, rgba(240, 165, 0, 0.35), rgba(245, 166, 35, 0.25));
   border: 1px solid rgba(240, 165, 0, 0.6);

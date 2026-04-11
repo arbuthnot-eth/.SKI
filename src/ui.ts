@@ -9218,6 +9218,7 @@ function bindEvents() {
               <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
             </div>
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
+            <button class="ski-idle-storm-purge" id="ski-idle-storm-purge" type="button" title="Clear all messages in this storm" hidden>\u2715</button>
           </div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
           <div class="ski-idle-context" id="ski-idle-price" hidden>
@@ -9277,6 +9278,7 @@ function bindEvents() {
       const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
       const _idleClearBtn = _idleOverlay.querySelector('#ski-idle-clear') as HTMLButtonElement | null;
       const _idleActionBtn = _idleOverlay.querySelector('#ski-idle-action') as HTMLButtonElement | null;
+      const _idleStormPurgeBtn = _idleOverlay.querySelector('#ski-idle-storm-purge') as HTMLButtonElement | null;
       const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
       let _idleDebounce: ReturnType<typeof setTimeout> | null = null;
       let _thunderComposeDraft: ThunderComposeDraft | null = null;
@@ -9482,6 +9484,14 @@ function bindEvents() {
             if (_curGid) _checkStormExists(_curGid);
             const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
             const _convoVisible = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+            // The × purge button only makes sense when a convo is open
+            // with at least one bubble. Show/hide it in lockstep with
+            // the convo visibility.
+            if (_idleStormPurgeBtn) {
+              const _hasBubbles = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo .ski-idle-bubble'));
+              if (_convoVisible && _hasBubbles) _idleStormPurgeBtn.removeAttribute('hidden');
+              else _idleStormPurgeBtn.setAttribute('hidden', '');
+            }
             // Auto-open the storm when we know it exists on-chain and
             // the convo isn't already visible. User-closed convos are
             // tracked separately so we don't fight a manual close.
@@ -12801,6 +12811,76 @@ function bindEvents() {
           // autoplay mute gate. Catch + ignore if still blocked.
           try { await _idleVideo.play(); } catch {}
         }
+      });
+
+      // ─── Storm purge (×) — bulk-clear all messages in the open storm ──
+      // First click: arms the purge (all bubbles turn red, button goes
+      //   red, 3-second disarm timer starts).
+      // Second click (within the window): deletes every visible message
+      //   from the DO + prunes the local encrypted cache + closes the
+      //   convo. The storm group itself is NOT archived — just its
+      //   message history is wiped.
+      let _purgeArmedTimer: ReturnType<typeof setTimeout> | null = null;
+      const _disarmPurge = () => {
+        const _convoElDisarm = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        _convoElDisarm?.classList.remove('ski-idle-thunder-convo--purge-armed');
+        _idleStormPurgeBtn?.classList.remove('ski-idle-storm-purge--armed');
+        if (_purgeArmedTimer) { clearTimeout(_purgeArmedTimer); _purgeArmedTimer = null; }
+      };
+      _idleStormPurgeBtn?.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const convoElPurge = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (!convoElPurge || convoElPurge.hasAttribute('hidden')) return;
+        const bubbles = Array.from(convoElPurge.querySelectorAll<HTMLElement>('.ski-idle-bubble'));
+        if (bubbles.length === 0) return;
+
+        // First click — arm.
+        if (!_idleStormPurgeBtn.classList.contains('ski-idle-storm-purge--armed')) {
+          convoElPurge.classList.add('ski-idle-thunder-convo--purge-armed');
+          _idleStormPurgeBtn.classList.add('ski-idle-storm-purge--armed');
+          if (_purgeArmedTimer) clearTimeout(_purgeArmedTimer);
+          _purgeArmedTimer = setTimeout(_disarmPurge, 3000);
+          return;
+        }
+
+        // Second click — fire.
+        _disarmPurge();
+        const _bare = (nsLabel || '').toLowerCase();
+        const _myAddrPurge = getState().address || '';
+        const _myHexPurge = _myAddrPurge.toLowerCase().replace(/^0x/, '').slice(0, 14);
+        const _tgtHexPurge = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+        if (!_myHexPurge || !_tgtHexPurge) return;
+        const _purgeGid = `t-${[_myHexPurge, _tgtHexPurge].sort().join('')}`;
+        _idleStormPurgeBtn.disabled = true;
+        _idleStormPurgeBtn.textContent = '\u2026';
+        let _failed = 0;
+        for (const bubble of bubbles) {
+          const bid = bubble.dataset.id || '';
+          if (!bid) { bubble.remove(); continue; }
+          try {
+            const r = await fetch(`/api/timestream/${encodeURIComponent(_purgeGid)}/delete`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ messageId: bid, senderAddress: _myAddrPurge }),
+            });
+            if (r.ok) bubble.remove();
+            else { _failed++; console.warn('[thunder] purge delete rejected:', r.status, bid); }
+          } catch (e) { _failed++; console.warn('[thunder] purge delete threw:', e); }
+        }
+        // Drop the entire local encrypted history cache for this storm.
+        try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
+        // Close the convo + clear the saved-convo pointer so the next
+        // refresh doesn't try to re-open an empty storm.
+        convoElPurge.setAttribute('hidden', '');
+        convoElPurge.innerHTML = '';
+        _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+        try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+        if (_bare) _userClosedStorms.add(_bare);
+        _idleStormPurgeBtn.disabled = false;
+        _idleStormPurgeBtn.textContent = '\u2715';
+        if (_failed > 0) showToast(`Purged ${bubbles.length - _failed}/${bubbles.length} — ${_failed} failed`);
+        else showToast(`\u{1F9F9} Storm purged (${bubbles.length})`);
+        _renderThunderComposePreview?.();
       });
 
       // Auto-resolve pre-filled name on overlay open (e.g. restored from

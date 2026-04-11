@@ -1314,6 +1314,13 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       await this._retryStrandedRegistrations();
       await this._deliberateShades();
       await this._sweepNsToIusd();
+      // Sub-cent intents — Phase 1b + 1c. Purge stale intents
+      // (10-min pending TTL, 24h matched retention) then poll
+      // ultron's USDC coins for tag-matched deposits from
+      // external wallets. The prune pass runs first so the
+      // watcher's match set stays small.
+      await this._purgeStaleIntents();
+      await this._watchSuiUsdcDeposits();
 
       // Every 15 min: sweep dust, rotate yield across NAVI/Scallop/DeepBook
       const YIELD_INTERVAL = 30 * 1000; // 30s for testing — restore to 15 * 60 * 1000
@@ -3039,6 +3046,183 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Update last processed signature
     this.setState({ ...this.state, last_sol_sig: signatures[0]?.signature } as any);
+  }
+
+  /** Sub-cent intents — Phase 1b. Purge stale intents so the tag
+   *  table doesn't grow without bound.
+   *
+   *   - Pending intents older than INTENT_PENDING_TTL_MS (10 min):
+   *     dropped entirely. The client can re-request a tag.
+   *   - Matched intents older than INTENT_MATCHED_TTL_MS (24h):
+   *     dropped so the deposit-status poll has time to read them
+   *     and then they free up the table.
+   *
+   *  Same two TTLs apply to kamino_intents. No-op when nothing
+   *  expired so the state bag doesn't churn unnecessarily.
+   */
+  private async _purgeStaleIntents(): Promise<void> {
+    const INTENT_PENDING_TTL_MS = 10 * 60 * 1000;
+    const INTENT_MATCHED_TTL_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const prune = <T extends { status?: string; created?: number; matchedAt?: number }>(list: T[]): T[] =>
+      list.filter(i => {
+        if (i.status === 'pending') return now - (i.created ?? 0) < INTENT_PENDING_TTL_MS;
+        if (i.status === 'matched' || i.status === 'filled') {
+          const at = i.matchedAt ?? i.created ?? 0;
+          return now - at < INTENT_MATCHED_TTL_MS;
+        }
+        // Anything else (error, cancelled) expires on the short TTL too.
+        return now - (i.created ?? 0) < INTENT_PENDING_TTL_MS;
+      });
+
+    const depRaw = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+    const kamRaw = ((this.state as any).kamino_intents ?? []) as Array<Record<string, any>>;
+    const dep = prune(depRaw as any);
+    const kam = prune(kamRaw as any);
+    if (dep.length !== depRaw.length || kam.length !== kamRaw.length) {
+      this.setState({ ...this.state, deposit_intents: dep, kamino_intents: kam } as any);
+    }
+  }
+
+  /** Sub-cent intents — Phase 1c. Sui-side USDC watcher.
+   *
+   *  Polls ultron's USDC coin objects via GraphQL and matches
+   *  any newly-arrived coin's tag (balance % 1_000_000) against
+   *  pending deposit intents. On a hit, attests collateral +
+   *  fills any open quest for the same recipient, then marks the
+   *  intent `matched`.
+   *
+   *  Uses `last_sui_usdc_cursor` as a watermark so we only
+   *  process new arrivals. First run establishes the baseline by
+   *  recording the newest digest and matching nothing.
+   *
+   *  The GraphQL query returns USDC coins owned by ultron; each
+   *  coin's `previousTransaction.digest` is the incoming tx.
+   */
+  private async _watchSuiUsdcDeposits(): Promise<void> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
+    const ultronAddr = this.getUltronAddress();
+    if (!ultronAddr) return;
+
+    const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+    const pending = intents.filter(i => i.status === 'pending');
+
+    try {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($a: SuiAddress!) {
+            address(address: $a) {
+              objects(filter: { type: "0x2::coin::Coin<${USDC_TYPE}>" }, first: 50) {
+                nodes {
+                  address
+                  version
+                  contents { json }
+                  previousTransaction { digest }
+                }
+              }
+            }
+          }`,
+          variables: { a: ultronAddr },
+        }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const data = await res.json() as {
+        data?: { address?: { objects?: { nodes?: Array<{
+          address: string;
+          version: string;
+          contents?: { json?: { balance?: string } };
+          previousTransaction?: { digest?: string };
+        }> } } };
+      };
+      const nodes = data?.data?.address?.objects?.nodes ?? [];
+      if (nodes.length === 0) return;
+
+      const cursor = (this.state as any).last_sui_usdc_cursor as string | undefined;
+
+      // First run: set the cursor to the newest coin, match nothing.
+      if (!cursor) {
+        const newest = nodes[0]?.previousTransaction?.digest ?? '';
+        if (newest) this.setState({ ...this.state, last_sui_usdc_cursor: newest } as any);
+        return;
+      }
+
+      // Find all coins received since the cursor. Stops when we hit
+      // the cursor digest — everything earlier is already processed.
+      const fresh: Array<{ address: string; balance: bigint; digest: string }> = [];
+      for (const n of nodes) {
+        const dig = n.previousTransaction?.digest ?? '';
+        if (!dig || dig === cursor) break;
+        const rawBal = n.contents?.json?.balance ?? '0';
+        const bal = BigInt(rawBal);
+        if (bal === 0n) continue;
+        fresh.push({ address: n.address, balance: bal, digest: dig });
+      }
+      if (fresh.length === 0) return;
+
+      let matched = 0;
+      for (const coin of fresh) {
+        // Tag = balance modulo 1M (works on both 6-decimal USDC and
+        // any future higher-precision variant because we only read
+        // the bottom 6 digits).
+        const tag = Number(coin.balance % 1_000_000n);
+        if (tag === 0) continue;
+        const match = pending.find(p => p.tag === tag);
+        if (!match) continue;
+
+        // USDC is a 1:1 stable — collateral value in MIST (9 decimals
+        // of iUSD) is raw_balance (6 decimals) * 1000 to lift to 9.
+        const collateralMist = coin.balance * 1000n;
+        try {
+          const attestResult = await this.attestCollateral({ collateralValueMist: String(collateralMist) });
+          console.log(`[TreasuryAgents] Sui USDC deposit matched! balance=${coin.balance} tag=${tag} → ${String(match.suiAddress).slice(0, 10)}… attest=${attestResult.digest || 'failed'}`);
+        } catch (e) {
+          console.error(`[TreasuryAgents] Sui USDC attest failed:`, e);
+        }
+
+        // Mark intent matched
+        const all = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
+        const idx = all.findIndex(i => i.suiAddress === match.suiAddress && i.status === 'pending');
+        if (idx >= 0) {
+          all[idx] = {
+            ...all[idx],
+            status: 'matched',
+            matchedTx: coin.digest,
+            matchedUsdcRaw: String(coin.balance),
+            attestedUsd: Number(coin.balance) / 1e6,
+            matchedAt: Date.now(),
+          };
+          this.setState({ ...this.state, deposit_intents: all } as any);
+        }
+
+        // Fill any open quest bounty for the same recipient —
+        // mirrors the SOL-deposit path so a tagged USDC deposit can
+        // complete an on-chain name registration end-to-end.
+        const bounties = ((this.state as any).quest_bounties ?? []) as Array<Record<string, any>>;
+        const openBounty = bounties.find(b => b.recipient === match.suiAddress && b.status === 'open');
+        if (openBounty) {
+          console.log(`[TreasuryAgents] USDC fill: filling Quest ${openBounty.id} backed by USDC`);
+          try { await this.fillQuestBounty(openBounty.id); } catch (e) {
+            console.error('[TreasuryAgents] USDC fill quest failed:', e);
+          }
+        }
+
+        matched++;
+      }
+
+      // Advance the cursor to the newest coin digest we just saw.
+      const newCursor = nodes[0]?.previousTransaction?.digest ?? cursor;
+      if (newCursor !== cursor) {
+        this.setState({ ...this.state, last_sui_usdc_cursor: newCursor } as any);
+      }
+      if (matched > 0) {
+        console.log(`[TreasuryAgents] Sui USDC watcher matched ${matched} deposit(s)`);
+      }
+    } catch (e) {
+      console.warn('[TreasuryAgents] Sui USDC watcher failed:', e instanceof Error ? e.message : e);
+    }
   }
 
   /** Retry pre-signed registrations that failed during quest fill.

@@ -12280,6 +12280,19 @@ function bindEvents() {
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
+            // Transfer bubbles (money sends) are immutable once the
+            // on-chain tx is confirmed — there is no correct way to
+            // "delete" a record of funds that already moved. Clicking
+            // a --transfer bubble opens the Suivision explorer via its
+            // anchor href (don't preventDefault); the delete flow is
+            // skipped entirely. Future: iOUSD jackets will let the
+            // sender recall un-redeemed transfers, at which point this
+            // gate softens to "recall sends back to sender" instead
+            // of hard immutability.
+            if ((bubble as HTMLElement).classList.contains('ski-idle-bubble--transfer')) {
+              return;
+            }
+            ev.preventDefault();
             if (_deleteBusy) return;
             const msgId = (bubble as HTMLElement).dataset.id || '';
             if (!msgId) return;
@@ -12930,8 +12943,15 @@ function bindEvents() {
         ev.stopPropagation();
         const convoElPurge = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoElPurge || convoElPurge.hasAttribute('hidden')) return;
-        const bubbles = Array.from(convoElPurge.querySelectorAll<HTMLElement>('.ski-idle-bubble'));
-        if (bubbles.length === 0) return;
+        // Transfer bubbles are immutable (on-chain record), excluded
+        // from both the armed visual state and the fire step.
+        const allBubbles = Array.from(convoElPurge.querySelectorAll<HTMLElement>('.ski-idle-bubble'));
+        const deletableBubbles = allBubbles.filter(b => !b.classList.contains('ski-idle-bubble--transfer'));
+        const transferBubbles = allBubbles.filter(b => b.classList.contains('ski-idle-bubble--transfer'));
+        if (deletableBubbles.length === 0) {
+          showToast(transferBubbles.length > 0 ? 'Only transfer records remain — those are immutable' : 'Nothing to purge');
+          return;
+        }
 
         // First click — arm.
         if (!_idleStormPurgeBtn.classList.contains('ski-idle-storm-purge--armed')) {
@@ -12942,9 +12962,11 @@ function bindEvents() {
           return;
         }
 
-        // Second click — fire. Use the DO's bulk purge endpoint so we
-        // hit EVERY stored thunder in the group, not just the ones
-        // currently rendered as bubbles.
+        // Second click — fire. Delete non-transfer bubbles one by one
+        // via the single-delete endpoint so the DO keeps every
+        // transfer record intact. (We can't use the bulk /purge-all
+        // endpoint here because the DO stores ciphertext and has no
+        // way to distinguish transfers from regular thunders.)
         _disarmPurge();
         const _bare = (nsLabel || '').toLowerCase();
         const _myAddrPurge = getState().address || '';
@@ -12955,36 +12977,54 @@ function bindEvents() {
         _idleStormPurgeBtn.disabled = true;
         _idleStormPurgeBtn.textContent = '\u2026';
         let _purgedCount = 0;
-        let _ok = false;
-        try {
-          const r = await fetch(`/api/timestream/${encodeURIComponent(_purgeGid)}/purge-all`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ senderAddress: _myAddrPurge }),
-          });
-          const _body = await r.text();
-          if (r.ok) {
-            const j = (() => { try { return JSON.parse(_body); } catch { return {}; } })() as { purged?: number };
-            _purgedCount = j.purged ?? bubbles.length;
-            _ok = true;
-          } else {
-            console.warn('[thunder] purge-all rejected:', r.status, _body, 'gid:', _purgeGid, 'addr:', _myAddrPurge);
+        let _failed = 0;
+        for (const b of deletableBubbles) {
+          const bid = b.dataset.id || '';
+          if (!bid) continue;
+          try {
+            const r = await fetch(`/api/timestream/${encodeURIComponent(_purgeGid)}/delete`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ messageId: bid, senderAddress: _myAddrPurge }),
+            });
+            if (r.ok) {
+              b.remove();
+              _purgedCount++;
+            } else {
+              _failed++;
+              console.warn('[thunder] purge-delete rejected:', r.status, bid);
+            }
+          } catch (e) {
+            _failed++;
+            console.warn('[thunder] purge-delete threw:', e);
           }
-        } catch (e) { console.warn('[thunder] purge-all threw:', e); }
+        }
+        const _ok = _purgedCount > 0;
 
         if (_ok) {
-          // Drop the local encrypted history cache entry entirely.
-          try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
-          // Strip bubbles from the DOM.
-          for (const b of bubbles) b.remove();
-          // Close the convo + clear the saved-convo pointer so the next
-          // refresh doesn't try to re-open an empty storm.
-          convoElPurge.setAttribute('hidden', '');
-          convoElPurge.innerHTML = '';
-          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-          try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
-          if (_bare) _userClosedStorms.add(_bare);
-          showToast(`\u{1F9F9} Storm purged (${_purgedCount})`);
+          // Prune the local encrypted history cache: keep transfer
+          // notes, drop everything else. Mirror the server-side state.
+          try {
+            const cached = await _loadThunderHist(_purgeGid);
+            if (cached) {
+              const keepers = cached.filter(m => /^[\u{1F4B8}\u26A1]\s*\$/u.test(m.text) || /^[\u{1F4B8}\u26A1].*\$\d+.*\bsent\b/iu.test(m.text));
+              if (keepers.length > 0) await _saveThunderHist(_purgeGid, keepers);
+              else try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
+            }
+          } catch {}
+          // Only close the convo if there are no transfer bubbles
+          // sticking around as immutable receipts.
+          if (transferBubbles.length === 0) {
+            convoElPurge.setAttribute('hidden', '');
+            convoElPurge.innerHTML = '';
+            _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+            try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+            if (_bare) _userClosedStorms.add(_bare);
+          }
+          const _kept = transferBubbles.length;
+          const _keptMsg = _kept > 0 ? ` — ${_kept} transfer${_kept > 1 ? 's' : ''} preserved` : '';
+          const _failedMsg = _failed > 0 ? ` (${_failed} failed)` : '';
+          showToast(`\u{1F9F9} Purged ${_purgedCount}${_keptMsg}${_failedMsg}`);
         } else {
           showToast('Purge failed — messages still on DO');
         }

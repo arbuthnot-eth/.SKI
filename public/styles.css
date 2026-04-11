@@ -3006,8 +3006,9 @@ body {
   border-color: rgba(239, 68, 68, 1);
 }
 .ski-idle-storm-purge[hidden] { display: none; }
-/* Red-mark all bubbles when purge is armed. Second click clears. */
-.ski-idle-thunder-convo--purge-armed .ski-idle-bubble {
+/* Red-mark all non-transfer bubbles when purge is armed. Transfer
+ * bubbles are immutable receipts of on-chain sends and never red. */
+.ski-idle-thunder-convo--purge-armed .ski-idle-bubble:not(.ski-idle-bubble--transfer) {
   background: rgba(239, 68, 68, 0.22) !important;
   border-color: rgba(239, 68, 68, 0.6) !important;
   color: #fecaca !important;

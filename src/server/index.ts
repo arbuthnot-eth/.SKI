@@ -10,6 +10,7 @@ interface Env {
   ShadeExecutorAgent: DurableObjectNamespace;
   TreasuryAgents: DurableObjectNamespace;
   Chronicom: DurableObjectNamespace;
+  TimestreamAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
@@ -786,6 +787,30 @@ app.get('/api/tradeport/listing/:label', async (c) => {
   }
 });
 
+// Debug: dump all Tradeport listings + activities for a name so we can
+// spot-check whether a current asking price ever had a lower historical.
+app.get('/api/tradeport/history/:label', async (c) => {
+  const label = c.req.param('label').toLowerCase().replace(/\.sui$/, '');
+  const name = `${label}.sui`;
+  try {
+    const res = await fetch(TRADEPORT_GQL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-user': c.env.TRADEPORT_API_USER,
+        'x-api-key': c.env.TRADEPORT_API_KEY,
+      },
+      body: JSON.stringify({
+        query: `{ sui { nfts(where: { collection_id: { _eq: "${SUINS_COLLECTION_ID}" }, name: { _eq: "${name}" } }, limit: 1) { token_id name listings(order_by: { price: asc }) { id price seller market_name listed block_time } actions(order_by: { block_time: desc }, limit: 20) { type price sender receiver market_name block_time } } } }`,
+      }),
+    });
+    const json = await res.json() as any;
+    return c.json(json);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'failed' }, 500);
+  }
+});
+
 // ── SuiAMI identity proof verification ────────────────────────────
 app.post('/api/suiami/verify', async (c) => {
   try {
@@ -800,48 +825,49 @@ app.post('/api/suiami/verify', async (c) => {
     const signature = body.slice(dotIdx + 1);
     const message = JSON.parse(atob(msgB64));
 
-    if (!message.suiami || !(message.sui || message.address) || !message.nftId) {
+    if (!message.suiami || !message.sui || !message.nftId) {
       return c.json({ valid: false, error: 'Missing required fields' }, 400);
     }
 
-    // Check timestamp freshness (within 5 minutes)
     const age = Date.now() - (message.timestamp ?? 0);
     if (age > 5 * 60 * 1000 || age < -30_000) {
       return c.json({ valid: false, error: 'Token expired or future-dated' }, 400);
     }
 
-    // On-chain verification: confirm the signer owns the NFT and it resolves to the claimed name
     let ownershipVerified = false;
     let nameVerified = false;
     let onChainError: string | undefined;
 
     try {
-      // 1. Check NFT owner matches claimed address
-      const objData = await raceJsonRpc<{
-        data?: {
-          owner?: { AddressOwner?: string; ObjectOwner?: string };
-          content?: { fields?: { name?: string } };
-          type?: string;
-        };
-      }>('sui_getObject', [message.nftId, { showOwner: true, showContent: true, showType: true }]);
-      const owner = objData?.data?.owner;
-      const ownerAddr = owner?.AddressOwner ?? '';
-      // Normalize both addresses for comparison (strip 0x, lowercase, pad to 64)
+      const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($id: SuiAddress!) {
+            object(address: $id) {
+              owner { __typename ... on AddressOwner { address { address } } }
+              asMoveObject { contents { type { repr } json } }
+            }
+          }`,
+          variables: { id: message.nftId },
+        }),
+      });
+      const gql = await res.json() as any;
+      const obj = gql?.data?.object;
+      const ownerAddr = obj?.owner?.__typename === 'AddressOwner' ? (obj.owner.address?.address ?? '') : '';
       const norm = (a: string) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
-      ownershipVerified = norm(ownerAddr) === norm(message.sui || message.address);
+      ownershipVerified = !!ownerAddr && norm(ownerAddr) === norm(message.sui);
 
-      // 2. Check the NFT's domain_name field matches the claimed name
-      const fields = objData?.data?.content?.fields as Record<string, unknown> | undefined;
-      const nftName = ((fields?.domain_name ?? fields?.name ?? '') as string).replace(/\.sui$/, '');
-      const claimedName = (message.suiami as string).replace(/^I am /, '');
-      nameVerified = nftName === claimedName;
-
-      // Also verify it's actually a SuinsRegistration type
-      const objType = objData?.data?.type ?? (objData?.data?.content as Record<string, unknown>)?.type as string ?? '';
+      const objType = obj?.asMoveObject?.contents?.type?.repr ?? '';
       if (!objType.includes('suins_registration::SuinsRegistration') && !objType.includes('SubDomainRegistration')) {
         onChainError = 'Object is not a SuiNS registration NFT';
         ownershipVerified = false;
       }
+
+      const fields = obj?.asMoveObject?.contents?.json ?? {};
+      const nftName = ((fields.domain_name ?? fields.name ?? '') as string).replace(/\.sui$/, '');
+      const claimedName = message.suiami.replace(/^I am /, '');
+      nameVerified = nftName === claimedName;
     } catch {
       onChainError = 'On-chain verification failed (RPC error)';
     }
@@ -853,7 +879,7 @@ app.post('/api/suiami/verify', async (c) => {
       onChainError,
       suiami: message.suiami,
       ski: message.ski,
-      address: message.sui || message.address,
+      address: message.sui,
       nftId: message.nftId,
       timestamp: message.timestamp,
       signature,
@@ -1351,6 +1377,46 @@ app.get('/api/thunder/chronicom', async (c) => {
   catch { return c.json({ error: text }, 500); }
 });
 
+// Timestream — per-group encrypted message transport (Thunder Timestream)
+app.post('/api/timestream/:groupId/:action', async (c) => {
+  const groupId = c.req.param('groupId');
+  const action = c.req.param('action');
+  if (!groupId || !action) return c.json({ error: 'groupId and action required' }, 400);
+  const stub = c.env.TimestreamAgent.get(c.env.TimestreamAgent.idFromName(groupId));
+  const body = await c.req.text();
+  const res = await stub.fetch(new Request(`https://timestream-do/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-partykit-room': groupId },
+    body,
+  }));
+  const text = await res.text();
+  try { return c.json(JSON.parse(text), res.status as any); }
+  catch { return c.json({ error: text }, 500); }
+});
+
+// Thunder subscribe WebSocket — Jolteon Lv. 25.
+// Clients open a WS to /api/timestream/:groupId/ws and receive real-time
+// thunder events pushed by the TimestreamAgent DO. The Agent's Server
+// base class handles the WS handshake + hibernation; we just forward
+// the upgrade request to the right DO stub.
+app.get('/api/timestream/:groupId/ws', async (c) => {
+  const groupId = c.req.param('groupId');
+  if (!groupId) return c.json({ error: 'groupId required' }, 400);
+  if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
+    return c.json({ error: 'WebSocket upgrade required' }, 426);
+  }
+  const stub = c.env.TimestreamAgent.get(c.env.TimestreamAgent.idFromName(groupId));
+  // Forward the raw request — the DO's Server base class recognizes
+  // the Upgrade header and performs the handshake + onConnect.
+  // The partykit room header tags this connection to the right room.
+  const headers = new Headers(c.req.raw.headers);
+  headers.set('x-partykit-room', groupId);
+  return stub.fetch(new Request(c.req.raw.url, {
+    method: 'GET',
+    headers,
+  }));
+});
+
 // Migrate ultron: sweep all assets to new keeper + update ultron.sui target address
 app.post('/api/cache/migrate', async (c) => {
   try {
@@ -1629,3 +1695,4 @@ export { SplashDeviceAgent } from './agents/splash.js';
 export { ShadeExecutorAgent } from './agents/shade-executor.js';
 export { TreasuryAgents } from './agents/treasury-agents.js';
 export { Chronicom } from './agents/chronicom.js';
+export { TimestreamAgent } from './agents/timestream.js';

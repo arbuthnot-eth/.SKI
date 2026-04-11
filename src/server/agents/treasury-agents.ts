@@ -2945,19 +2945,29 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
                   this.setState({ ...this.state, kamino_intents: allKamino } as any);
                 }
                 // ── Prism: Thunder notification to recipient ──────────────
-                if (kaminoMatch.suinsName) {
+                if (kaminoMatch.suinsName && kaminoMatch.suiAddress) {
                   try {
-                    const { buildThunderSendTx, lookupRecipientNftId } = await import('../../client/thunder.js');
                     const recipName = kaminoMatch.suinsName.replace(/\.sui$/i, '');
-                    const recipNftId = await lookupRecipientNftId(recipName);
-                    if (recipNftId) {
-                      const ultronAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
-                      const msg = `⚡ OpenCLOB fill: ${(lamports / 1e9).toFixed(2)} SOL → Kamino ${kaminoMatch.strategy} → $${iusdValue.toFixed(2)} iUSD minted to your wallet.${kaminoDigest ? ` Kamino tx: ${kaminoDigest.slice(0, 12)}…` : ''}`;
-                      const thunderBytes = await buildThunderSendTx(ultronAddr, 'ultron', recipName, recipNftId, msg);
-                      const thunderSig = await keypair.signTransaction(thunderBytes);
-                      const thunderDigest = await this._submitTx(thunderBytes, thunderSig.signature);
-                      console.log(`[OpenCLOB] Prism Thunder sent to ${recipName}.sui: ${thunderDigest}`);
-                    }
+                    const msg = `⚡ OpenCLOB fill: ${(lamports / 1e9).toFixed(2)} SOL → Kamino ${kaminoMatch.strategy} → $${iusdValue.toFixed(2)} iUSD minted to your wallet.${kaminoDigest ? ` Kamino tx: ${kaminoDigest.slice(0, 12)}…` : ''}`;
+                    // Address-keyed group ID, short-hash form matching
+                    // client/thunder-stack.ts makeThunderGroupId: `t-` +
+                    // first 14 hex of each address, sorted. Keeps the id
+                    // under the on-chain metadata::new length limit.
+                    const _a = this.getUltronAddress().toLowerCase().replace(/^0x/, '').slice(0, 14);
+                    const _b = normalizeSuiAddress(kaminoMatch.suiAddress).toLowerCase().replace(/^0x/, '').slice(0, 14);
+                    const groupId = `t-${[_a, _b].sort().join('')}`;
+                    await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({
+                        groupId,
+                        encryptedText: btoa(msg), // plaintext for now — ultron notifications are public
+                        nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
+                        keyVersion: '0',
+                        senderAddress: normalizeSuiAddress(keypair.getPublicKey().toSuiAddress()),
+                      }),
+                    });
+                    console.log(`[OpenCLOB] Prism Thunder sent to ${recipName}.sui via Timestream`);
                   } catch (e) { console.warn('[OpenCLOB] Prism Thunder failed:', e); }
                 }
 
@@ -4340,8 +4350,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (status.ethAddress) { chainKeys.push('eth'); chainVals.push(status.ethAddress); }
       if (status.solAddress) { chainKeys.push('sol'); chainVals.push(status.solAddress); }
 
-      const ROSTER_PKG = '0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4';
-      const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+      const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+      const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
       const tx = new Transaction();
       tx.setSender(ultronAddr);
@@ -4418,19 +4428,25 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (blobId) console.log(`[TreasuryAgents] Pre-Rumble attested to Walrus: ${blobId}`);
       } catch (e) { console.warn('[TreasuryAgents] Walrus attestation failed:', e); }
 
-      // Send welcome Thunder to the new name — announces their chain addresses
+      // Send welcome Thunder to the new name — announces their chain addresses.
+      // Short-hash format matching makeThunderGroupId (first 14 hex × 2 sorted).
       try {
-        const { buildThunderSendTx, lookupRecipientNftId, nameHash } = await import('../../client/thunder.js');
-        const recipNftId = await lookupRecipientNftId(bare);
-        if (recipNftId) {
-          const welcomeMsg = `\ud83e\udd91 Rumble squids provisioned! btc@${bare} eth@${bare} sol@${bare} — your chain addresses are live. Rumble yourself to take full custody.`;
-          const welcomeBytes = await buildThunderSendTx(
-            ultronAddr, 'ultron', bare, recipNftId, welcomeMsg,
-          );
-          const welcomeSig = await keypair.signTransaction(welcomeBytes);
-          const welcomeDigest = await this._submitTx(welcomeBytes, welcomeSig.signature);
-          console.log(`[TreasuryAgents] Welcome Thunder sent to ${bare}.sui: ${welcomeDigest}`);
-        }
+        const welcomeMsg = `\ud83e\udd91 Rumble squids provisioned! btc@${bare} eth@${bare} sol@${bare} — your chain addresses are live. Rumble yourself to take full custody.`;
+        const _a = ultronAddr.toLowerCase().replace(/^0x/, '').slice(0, 14);
+        const _b = normalizeSuiAddress(userAddress).toLowerCase().replace(/^0x/, '').slice(0, 14);
+        const groupId = `t-${[_a, _b].sort().join('')}`;
+        await fetch(`https://sui.ski/api/timestream/${encodeURIComponent(groupId)}/send`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            groupId,
+            encryptedText: btoa(welcomeMsg),
+            nonce: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(12)))),
+            keyVersion: '0',
+            senderAddress: ultronAddr,
+          }),
+        });
+        console.log(`[TreasuryAgents] Welcome Thunder sent to ${bare}.sui via Timestream`);
       } catch (e) { console.warn('[TreasuryAgents] Welcome Thunder failed:', e); }
 
       return { digest, blobId };
@@ -4477,8 +4493,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
     const price = BigInt(priceMist);
-    const fee = price * 300n / 10000n; // 3% Tradeport fee
-    const totalNeeded = price + fee;
+    // Tradeport commission is deducted from seller — buyer pays just the price
+    const totalNeeded = price;
 
     const TRADEPORT_V1_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
     const TRADEPORT_V1_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
@@ -4486,19 +4502,41 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const TRADEPORT_V2_STORE = '0x47cba0b6309a12ce39f9306e28b899ed4b3698bce4f4911fd0c58ff2329a2ff6';
     const SUINS_REG_TYPE = '0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0::suins_registration::SuinsRegistration';
 
-    // Helper: add Tradeport buy call to a transaction, trying v1 then v2
-    const addTradeportBuy = (t: Transaction, nftId: string, coin: any) => {
-      // Try v1 first (most existing listings)
+    // Helper: add Tradeport buy call + destroy_zero to a transaction
+    const addTradeportBuy = (t: Transaction, listingOrNftId: string, coin: any, v2 = false) => {
+      const pkg = v2 ? TRADEPORT_V2_PKG : TRADEPORT_V1_PKG;
+      const store = v2 ? TRADEPORT_V2_STORE : TRADEPORT_V1_STORE;
+      const fn = v2 ? 'listings::buy' : 'tradeport_listings::buy_listing_without_transfer_policy';
       t.moveCall({
-        target: `${TRADEPORT_V1_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+        target: `${pkg}::${fn}`,
         typeArguments: [SUINS_REG_TYPE],
-        arguments: [t.object(TRADEPORT_V1_STORE), t.pure.id(nftId), coin],
+        arguments: [
+          t.sharedObjectRef({ objectId: store, initialSharedVersion: 3377344, mutable: true }),
+          t.pure.id(listingOrNftId), coin,
+        ],
       });
+      // buy consumes the entire coin — destroy zero remainder
+      t.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [coin] });
     };
     const DB_PKG = '0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497';
     const DB_SUI_USDC = '0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407';
     const DB_SUI_USDC_ISV = 389750322;
     const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
+
+    // Resolve on-chain Listing ID (Store keys by Listing ID, not NFT ID)
+    let buyId = nftTokenId;
+    try {
+      const gqlRes = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `{ object(address: "${nftTokenId}") { owner { ... on ObjectOwner { address { address asObject { owner { ... on ObjectOwner { address { address } } } } } } } } }`,
+        }),
+      });
+      type R = { data?: { object?: { owner?: { address?: { asObject?: { owner?: { address?: { address?: string } } } } } } } };
+      const gqlJson = await gqlRes.json() as R;
+      buyId = gqlJson?.data?.object?.owner?.address?.asObject?.owner?.address?.address ?? nftTokenId;
+    } catch {}
 
     const tx = new Transaction();
     tx.setSender(buyerAddr);
@@ -4514,13 +4552,23 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
     // Always prefer SUI direct if buyer has enough — regardless of what infer picked
     if (availSui >= totalNeeded) {
-      // Simple: split from gas, buy
-      const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
-      addTradeportBuy(tx, nftTokenId, payment);
-      tx.transferObjects([payment], tx.pure.address(buyerAddr));
-
-      const txBytes = await tx.build({ client: transport as never });
-      return { txBase64: uint8ToBase64(txBytes), description: `Buy via SUI direct (${Number(totalNeeded) / 1e9} SUI)` };
+      // Simple: split from gas, buy — try v1 then v2
+      for (const v2 of [false, true]) {
+        try {
+          const t = new Transaction();
+          t.setSender(buyerAddr);
+          const payment = t.splitCoins(t.gas, [t.pure.u64(totalNeeded.toString())]);
+          addTradeportBuy(t, buyId, payment, v2);
+          const txBytes = await t.build({ client: transport as never });
+          return { txBase64: uint8ToBase64(txBytes), description: `Buy via SUI direct (${Number(totalNeeded) / 1e9} SUI)` };
+        } catch (err) {
+          if (!v2 && String(err).includes('MoveAbort')) {
+            console.warn('[Tradeport] v1 failed, retrying v2:', err instanceof Error ? err.message : err);
+            continue;
+          }
+          throw err;
+        }
+      }
     }
 
     if (route === 'usdc-swap' || route === 'iusd-redeem') {
@@ -4592,8 +4640,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
         // Purchase from Tradeport (buyer now has SUI from ultron pre-fund)
         const payment = userTx.splitCoins(userTx.gas, [userTx.pure.u64(totalNeeded.toString())]);
-        addTradeportBuy(userTx, nftTokenId, payment);
-        userTx.transferObjects([payment], userTx.pure.address(buyerAddr));
+        addTradeportBuy(userTx, buyId, payment);
 
         const txBytes = await userTx.build({ client: transport as never });
         return {
@@ -4637,8 +4684,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Now purchase with gas (has original SUI + swapped SUI)
       const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
-      addTradeportBuy(tx, nftTokenId, payment);
-      tx.transferObjects([payment], tx.pure.address(buyerAddr));
+      addTradeportBuy(tx, buyId, payment);
 
       const txBytes = await tx.build({ client: transport as never });
       return { txBase64: uint8ToBase64(txBytes), description: `USDC→SUI swap + Tradeport buy (${Number(swapAmount) / 1e6} USDC → ${Number(shortfall) / 1e9} SUI)` };

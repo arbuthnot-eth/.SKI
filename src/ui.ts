@@ -423,10 +423,19 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000)
   requestAnimationFrame(() => document.getElementById(id)?.classList.add('show'));
 
   let copied = false;
-  const remove = () => { toast.classList.remove('show'); setTimeout(() => toast.remove(), TOAST_ANIMATION_MS); };
-  // Error toasts stay until dismissed — no auto-timeout
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), TOAST_ANIMATION_MS);
+  };
+  // Auto-dismiss after 4.5s regardless of interaction state. Click still
+  // copies; the copy state just sticks around until the timer fires or
+  // the user clicks again to dismiss early.
+  const _autoTimer = setTimeout(remove, 4500);
   toast.addEventListener('click', () => {
-    if (copied) { remove(); return; }
+    if (copied) { clearTimeout(_autoTimer); remove(); return; }
     copied = true;
     navigator.clipboard.writeText(fullText).catch(() => {});
     hint.textContent = '\u2713 Copied — click again to dismiss';
@@ -1904,16 +1913,6 @@ export function mountBalanceCycler(el: HTMLElement): () => void {
   };
 }
 
-/** In-memory thunder encryption key — derived from lockin signature. Only the private key holder can produce this. */
-let _thunderCryptoKey: CryptoKey | null = null;
-
-/** Derive the thunder AES key from a lockin signature. */
-async function _deriveThunderKeyFromSig(signature: string): Promise<CryptoKey> {
-  const sigBytes = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
-  const hash = await crypto.subtle.digest('SHA-256', sigBytes);
-  return crypto.subtle.importKey('raw', hash, 'AES-GCM', false, ['encrypt', 'decrypt']);
-}
-
 /** The deterministic lockin message — no nonce, so the same wallet always produces the same signature → same thunder key. */
 function _thunderLockinMessage(address: string): string {
   return [`Lock in`, '', address].join('\n');
@@ -1930,8 +1929,6 @@ async function lockInIdentity(): Promise<void> {
   const message = _thunderLockinMessage(ws.address);
   try {
     const result = await signPersonalMessage(new TextEncoder().encode(message));
-    // Derive thunder encryption key from signature — only this wallet can produce it
-    _thunderCryptoKey = await _deriveThunderKeyFromSig(result.signature);
     // Detect WaaP auth method from account label
     const isWaap = /waap/i.test(ws.walletName || '');
     const waapProvider = isWaap && ws.account?.label
@@ -1951,8 +1948,6 @@ async function lockInIdentity(): Promise<void> {
     };
     try { localStorage.setItem('ski:session', JSON.stringify(proof)); } catch {}
     if (waapProvider) storeWaapProvider(ws.address, waapProvider);
-    // Decrypt conversations now that we have the key (card stays closed until clicked)
-    _refreshThunderLocalCounts();
     showToast(`Locked in as ${esc(name)}`);
     render();
   } catch (err) {
@@ -2985,6 +2980,8 @@ export async function refreshPortfolio(force = false) {
     portfolioInFlight = false;
     const nsInputActive = document.activeElement?.id === 'wk-ns-label-input';
     render();
+    // Only notify card when balance includes SUI (complete, not partial)
+    if (app.usd != null && app.sui > 0) window.dispatchEvent(new Event('ski:balance-updated'));
     if (nsInputActive) {
       skipNextFocusClear = true;
       requestAnimationFrame(() => {
@@ -3075,10 +3072,14 @@ function _renderProfileEl(el: HTMLElement) {
   // IKA status populated from on-chain query, not localStorage
 
   const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
+  // Squid 🦑 is always rendered so the layout doesn't jump. Dimmed + greyscale
+  // when the user has no IKA wallet yet — a visible-but-muted hint to Rumble.
+  const squidDim = app.ikaWalletId ? '' : ';opacity:0.35;filter:grayscale(1)';
+  const squidTitle = app.ikaWalletId ? 'Rumbled' : 'Rumble to provision cross-chain wallets';
   const innerHtml = `${iconHtml}
         <span class="wk-widget-label-wrap">
           <span class="${labelClass}">
-            <span class="wk-widget-primary-name">${esc(label)}<span style="display:inline-block;width:1.1em;text-align:center${app.ikaWalletId ? '' : ';visibility:hidden'}">\ud83e\udd91</span></span>
+            <span class="wk-widget-primary-name">${esc(label)}<span title="${squidTitle}" style="display:inline-block;width:1.1em;text-align:center${squidDim}">\ud83e\udd91</span></span>
           </span>
         </span>`;
 
@@ -3379,7 +3380,6 @@ let nsTransferInputOpen = false; // transfer-recipient inline editor open
 let nsTransferRecipient = ''; // value in the transfer-recipient input
 // Thunder counts disabled — pending v4 migration (#63). Always empty.
 let _thunderCounts: Record<string, number> = {};
-let _thunderLocalCounts: Record<string, number> = {}; // total signals per counterparty from local log
 let _thunderPollTimer: ReturnType<typeof setInterval> | null = null;
 let _thunderDecryptBusy = false;
 let _thunderConvoTarget = ''; // current conversation counterparty (prevents re-render flicker)
@@ -3411,47 +3411,19 @@ function _updateIdleThunderBadge(): void {
   const total = _totalThunderCount();
   if (total > 0) {
     sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${total}</span>`;
-    sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
-    sendBtn.title = `Quest ${total} signal${total > 1 ? 's' : ''} across all names`;
+    sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--quest';
+    sendBtn.title = `Quest ${total} thunder${total > 1 ? 's' : ''} across all names`;
     sendBtn.dataset.questMode = '1';
     sendBtn.dataset.questAll = '1';
     sendBtn.disabled = false;
   } else if (sendBtn.dataset.questAll === '1') {
-    sendBtn.innerHTML = '\u26a1';
-    sendBtn.className = 'ski-idle-thunder-send';
-    sendBtn.title = 'Send signal';
+    sendBtn.innerHTML = '\u26c8\ufe0f';
+    sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send';
+    sendBtn.title = `Open Storm to ${nsLabel || ''}`;
     delete sendBtn.dataset.questMode;
     delete sendBtn.dataset.questAll;
     sendBtn.disabled = false;
   }
-}
-
-/** Recompute _thunderLocalCounts from the encrypted log.
- *  Groups by address when available so conversations persist across SuiNS name changes.
- *  Falls back to name-based grouping for entries without an addr field. */
-async function _refreshThunderLocalCounts() {
-  const ws = getState();
-  if (!ws.address) { _thunderLocalCounts = {}; return; }
-  try {
-    const all = await _readThunderLog();
-    const counts: Record<string, number> = {};
-    // Build addr→name mapping (most recent name wins)
-    const addrToName: Record<string, string> = {};
-    for (const e of all) {
-      const peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
-      if (peer && e.addr) addrToName[e.addr.toLowerCase()] = peer;
-    }
-    for (const e of all) {
-      let peer = ((e.dir === 'out' || (!e.dir && !e.from)) ? (e.to || '') : (e.from || '')).replace(/\.sui$/, '').toLowerCase();
-      // Normalize to most recent name for this address
-      if (e.addr) {
-        const canonical = addrToName[e.addr.toLowerCase()];
-        if (canonical) peer = canonical;
-      }
-      if (peer) counts[peer] = (counts[peer] ?? 0) + 1;
-    }
-    _thunderLocalCounts = counts;
-  } catch { _thunderLocalCounts = {}; }
 }
 
 /** Toggle card + conversation open/closed. */
@@ -3480,30 +3452,40 @@ async function _renderConversation(counterparty: string, force = false) {
   const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
   if (!bare) return;
 
-  const entries = await _getConversation(bare);
+  // Resolve both sides to addresses — storm group IDs are address-keyed
+  // so primary SuiNS rotations can't orphan history.
+  const ws = getState();
+  const myAddrLc = (ws.address || '').toLowerCase();
+  if (!myAddrLc) return;
+  const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
+  const counterpartyAddr = await lookupRecipientAddressCached(bare);
+  if (!counterpartyAddr) return;
+  const groupId = makeThunderGroupId(myAddrLc, counterpartyAddr);
+  let doMessages: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
+  try {
+    const { getThunders } = await import('./client/thunder.js');
+    const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+    doMessages = messages;
+  } catch { /* empty */ }
 
   // Re-query DOM after async — elements may have been rebuilt by renderSkiMenu
   const receivedEl = document.getElementById('wk-thunder-received');
   const thunderRowEl = document.getElementById('wk-thunder-convo');
   if (!receivedEl || !thunderRowEl) return;
 
-  const rows = entries.map(e => {
-    const isOut = e.dir === 'out' || (!e.dir && !e.from && !e.msg.startsWith('\u26a1 from'));
-    const sender = isOut ? '' : (e.from || '').replace(/\.sui$/, '');
+  const myAddr = ws.address?.toLowerCase() || '';
+  const rows = doMessages.map(m => {
+    const isOut = m.senderAddress.toLowerCase() === myAddr;
+    const sender = isOut ? '' : m.senderAddress.slice(0, 8);
     const cls = isOut ? 'wk-thunder-bubble--out' : 'wk-thunder-bubble--in';
-    const readCls = isOut && e.read ? ' wk-thunder-bubble--read' : '';
-    const selCls = _selectedThunderTs.has(e.ts) ? ' wk-thunder-bubble--selected' : '';
-    let msgText = e.msg;
-    if (!isOut && !e.dir) {
-      msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
-    }
+    const selCls = _selectedThunderTs.has(m.createdAt) ? ' wk-thunder-bubble--selected' : '';
     const label = isOut ? '' : (sender ? `<span class="wk-thunder-bubble-sender" data-sender="${esc(sender)}">${esc(sender)}</span> ` : '');
     // Render @mentions as clickable
-    const msgHtml = esc(msgText).replace(/@([a-z0-9-]{3,63})(\.sui)?/gi, (_, name) => {
-      const bare = name.toLowerCase();
-      return `<span class="wk-thunder-mention" data-mention="${bare}">@${bare}</span>`;
+    const msgHtml = esc(m.text).replace(/@([a-z0-9-]{3,63})(\.sui)?/gi, (_, name: string) => {
+      const b = name.toLowerCase();
+      return `<span class="wk-thunder-mention" data-mention="${b}">@${b}</span>`;
     });
-    return `<div class="wk-thunder-bubble ${cls}${readCls}${selCls}" data-ts="${e.ts}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(msgText)}" title="Copy">\u2398</span></div>`;
+    return `<div class="wk-thunder-bubble ${cls}${selCls}" data-ts="${m.createdAt}">${label}<span class="wk-thunder-bubble-msg">${msgHtml}</span><span class="wk-thunder-bubble-copy" data-copy="${esc(m.text)}" title="Copy">\u2398</span></div>`;
   }).join('');
 
   const deleteBtn = _selectedThunderTs.size > 0
@@ -3585,40 +3567,12 @@ async function _renderConversation(counterparty: string, force = false) {
     btn.disabled = true;
     btn.textContent = '\u2026';
 
-    // Check if any selected entries are unquested incoming signals (still on-chain)
-    // For now, all displayed entries are already quested (decrypted from Struck events)
-    // or sent by us — so we just delete from local log
-
-    const ws = getState();
-    if (!ws.address) return;
-    const key = await _deriveThunderKey(ws.address);
-    const storageKey = `ski:thunder-log:${ws.address}`;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const { ct, iv } = JSON.parse(raw);
-        const plaintext = await crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-          key,
-          Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-        );
-        let all: ThunderLogEntry[] = JSON.parse(new TextDecoder().decode(plaintext));
-        all = all.filter(entry => !_selectedThunderTs.has(entry.ts));
-        // Re-encrypt
-        const updated = new TextEncoder().encode(JSON.stringify(all));
-        const newIv = crypto.getRandomValues(new Uint8Array(12));
-        const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-        localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
-      }
-    } catch {}
-
     const count = _selectedThunderTs.size;
     _selectedThunderTs.clear();
     _thunderConvoTarget = '';
-    await _refreshThunderLocalCounts();
     _renderConversation(bare, true);
     _syncNftCardToInput();
-    showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
+    showToast(`\u26a1 ${count} thunder${count > 1 ? 's' : ''} deleted`);
   });
 
   // Bind Quest button — decrypt unquested on-chain signals for the CARD domain (our owned name)
@@ -3645,109 +3599,37 @@ async function _renderConversation(counterparty: string, force = false) {
           const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
           const { signature } = await signPersonalMessage(msgBytes);
           const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), signature);
-          const { lookupRecipientNftId, buildThunderSendTx } = await import('./client/thunder.js');
-          const senderNftId = await lookupRecipientNftId(senderName);
-          if (!senderNftId) return;
-          const txBytes = await buildThunderSendTx(ws.address, myName, senderName, senderNftId, `\u2713 read by ${myName}.sui`, proof.token);
+          // Read receipt — send via new SDK (best-effort). Group ID is
+          // address-keyed; resolve the original sender's name to address.
+          const { sendThunder, lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
           try {
-            const { sponsorAndSubmit } = await import('./sponsor.js');
-            await sponsorAndSubmit(txBytes, ws.address);
-          } catch {
-            await signAndExecuteTransaction(txBytes);
-          }
+            const _senderAddr = await lookupRecipientAddressCached(senderName);
+            if (!_senderAddr || !ws.address) return;
+            await sendThunder({
+              groupRef: { uuid: makeThunderGroupId(ws.address, _senderAddr) },
+              text: `\u2713 read by ${myName}.sui`,
+            });
+          } catch { /* receipt best-effort, may fail if no group exists yet */ }
         } catch { /* receipt is best-effort */ }
       };
-      const { decryptAndQuest, nameHash: nhFn } = await import('./client/thunder.js');
+      // Fetch and decrypt messages via SDK (replaces on-chain quest/strike)
+      const { getThunders } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === cardDomain && d.kind === 'nft');
-      if (!nft) { showToast('SuiNS NFT not found'); return; }
       const count = _thunderCounts[cardDomain] ?? 0;
       if (count === 0) return;
 
-      // WaaP: use strike relay (signPersonalMessage + server-side submit)
-      let payloads: import('./client/thunder-types.js').ThunderPayload[];
-      const isWaaP = /waap/i.test(ws.walletName || '');
-      if (isWaaP) {
-        const ns = nhFn(cardDomain);
-        const authMsg = new TextEncoder().encode(`strike:${cardDomain}.sui:${count}`);
-        const { signature: authSig } = await signPersonalMessage(authMsg);
-        const toB64 = (a: Uint8Array) => btoa(String.fromCharCode(...a));
-        const res = await fetch('/api/thunder/strike-relay', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            nameHash: toB64(ns),
-            nftId: nft.objectId,
-            authMsg: toB64(authMsg),
-            authSig: authSig,
-            senderAddress: ws.address,
-            count,
-          }),
-        });
-        const result = await res.json() as { digest?: string; effects?: any; error?: string };
-        if (!res.ok || result.error) throw new Error(result.error || 'Strike relay failed');
-        // Fetch events from the tx to decrypt
-        await new Promise(r => setTimeout(r, TX_INDEX_WAIT_MS));
-        const txRes = await fetch('/api/sui-rpc', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock', params: [result.digest, { showEvents: true }] }),
-        });
-        const txJson = await txRes.json() as any;
-        const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-        payloads = await parseAndDecryptQuestfi(txJson?.result ?? {}, _sendReceiptCb);
-      } else {
-        // Try combined strike + receipt in one PTB
-        const _convoTarget = _thunderConvoTarget || '';
-        let _usedCombined = false;
-        if (_convoTarget && app.suinsName) {
-          try {
-            const { buildStrikeWithReceiptTx, lookupRecipientNftId } = await import('./client/thunder.js');
-            const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
-            const myName = app.suinsName.replace(/\.sui$/, '');
-            const targetNftId = await lookupRecipientNftId(_convoTarget);
-            if (targetNftId) {
-              const raw = buildSuiamiMessage(myName, ws.address, nft.objectId);
-              const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
-              const { signature: suiamiSig } = await signPersonalMessage(msgBytes);
-              const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), suiamiSig);
-              const combinedBytes = await buildStrikeWithReceiptTx(
-                ws.address, cardDomain + '.sui', nft.objectId, count,
-                _convoTarget, targetNftId, `\u2713 read by ${myName}.sui`, proof.token,
-              );
-              const result = await signAndExecuteTransaction(combinedBytes);
-              const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-              payloads = await parseAndDecryptQuestfi(result.effects ?? result);
-              _usedCombined = true;
-            }
-          } catch { /* fall back to strike-only */ }
-        }
-        if (!_usedCombined) {
-          payloads = await decryptAndQuest(
-            ws.address, cardDomain + '.sui', nft.objectId, count,
-            (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-          );
-        }
-      }
-      const _myLog = app.suinsName || ws.address;
-      for (const p of payloads) {
-        const _pSender = p.sender || p.senderAddress.slice(0, 8);
-        await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
-      }
+      const groupUuid = `thunder-${cardDomain}`;
+      const { messages } = await getThunders({
+
+        groupRef: { uuid: groupUuid },
+      });
       _thunderCounts[cardDomain] = 0;
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
       _thunderConvoTarget = '';
-      await _refreshThunderLocalCounts();
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
-      // Schedule sweep for this storm (auto-cleanup after 7 days idle)
-      Promise.all([import('./client/shade.js'), import('./client/thunder.js')]).then(([{ scheduleThunderSweep }, { nameHash }]) => {
-        const hash = nameHash(cardDomain);
-        const hex = Array.from(hash).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-        scheduleThunderSweep(ws.address, hex, cardDomain);
-      }).catch(() => {});
       if (payloads.length > 0) {
         // Fill input with the sender's name or address for easy reply
         const first = payloads[0];
@@ -3760,7 +3642,7 @@ async function _renderConversation(counterparty: string, force = false) {
           skipNextFocusClear = true;
           fetchAndShowNsPrice(replyTarget);
         }
-        showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} quested`);
+        showToast(`\u26a1 ${payloads.length} thunder${payloads.length > 1 ? 's' : ''} quested`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Quest failed';
@@ -3776,37 +3658,6 @@ function _restoreConversation() {
   // _syncNftCardToInput handles conversation restore based on card domain + unquested state
 }
 
-// ─── Encrypted local thunder log ─────────────────────────────────────
-// Signals are AES-GCM encrypted in localStorage. The encryption key is
-// derived from the lockin signature — only the private key holder can decrypt.
-// On session restore, the cached signature re-derives the same key.
-
-async function _deriveThunderKey(_seed: string): Promise<CryptoKey> {
-  if (_thunderCryptoKey) return _thunderCryptoKey;
-  // Try to restore from cached session signature
-  try {
-    const raw = localStorage.getItem('ski:session');
-    if (raw) {
-      const session = JSON.parse(raw);
-      if (session.signature) {
-        _thunderCryptoKey = await _deriveThunderKeyFromSig(session.signature);
-        return _thunderCryptoKey;
-      }
-    }
-  } catch {}
-  // No session — conversations stay locked until lockin
-  throw new Error('Thunder locked — lockin required');
-}
-
-interface ThunderLogEntry {
-  to: string;
-  from?: string;
-  msg: string;
-  ts: number;
-  dir?: 'in' | 'out';
-  addr?: string; // counterparty wallet address — groups conversations across names
-  read?: boolean; // secret read receipt — outgoing message was quested by recipient
-}
 
 interface ThunderComposeDraft {
   raw: string;
@@ -3816,6 +3667,10 @@ interface ThunderComposeDraft {
   sourceLabel: string;
   warning?: string;
   error?: string;
+  /** Parsed dollar amount from @name$amount syntax (e.g. @storm$5 → 5) */
+  amount?: number;
+  /** Validation error for the amount (insufficient balance, invalid format) */
+  amountError?: string;
 }
 
 function _dedupeThunderRecipients(values: string[]): string[] {
@@ -3831,10 +3686,10 @@ function _dedupeThunderRecipients(values: string[]): string[] {
 }
 
 function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComposeDraft['source']; sourceLabel: string } | null {
-  // Priority 1: the card name in the idle overlay — this is who the user is looking at
+  // Card is the ultimate authority — this is who the user is looking at (including self)
   const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '').toLowerCase() || '';
   const ownName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-  if (cardName && cardName !== ownName) {
+  if (cardName) {
     return {
       name: cardName,
       source: 'context',
@@ -3842,12 +3697,9 @@ function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComp
     };
   }
 
-  // Priority 2: the name input label (if it's a taken name, not owned by us)
+  // Priority 2: the name input label (fallback if card doesn't resolve)
   const currentLabel = nsLabel.trim().toLowerCase();
-  const owned = currentLabel
-    ? (nsAvail === 'owned' || nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === currentLabel))
-    : false;
-  if (currentLabel && currentLabel !== ownName && !owned) {
+  if (currentLabel && currentLabel !== ownName && (nsAvail === 'taken' || nsAvail === 'grace')) {
     return {
       name: currentLabel,
       source: 'context',
@@ -3862,18 +3714,7 @@ function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComp
     return {
       name: topChain,
       source: 'signal',
-      sourceLabel: `top active signal @${topChain}.sui`,
-    };
-  }
-
-  const topLocal = Object.entries(_thunderLocalCounts)
-    .filter(([, count]) => count > 0)
-    .sort(([, a], [, b]) => b - a)[0]?.[0] || '';
-  if (topLocal) {
-    return {
-      name: topLocal,
-      source: 'local',
-      sourceLabel: `local conversation @${topLocal}.sui`,
+      sourceLabel: `top active thunder @${topChain}.sui`,
     };
   }
 
@@ -3885,9 +3726,15 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
   if (!trimmed) return null;
 
   const mentions: string[] = [];
-  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?![a-z0-9-])/gi;
-  let cleaned = trimmed.replace(mentionPattern, (_match, prefix: string, name: string) => {
+  let parsedAmount: number | undefined;
+  // Match @name with optional $amount attached (e.g. @storm$5, @brando$10.50)
+  const mentionPattern = /(^|[^a-z0-9_-])@([a-z0-9-]{3,63})(?:\$(\d+(?:\.\d{0,2})?))?(?![a-z0-9-])/gi;
+  let cleaned = trimmed.replace(mentionPattern, (_match, prefix: string, name: string, amt: string | undefined) => {
     mentions.push(name.toLowerCase());
+    if (amt !== undefined && amt !== '') {
+      const val = parseFloat(amt);
+      if (!isNaN(val) && val > 0) parsedAmount = val;
+    }
     return prefix ?? ' ';
   });
   cleaned = cleaned
@@ -3918,7 +3765,21 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
       source,
       sourceLabel: 'no recipient detected',
       error: 'Add @name or open a target name first.',
+      amount: parsedAmount,
     };
+  }
+
+  // Validate amount against available balance
+  let amountError: string | undefined;
+  if (parsedAmount !== undefined) {
+    const suiPrice = suiPriceCache?.price ?? 0;
+    const suiBalUsd = app.sui * suiPrice;
+    const totalUsd = suiBalUsd + app.stableUsd;
+    if (parsedAmount > totalUsd) {
+      amountError = `Insufficient balance ($${Math.floor(totalUsd)} available)`;
+    } else if (parsedAmount <= 0) {
+      amountError = 'Amount must be positive';
+    }
   }
 
   return {
@@ -3928,167 +3789,25 @@ function _parseThunderCompose(raw: string): ThunderComposeDraft | null {
     source,
     sourceLabel,
     warning,
+    amount: parsedAmount,
+    amountError,
   };
 }
 
-async function _storeThunderLocal(_ownerName: string, recipientName: string, message: string, dir: 'in' | 'out' = 'out', fromName?: string, counterpartyAddr?: string): Promise<void> {
-  const ws = getState();
-  if (!ws.address) return;
-  let key: CryptoKey;
-  try { key = await _deriveThunderKey(ws.address); } catch { return; } // locked
-  // Key by wallet address — stable across primary name changes
-  const storageKey = `ski:thunder-log:${ws.address}`;
-
-  // Decrypt existing log
-  let entries: ThunderLogEntry[] = [];
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (raw) {
-      const { ct, iv } = JSON.parse(raw);
-      const plaintext = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-        key,
-        Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-      );
-      entries = JSON.parse(new TextDecoder().decode(plaintext));
-    }
-  } catch { /* corrupt or first entry */ }
-
-  // Secret read receipt: if incoming message is a receipt (✓ read by ...),
-  // mark all prior outgoing messages to that counterparty as read — don't store the receipt itself
-  const isReceipt = dir === 'in' && /^\u2713 read by /i.test(message);
-  if (isReceipt) {
-    const senderBare = (fromName || '').replace(/\.sui$/i, '').toLowerCase();
-    for (const e of entries) {
-      if (e.dir === 'out' || (!e.dir && !e.from)) {
-        const toBare = (e.to || '').replace(/\.sui$/i, '').toLowerCase();
-        if (toBare === senderBare || (counterpartyAddr && e.addr === counterpartyAddr)) {
-          e.read = true;
-        }
-      }
-    }
-  } else {
-    // Append new entry (cap at 200 strikes)
-    entries.push({ to: recipientName, from: fromName, msg: message, ts: Date.now(), dir, ...(counterpartyAddr ? { addr: counterpartyAddr } : {}) });
-    if (entries.length > 200) entries = entries.slice(-200);
-  }
-
-  // Encrypt and store
-  const plaintext = new TextEncoder().encode(JSON.stringify(entries));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
-  const ct = btoa(String.fromCharCode(...ciphertext));
-  const ivB64 = btoa(String.fromCharCode(...iv));
-  localStorage.setItem(storageKey, JSON.stringify({ ct, iv: ivB64 }));
-}
-
-/** Read the full encrypted thunder log for the current user. */
-async function _readThunderLog(): Promise<ThunderLogEntry[]> {
-  const ws = getState();
-  if (!ws.address) return [];
-  let key: CryptoKey;
-  try { key = await _deriveThunderKey(ws.address); } catch { return []; } // locked
-  const storageKey = `ski:thunder-log:${ws.address}`;
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return [];
-    const { ct, iv } = JSON.parse(raw);
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-      key,
-      Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-    );
-    return JSON.parse(new TextDecoder().decode(plaintext)) as ThunderLogEntry[];
-  } catch { return []; }
-}
-
-/** Get conversation entries filtered by counterparty name OR address.
- *  Groups all names owned by the same address into one conversation. */
-async function _getConversation(counterparty: string): Promise<ThunderLogEntry[]> {
-  const all = await _readThunderLog();
-  const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
-
-  // Build set of all names owned by this wallet (our side of conversations)
-  const ownedNames = new Set<string>();
-  for (const d of nsOwnedDomains) {
-    ownedNames.add(d.name.replace(/\.sui$/, '').toLowerCase());
-  }
-  if (app.suinsName) ownedNames.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
-
-  // Step 1: Collect all addresses associated with the counterparty name
-  const addrs = new Set<string>();
-  for (const e of all) {
-    const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
-    const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-    if ((to === bare || from === bare) && e.addr) addrs.add(e.addr.toLowerCase());
-  }
-  // Include the currently resolved target address
-  if (nsTargetAddress) addrs.add(nsTargetAddress.toLowerCase());
-  // Also resolve from nsNftOwner if available
-  if (nsNftOwner) addrs.add(nsNftOwner.toLowerCase());
-
-  // Step 2: Expand — find ALL names in the log that share any of those addresses
-  // e.g., alice, whitney, summer all point to 0xabc → treat them as one identity
-  const aliasNames = new Set<string>([bare]);
-  if (addrs.size > 0) {
-    for (const e of all) {
-      if (e.addr && addrs.has(e.addr.toLowerCase())) {
-        const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
-        const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-        if (to && !ownedNames.has(to)) aliasNames.add(to);
-        if (from && !ownedNames.has(from)) aliasNames.add(from);
-      }
-    }
-  }
-
-  return all.filter(e => {
-    const to = (e.to || '').replace(/\.sui$/, '').toLowerCase();
-    const from = (e.from || '').replace(/\.sui$/, '').toLowerCase();
-    // Match by any alias name (alice, whitney, summer all resolve to same address)
-    if (aliasNames.has(to) || aliasNames.has(from)) return true;
-    // Match by address directly
-    if (e.addr && addrs.has(e.addr.toLowerCase())) return true;
-    // If the target IS one of our names, show all inbound to that name
-    if (ownedNames.has(bare) && to === bare) return true;
-    // Match by @tag in message body for any alias
-    for (const alias of aliasNames) {
-      if (e.msg && new RegExp(`(^|[^a-z0-9-])@${alias}(?![a-z0-9-])`, 'i').test(e.msg)) return true;
-    }
-    return false;
-  });
-}
-
-/** Remove the last entry from the encrypted thunder log (undo a pre-stored signal on tx failure). */
-async function _removeLastThunderLocal(_senderName: string): Promise<void> {
-  const ws = getState();
-  if (!ws.address) return;
-  let key: CryptoKey;
-  try { key = await _deriveThunderKey(ws.address); } catch { return; } // locked
-  const storageKey = `ski:thunder-log:${ws.address}`;
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return;
-    const { ct, iv } = JSON.parse(raw);
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-      key,
-      Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-    );
-    const entries: ThunderLogEntry[] = JSON.parse(new TextDecoder().decode(plaintext));
-    if (entries.length === 0) return;
-    entries.pop();
-    const updated = new TextEncoder().encode(JSON.stringify(entries));
-    const newIv = crypto.getRandomValues(new Uint8Array(12));
-    const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-    localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
-  } catch { /* corrupt — ignore */ }
-}
 let nsOwnedDomains: OwnedDomain[] = []; // all SuiNS objects owned by the wallet
 const _preRumbledNames = new Set<string>(
   JSON.parse(localStorage.getItem('ski:pre-rumbled') || '[]'),
 );
 let nsOwnedFetchedFor = ''; // wallet address we last fetched for (cache key)
 let nsRealOwnerAddr = ''; // discovered on-chain owner address (WaaP wallets differ from wallet address)
+// Eagerly load cached owned domains so ownership checks work before async fetch
+try {
+  const _eagerAddr = (() => { try { const s = localStorage.getItem('ski:session'); return s ? JSON.parse(s).address : ''; } catch { return ''; } })();
+  if (_eagerAddr) {
+    const _eagerCached = (() => { try { const raw = localStorage.getItem(`ski:owned-domains:${_eagerAddr}`); return raw ? JSON.parse(raw) : null; } catch { return null; } })();
+    if (_eagerCached && Array.isArray(_eagerCached)) nsOwnedDomains = _eagerCached;
+  }
+} catch {}
 let nsKioskListing: { kioskId: string; nftId: string; priceMist: string } | null = null; // on-chain kiosk listing for current label
 let nsTradeportListing: TradeportListing | null = null; // Tradeport marketplace listing for current label
 let nsExpirationMs = 0; // expiration timestamp for current searched name (any name, not just owned)
@@ -4132,7 +3851,14 @@ function _persistRouteOpen() {
   if (hasName) { try { sessionStorage.removeItem('ski:route-open'); } catch {} return; }
   _persistRouteOpen();
 }
-let _suiamiVerifyHtml = ''; // persists SuiAMI result across re-renders
+let _suiamiVerifyHtml = (() => { try { return localStorage.getItem('ski:suiami-html') || ''; } catch { return ''; } })();
+let _suiamiProofToken = (() => { try { return localStorage.getItem('ski:suiami-token') || ''; } catch { return ''; } })();
+function _cacheSuiamiProof() {
+  try {
+    localStorage.setItem('ski:suiami-html', _suiamiVerifyHtml);
+    localStorage.setItem('ski:suiami-token', _suiamiProofToken);
+  } catch {}
+}
 function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
 /** Toggle the NS roster; when opening, collapse the balance/coins section. */
 function _toggleRoster() {
@@ -4310,6 +4036,17 @@ async function fetchAndShowNsPrice(label: string) {
       const ws = getState();
       const ownerMatch = sr?.nftOwner && ws.address && normalizeSuiAddress(sr.nftOwner) === normalizeSuiAddress(ws.address);
       if (inRoster || ownerMatch) nsAvail = 'owned';
+      // Buffer: if not yet in roster, re-check after owned domains load
+      if (nsAvail === 'taken' && !inRoster && ws.address) {
+        setTimeout(() => {
+          const _recheck = nsOwnedDomains.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === bareLabel);
+          if (_recheck && nsAvail === 'taken' && nsPriceFetchFor?.toLowerCase() === bareLabel) {
+            nsAvail = 'owned';
+            _patchNsStatus();
+            window.dispatchEvent(new Event('ski:ownership-changed'));
+          }
+        }, 2000);
+      }
     }
     nsKioskListing = sr?.kioskId
       ? { kioskId: sr.kioskId, nftId: sr.kioskNftId!, priceMist: sr.kioskListingPriceMist! }
@@ -4521,8 +4258,8 @@ function _nsOwnedListHtml(): string {
   const sorted = [...nsOwnedDomains].sort((a, b) => {
     const aB = a.name.replace(/\.sui$/, '').toLowerCase();
     const bB = b.name.replace(/\.sui$/, '').toLowerCase();
-    const ta = (_thunderCounts[aB] ?? 0) + (_thunderLocalCounts[aB] ?? 0);
-    const tb = (_thunderCounts[bB] ?? 0) + (_thunderLocalCounts[bB] ?? 0);
+    const ta = (_thunderCounts[aB] ?? 0);
+    const tb = (_thunderCounts[bB] ?? 0);
     if (ta !== tb) return tb - ta; // most signals first
     if (a.inKiosk !== b.inKiosk) return a.inKiosk ? -1 : 1;
     const ea = a.expirationMs ?? Infinity;
@@ -4565,11 +4302,10 @@ function _nsOwnedListHtml(): string {
     else if (d.kind === 'cap') badge = '<span class="wk-ns-owned-cap">cap</span>';
     let thunderHtml = '';
     const _tcOn = _thunderCounts[bare.toLowerCase()] ?? 0;
-    const _tcLocal = _thunderLocalCounts[bare.toLowerCase()] ?? 0;
-    const _tcTotal = _tcOn + _tcLocal;
+    const _tcTotal = _tcOn;
     if (_tcTotal > 0) {
       const pulseCls = _tcOn > 0 ? ' wk-ns-thunder-badge--pulse' : '';
-      thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} signal${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
+      thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} thunder${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
     }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
     const dimCls = hasFilter && !matches && _tcTotal <= 0 ? ' wk-ns-owned-chip--dim' : '';
@@ -4824,16 +4560,12 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
     expiryHtml = `<span class="ski-nft-expiry">\u2014</span>`;
   }
 
-  // Thunder badges: 🌩️N (total quested from local log) + ⚡N (unquested on-chain, pulsing)
+  // Thunder badges: ⚡N (unquested on-chain, pulsing)
   const unquestedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
-  const totalCount = _thunderLocalCounts[domainBare.toLowerCase()] ?? 0;
-  const questedBadge = totalCount > 0
-    ? `<span class="ski-nft-thunder" title="${totalCount} decrypt${totalCount > 1 ? 'ed' : 'ed'} signal${totalCount > 1 ? 's' : ''}">\u26c8\ufe0f${totalCount}</span>`
-    : '';
   const unquestedBadge = unquestedCount > 0
-    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested" title="${unquestedCount} pending signal${unquestedCount > 1 ? 's' : ''} \u2014 tap to purge">\u26a1${unquestedCount}</span>`
+    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested" title="${unquestedCount} pending thunder${unquestedCount > 1 ? 's' : ''} \u2014 tap to purge">\u26a1${unquestedCount}</span>`
     : '';
-  const thunderBadgeHtml = questedBadge + unquestedBadge;
+  const thunderBadgeHtml = unquestedBadge;
   const thunderCardCls = unquestedCount > 0 ? ' ski-nft-card--thunder' : '';
 
   popover.innerHTML = `
@@ -4926,40 +4658,25 @@ function _attachNftPopoverListeners() {
       if (_thunderDecryptBusy) return;
       _thunderDecryptBusy = true;
       try {
-        const { decryptAndQuest } = await import('./client/thunder.js');
+        const { getThunders } = await import('./client/thunder.js');
         const ws = getState();
         if (!ws.address) return;
 
-        // Find the NFT for the clicked name
-        const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === badgeDomain && d.kind === 'nft');
-        if (!nft) { showToast('SuiNS NFT not found'); return; }
-        const fullName = badgeDomain + '.sui';
+        const groupUuid = `thunder-${badgeDomain}`;
+        const { messages } = await getThunders({
+  
+          groupRef: { uuid: groupUuid },
+        });
 
-        // Batch quest all pending thunder for this name
-        const payloads = await decryptAndQuest(
-          ws.address,
-          fullName,
-          nft.objectId,
-          badgeCount,
-          (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-        );
+        if (messages.length === 0) { showToast('No thunders found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
 
-        if (payloads.length === 0) { showToast('No strikes found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
+        const first = messages[0];
+        const senderName = first.senderAddress.slice(0, 8) + '\u2026';
+        const extra = messages.length > 1 ? ` (+${messages.length - 1} more)` : '';
+        showToast(`\u26a1 ${senderName}: ${first.text}${extra}`);
 
-        // Show first strike above the input + toast, populate sender for reply
-        const first = payloads[0];
-        const senderName = first.sender || first.senderAddress.slice(0, 8) + '\u2026';
-        const extra = payloads.length > 1 ? ` (+${payloads.length - 1} more)` : '';
-        showToast(`\u26a1 ${senderName}: ${first.message}${extra}`);
-        // Store all received strikes in encrypted local log
-        const _myLog = app.suinsName || ws.address;
-        for (const p of payloads) {
-          const _pSender = p.sender || p.senderAddress.slice(0, 8);
-          await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
-        }
-
-        // Set input to sender's name for reply
-        const senderBare = (first.sender || '').replace(/\.sui$/, '');
+        // Set input to sender's address for reply
+        const senderBare = first.senderAddress.slice(0, 8);
         if (senderBare) {
           nsLabel = senderBare;
           const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -5010,6 +4727,15 @@ async function _fetchOwnedDomains() {
     nsOwnedDomains = fresh;
     _cacheOwnedDomains(fetchAddr, fresh);
     _patchNsOwnedList();
+    // Re-check ownership for current label (may have just been purchased)
+    if (nsAvail === 'taken' && nsLabel) {
+      const _bareCheck = nsLabel.trim().toLowerCase();
+      if (fresh.some(d => d.name.replace(/\.sui$/, '').toLowerCase() === _bareCheck)) {
+        nsAvail = 'owned';
+        _patchNsStatus();
+        window.dispatchEvent(new Event('ski:ownership-changed'));
+      }
+    }
 
     // Auto pre-rumble any owned names not yet provisioned (covers Tradeport buys, gifts, etc.)
     for (const d of fresh) {
@@ -5840,7 +5566,7 @@ function _treasuryPanelHtml(): string {
       <div class="wk-treasury-section">
         <div class="wk-treasury-label">Revenue Streams</div>
         <div class="wk-treasury-row">
-          <span class="wk-treasury-key">Thunder free signals</span>
+          <span class="wk-treasury-key">Thunder free thunders</span>
           <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
         </div>
         <div class="wk-treasury-row">
@@ -6361,10 +6087,6 @@ function renderSkiMenu() {
       const top = Object.entries(_thunderCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
       if (top) domain = top[0];
     }
-    if (!domain) {
-      const topLocal = Object.entries(_thunderLocalCounts).filter(([, c]) => c > 0).sort(([, a], [, b]) => b - a)[0];
-      if (topLocal) domain = topLocal[0];
-    }
     if (domain) {
       nsLabel = domain;
       const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -6673,8 +6395,7 @@ function renderSkiMenu() {
     const quickBtn = document.getElementById('wk-thunder-quick') as HTMLButtonElement | null;
     if (quickBtn) {
       const hasUnquested = Object.values(_thunderCounts).some(c => c > 0);
-      const hasHistory = Object.values(_thunderLocalCounts).some(c => c > 0);
-      const showQuick = hasUnquested || hasHistory || _thunderConvoOpen;
+      const showQuick = hasUnquested || _thunderConvoOpen;
       if (showQuick) { quickBtn.removeAttribute('hidden'); } else { quickBtn.setAttribute('hidden', ''); }
     }
     // Conversation is now controlled by card click (_toggleThunderConvo), not input mode
@@ -6765,7 +6486,7 @@ function renderSkiMenu() {
     } else if (thunderMode) {
       btn.disabled = false;
       btn.textContent = 'Thunder';
-      btn.title = `Thunder \u2014 encrypt a signal to ${nsLabel.trim()}.sui`;
+      btn.title = `Thunder \u2014 encrypt a thunder to ${nsLabel.trim()}.sui`;
     } else if (suiamiMode) {
       btn.disabled = false;
       btn.textContent = 'SUIAMI';
@@ -6949,13 +6670,6 @@ function renderSkiMenu() {
         .sort(([, a], [, b]) => b - a)[0];
       if (top) domain = top[0];
     }
-    if (!domain) {
-      // Fall back to name with most conversation history
-      const topLocal = Object.entries(_thunderLocalCounts)
-        .filter(([, c]) => c > 0)
-        .sort(([, a], [, b]) => b - a)[0];
-      if (topLocal) domain = topLocal[0];
-    }
     if (!domain) return;
     nsLabel = domain;
     const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -7109,7 +6823,7 @@ function renderSkiMenu() {
           btc: app.btcAddress || undefined,
           sol: app.solAddress || undefined,
           eth: app.ethAddress || undefined,
-        }, app.usd ?? undefined);
+        });
         const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
         const { bytes, signature } = await signPersonalMessage(msgBytes);
         const proof = createSuiamiProof(message, bytes, signature);
@@ -7133,7 +6847,7 @@ function renderSkiMenu() {
             } catch { return false; }
           }
         };
-        await _copyProof();
+        // Clipboard copy deferred — user can tap toast to copy manually
 
         // 2. Emit custom event
         window.dispatchEvent(new CustomEvent('suiami:signed', {
@@ -7153,6 +6867,19 @@ function renderSkiMenu() {
           // Show result in route area
           if (v.valid) {
             _suiamiVerifyHtml = `<span class="wk-ns-route wk-suiami-verified">\u2713 verified ${esc(bare)}.sui</span>`;
+            _suiamiProofToken = proof.token;
+            _cacheSuiamiProof();
+            // Auto-update any visible squids SUIAMI button → copyable proof
+            const _updateSuiamiBtn = () => {
+              document.querySelectorAll('.ski-idle-addr-suiami').forEach(btn => {
+                btn.className = 'ski-idle-addr-suiami ski-idle-addr-suiami--verified';
+                btn.innerHTML = '\u2713 SUIAMI';
+                btn.setAttribute('title', 'Click to copy SUIAMI proof');
+              });
+            };
+            _updateSuiamiBtn();
+            // Retry after a tick in case DOM is mid-render
+            setTimeout(_updateSuiamiBtn, 100);
           } else {
             const reason = v.onChainError || (!v.ownershipVerified ? 'NFT not owned by signer' : !v.nameVerified ? 'Name mismatch' : 'Verification failed');
             _suiamiVerifyHtml = `<span class="wk-ns-route wk-suiami-failed">\u2717 ${esc(reason)}</span>`;
@@ -7164,10 +6891,21 @@ function renderSkiMenu() {
             routeEl.innerHTML = _suiamiVerifyHtml;
           }
           const _skiNet = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
-          showToast(`${_skiNet}@${bare} \u2014 SUIAMI proof copied \u2713`);
+          showToast(`${_skiNet}@${bare} \u2014 SUIAMI verified \u2713`);
         } catch {
+          // Server verify failed but proof was signed — still valid locally
+          _suiamiVerifyHtml = `<span class="wk-ns-route wk-suiami-verified">\u2713 ${esc(bare)}.sui</span>`;
+          _suiamiProofToken = proof.token;
+          _cacheSuiamiProof();
+          const _updateBtn = () => document.querySelectorAll('.ski-idle-addr-suiami').forEach(btn => {
+            btn.className = 'ski-idle-addr-suiami ski-idle-addr-suiami--verified';
+            btn.innerHTML = '\u2713 SUIAMI';
+            btn.setAttribute('title', 'Click to copy SUIAMI proof');
+          });
+          _updateBtn();
+          setTimeout(_updateBtn, 100);
           const _skiNet2 = (() => { try { return localStorage.getItem('ski:network-pref') || 'sui'; } catch { return 'sui'; } })();
-          showToast(`${_skiNet2}@${bare} \u2014 SUIAMI proof copied \u2713`);
+          showToast(`${_skiNet2}@${bare} \u2014 SUIAMI proof signed \u2713`);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -7526,6 +7264,8 @@ function renderSkiMenu() {
     nsPriceUsd = null;
     nsPriceFetchFor = '';
     _suiamiVerifyHtml = '';
+    _suiamiProofToken = '';
+    try { localStorage.removeItem('ski:suiami-html'); localStorage.removeItem('ski:suiami-token'); } catch {}
     // Clear amount
     pendingSendAmount = '';
     const _ai = document.getElementById('wk-send-amount') as HTMLInputElement | null;
@@ -7628,24 +7368,25 @@ function renderSkiMenu() {
     const sendBtn = document.getElementById('wk-thunder-send') as HTMLButtonElement | null;
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '\u2026'; }
     try {
-      const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
+      const { sendThunder, lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
       const senderName = app.suinsName || '';
-      const recipientNftId = await lookupRecipientNftId(recipientName);
-      if (!recipientNftId) { showToast('Cannot find recipient NFT'); return; }
-      const txBytes = await buildThunderSendTx(ws.address, senderName, recipientName, recipientNftId, msg);
       const _logName = senderName || ws.address;
       let _txOk = false;
       try {
-        await signAndExecuteTransaction(txBytes);
+        const _recipAddr = await lookupRecipientAddressCached(recipientName);
+        if (!_recipAddr) throw new Error(`Couldn't resolve ${recipientName}.sui to an address`);
+        const groupUuid = makeThunderGroupId(ws.address, _recipAddr);
+        await sendThunder({
+          groupRef: { uuid: groupUuid },
+          text: msg,
+        });
         _txOk = true;
-        await _storeThunderLocal(_logName, recipientName, msg, 'out', undefined, nsTargetAddress ?? undefined);
       } catch (txErr) {
         throw txErr;
       }
       if (_txOk) {
-        showToast(`\u26a1 Signal sent to ${recipientName}.sui`);
+        showToast(`\u26a1 Thunder to ${recipientName} sent`);
         if (msgInput) msgInput.value = '';
-        await _refreshThunderLocalCounts();
         _thunderConvoTarget = '';
         _renderConversation(recipientName);
         _syncNftCardToInput();
@@ -7663,7 +7404,7 @@ function renderSkiMenu() {
         if (msgInput) msgInput.focus();
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Signal failed';
+      const errMsg = err instanceof Error ? err.message : 'Thunder failed';
       if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
     } finally {
       if (sendBtn) { sendBtn.textContent = '\u26a1'; sendBtn.disabled = false; }
@@ -8281,6 +8022,9 @@ function renderSkiMenu() {
       renderSkiMenu();
       updateFavicon('blue-square');
       showToast(`${domain} set as primary \u2713 (${result.digest.slice(0, 8)})`);
+      // Notify idle overlay to update card with new primary + trigger resize
+      window.dispatchEvent(new CustomEvent('ski:primary-changed', { detail: { name: domain } }));
+      window.dispatchEvent(new Event('resize'));
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';
       if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -8601,32 +8345,32 @@ function renderSkiMenu() {
         // Build and execute purchase transaction
         if (btn) btn.textContent = 'TRADE';
         let purchaseTx: Uint8Array;
+        const domain = `${label}.sui`;
         if (nsKioskListing) {
-          purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist);
+          purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist, domain);
         } else {
-          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist);
+          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist, domain);
         }
         if (btn) btn.textContent = '\u270f';
         const { digest } = await signAndExecuteTransaction(purchaseTx);
 
-        // Post-purchase: update to owned state
+        // Post-purchase: update to owned state (target + default set in same PTB)
         nsAvail = 'owned'; nsTargetAddress = ws2.address; nsLastDigest = digest ?? ''; nsKioskListing = null; nsTradeportListing = null;
         _patchNsStatus(); _patchNsRoute();
-        const domain = `${label}.sui`;
-        app.suinsName = app.suinsName || domain;
-        suinsCache[ws2.address] = app.suinsName;
-        try { localStorage.setItem(`ski:suins:${ws2.address}`, app.suinsName); } catch {}
-        updateSkiDot('blue-square', app.suinsName);
+        app.suinsName = domain;
+        suinsCache[ws2.address] = domain;
+        try { localStorage.setItem(`ski:suins:${ws2.address}`, domain); } catch {}
+        updateSkiDot('blue-square', domain);
         _userManuallySelectedCoin = false;
         nsOwnedFetchedFor = ''; _fetchOwnedDomains();
         walletCoins = []; appBalanceFetched = false;
         renderSkiMenu();
         setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
-        // Notify idle overlay to refresh status (TRADE → SUIAMI transition)
         _preRumbledNames.add(label.toLowerCase());
         try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
         window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
-        showToast(`${label}.sui purchased \u2713`);
+        window.dispatchEvent(new CustomEvent('ski:primary-changed', { detail: { name: domain } }));
+        showToast(`${domain} purchased + set as primary \u2713`);
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         if (!raw.toLowerCase().includes('reject')) {
@@ -9007,16 +8751,9 @@ function renderSkiMenu() {
     _thunderDecryptBusy = true;
     (sunEl as HTMLElement).style.opacity = '0.4';
     try {
-      const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
+      const { getThunders } = await import('./client/thunder.js');
       const ws = getState();
       if (!ws.address) return;
-      // Fresh on-chain scan — list all storms on Storm via gRPC
-      const nftNames = nsOwnedDomains.filter(d => d.kind === 'nft').map(d => d.name);
-      const freshCounts = await getThunderCountsBatch(nftNames);
-      // Merge fresh counts into _thunderCounts
-      for (const [bare, count] of Object.entries(freshCounts)) {
-        _thunderCounts[bare] = count;
-      }
       const _myLog = app.suinsName || ws.address;
       let totalDecrypted = 0;
       let lastSender = '';
@@ -9024,26 +8761,22 @@ function renderSkiMenu() {
       if (namesWithThunder.length === 0) {
         showToast('\u2600\ufe0f Nothing to purge');
       } else {
-        for (const [name, count] of namesWithThunder) {
-          const nft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
-          if (!nft) continue;
-          const payloads = await decryptAndQuest(
-            ws.address, name + '.sui', nft.objectId, count,
-            (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-          );
-          for (const p of payloads) {
-            const _pSender = p.sender || p.senderAddress.slice(0, 8);
-            await _storeThunderLocal(_myLog, _pSender, p.message, 'in', _pSender, p.senderAddress);
-            lastSender = (p.sender || '').replace(/\.sui$/, '') || p.senderAddress;
+        for (const [name] of namesWithThunder) {
+          const groupUuid = `thunder-${name}`;
+          const { messages } = await getThunders({
+    
+            groupRef: { uuid: groupUuid },
+          });
+          for (const m of messages) {
+            lastSender = m.senderAddress;
           }
-          totalDecrypted += payloads.length;
+          totalDecrypted += messages.length;
           _thunderCounts[name] = 0;
         }
-        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
+        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} thunder${totalDecrypted > 1 ? 's' : ''} purged`);
       }
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
-      await _refreshThunderLocalCounts();
       _syncNftCardToInput();
       if (lastSender) {
         nsLabel = lastSender;
@@ -9147,10 +8880,8 @@ async function handleDisconnect(reopenModal = false) {
   nsTransferInputOpen = false;
   nsTransferRecipient = '';
   _thunderCounts = {};
-  _thunderLocalCounts = {};
   _thunderDecryptBusy = false;
   _thunderConvoOpen = false;
-  _thunderCryptoKey = null;
   try { localStorage.removeItem('ski:thunder-card-open'); } catch {}
   try { localStorage.removeItem('ski:ns-variant'); } catch {}
   try { sessionStorage.removeItem('ski:thunder-convo'); } catch {}
@@ -9454,13 +9185,21 @@ function bindEvents() {
       // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
       const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
-      // Auto-populate with highest-signal owned name if no active input
+      // Auto-populate: clear invalid/short labels, default to primary or highest-signal owned name
       let _idleInputVal = nsLabel.trim();
+      if (_idleInputVal && (_idleInputVal.length < 3 || !isValidNsLabel(_idleInputVal))) {
+        _idleInputVal = '';
+        nsLabel = '';
+        try { localStorage.removeItem('ski:ns-label'); } catch {}
+      }
+      if (!_idleInputVal && app.suinsName) {
+        _idleInputVal = app.suinsName.replace(/\.sui$/, '');
+      }
       if (!_idleInputVal && nsOwnedDomains.length > 0) {
         const topName = [...nsOwnedDomains]
           .map(d => {
             const b = d.name.replace(/\.sui$/, '').toLowerCase();
-            return { bare: b, score: (_thunderCounts[b] ?? 0) + (_thunderLocalCounts[b] ?? 0) };
+            return { bare: b, score: (_thunderCounts[b] ?? 0) };
           })
           .sort((a, b) => b.score - a.score)[0];
         if (topName && topName.score > 0) _idleInputVal = topName.bare;
@@ -9469,7 +9208,7 @@ function bindEvents() {
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <a class="ski-idle-version" href="https://www.npmjs.com/package/sui.ski" target="_blank" rel="noopener noreferrer">v${SKI_VERSION}</a>
-          <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"><source src="/assets/ski-idle.webm" type="video/webm"><source src="/assets/ski-idle.mp4" type="video/mp4"></video>
+          <video class="ski-idle-img" autoplay loop muted playsinline poster="/assets/ski-idle.gif"></video>
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">
             <span class="wk-ns-status" id="ski-idle-status" title="Set as default / show addresses" style="cursor:pointer">${_nsStatusSvg(_idleVariant)}</span>
@@ -9479,6 +9218,7 @@ function bindEvents() {
               <span class="wk-ns-dot-sui" title=".sui namespace">.sui</span>
             </div>
             <button class="ski-idle-ns-action" id="ski-idle-action" type="button" disabled title="SUIAMI? I AM ${esc(app.suinsName?.replace(/\.sui$/, '') || 'you')}">SUIAMI</button>
+            <button class="ski-idle-storm-purge" id="ski-idle-storm-purge" type="button" title="Clear all messages in this storm" hidden>\u2715</button>
           </div>
           <div class="ski-idle-thunder-convo" id="ski-idle-thunder-convo" hidden></div>
           <div class="ski-idle-context" id="ski-idle-price" hidden>
@@ -9486,7 +9226,11 @@ function bindEvents() {
             <span class="ski-idle-context-text" id="ski-idle-price-text"></span>
           </div>
           <div class="ski-idle-addr-row" id="ski-idle-addr" hidden></div>
-          <div id="ski-idle-card" class="ski-idle-card"></div>
+          <div class="ski-idle-roster-panel" id="ski-idle-roster" hidden></div>
+          <div class="ski-idle-card-row">
+            <div id="ski-idle-card" class="ski-idle-card"></div>
+            <button class="ski-idle-card-dismiss" id="ski-idle-card-dismiss" type="button" title="Clear">\u2715</button>
+          </div>
           <div id="ski-idle-sol-qr" class="ski-idle-sol-qr" hidden></div>
           <div class="ski-idle-iusd-panel" id="ski-idle-iusd-panel" hidden>
             <div class="ski-idle-iusd-stats" id="ski-idle-iusd-stats"></div>
@@ -9497,19 +9241,23 @@ function bindEvents() {
             </div>
           </div>
           <div class="ski-idle-thunder-row">
-            <button class="ski-idle-thunder-at" id="ski-idle-thunder-at" type="button" title="Tag a name"><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>
+            <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
+              <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
+              <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
+              <button class="ski-idle-thunder-at-iusd ski-idle-quick-btn ski-idle-quick-btn--iusd" id="ski-idle-thunder-at-iusd" type="button" title="Attach amount">$</button>
+              <button class="ski-idle-quick-btn ski-idle-quick-btn--attach" id="ski-idle-thunder-attach" type="button" title="Attach files">\ud83d\udcce</button>
+              <input id="ski-idle-thunder-file-input" type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.json,.md" style="display:none">
+            </div>
             <div class="ski-idle-thunder-input-wrap">
-              <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
-              <div class="ski-idle-quick-actions" id="ski-idle-quick-actions">
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--green" type="button" title="Green circle" data-action="green"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#22c55e" stroke="white" stroke-width="1.5"/></svg></button>
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
-              </div>
+              <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypted thunder">
+              <button class="ski-idle-thunder-clear" id="ski-idle-thunder-clear" type="button" title="Clear" style="display:none">\u2715</button>
+              <div class="ski-idle-thunder-mirror" id="ski-idle-thunder-mirror" aria-hidden="true"></div>
               <div class="ski-idle-thunder-send-group">
-                <button class="ski-idle-quick-btn ski-idle-quick-btn--iusd" type="button" title="iUSD" data-action="iusd">$</button>
-                <button class="ski-idle-thunder-send" id="ski-idle-thunder-send" type="button" title="Send signal">\u26a1</button>
+                <button class="ski-idle-quick-btn ski-idle-quick-btn--storm" id="ski-idle-thunder-send" type="button" title="">\u26c8\ufe0f</button>
               </div>
             </div>
           </div>
+          <div class="ski-idle-thunder-attach-chips" id="ski-idle-thunder-attach-chips" hidden></div>
         </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
@@ -9530,11 +9278,33 @@ function bindEvents() {
       const _idleStatusEl = _idleOverlay.querySelector('#ski-idle-status');
       const _idleClearBtn = _idleOverlay.querySelector('#ski-idle-clear') as HTMLButtonElement | null;
       const _idleActionBtn = _idleOverlay.querySelector('#ski-idle-action') as HTMLButtonElement | null;
+      const _idleStormPurgeBtn = _idleOverlay.querySelector('#ski-idle-storm-purge') as HTMLButtonElement | null;
       const _idleThunderSend = _idleOverlay.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
       let _idleDebounce: ReturnType<typeof setTimeout> | null = null;
       let _thunderComposeDraft: ThunderComposeDraft | null = null;
       let _thunderComposeConfirmedRaw = '';
       let _thunderComposeStage: 'idle' | 'preview' | 'confirmed' | 'sending' = 'idle';
+
+      // Track Storm existence per groupId (shared between action button + compose preview)
+      const _stormExistsCache: Record<string, boolean | 'checking'> = (() => {
+        try { const c = sessionStorage.getItem('ski:storm-cache:v2'); return c ? JSON.parse(c) : {}; } catch { return {}; }
+      })();
+      const _markStormExists = (gid: string) => {
+        _stormExistsCache[gid] = true;
+        try { sessionStorage.setItem('ski:storm-cache:v2', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
+      };
+      const _checkStormExists = (groupId: string) => {
+        if (_stormExistsCache[groupId] !== undefined) return;
+        _stormExistsCache[groupId] = 'checking';
+        import('./client/thunder.js').then(({ stormExists }) => {
+          stormExists(groupId).then(exists => {
+            _stormExistsCache[groupId] = exists;
+            if (exists) try { sessionStorage.setItem('ski:storm-cache:v2', JSON.stringify(Object.fromEntries(Object.entries(_stormExistsCache).filter(([,v]) => v === true)))); } catch {}
+            _renderThunderComposePreview();
+            _updateIdleStatus();
+          }).catch(() => { _stormExistsCache[groupId] = false; _renderThunderComposePreview(); _updateIdleStatus(); });
+        }).catch(() => {});
+      };
 
       const _updateIdleStatus = () => {
         if (!_idleStatusEl || !_idleActionBtn) return;
@@ -9554,6 +9324,18 @@ function bindEvents() {
           : nsAvail === 'grace' ? 'red-hexagon'
           : 'black-diamond';
         _idleStatusEl.innerHTML = _nsStatusSvg(variant);
+        // Dynamic tooltip
+        if (validLabel && isOwned) {
+          const _addr = ws.address ?? '';
+          const _shortAddr = _addr ? `${_addr.slice(0, 6)}...${_addr.slice(-4)}` : '';
+          (_idleStatusEl as HTMLElement).title = `Set ${label}.sui as primary name for ${_shortAddr}`;
+        } else if (validLabel && (nsAvail === 'taken' || nsAvail === 'grace')) {
+          const _tAddr = nsTargetAddress || nsNftOwner || '';
+          const _shortT = _tAddr ? `${_tAddr.slice(0, 6)}...${_tAddr.slice(-4)}` : '';
+          (_idleStatusEl as HTMLElement).title = _shortT ? `${label}.sui resolves to ${_shortT}` : `${label}.sui`;
+        } else {
+          (_idleStatusEl as HTMLElement).title = validLabel ? `${label}.sui` : '';
+        }
 
         const _iamName = label || app.suinsName?.replace(/\.sui$/, '') || 'you';
         if (!label || !validLabel) {
@@ -9607,15 +9389,25 @@ function bindEvents() {
           _idleActionBtn.title = `Shade ${label}.sui \u2014 lock funds for grace expiry`;
           _idleActionBtn.disabled = false;
         } else if (nsAvail === 'taken' && !isOwned) {
-          _idleActionBtn.textContent = 'Thunder';
-          _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--thunder';
-          _idleActionBtn.title = `Thunder \u2014 encrypt a signal to ${label}.sui`;
+          // Check if Storm exists for this conversation. Group ID is
+          // address-keyed (nsTargetAddress resolved during the NS lookup);
+          // empty string falls through to an inert gid that won't hit
+          // the storm-exists cache. Uses the same short-hash format as
+          // makeThunderGroupId so sync previews match async sends.
+          const _meHex = (getState().address || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+          const _tgtHex = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+          const _gid = (_meHex && _tgtHex) ? `t-${[_meHex, _tgtHex].sort().join('')}` : '';
+          const _hasStorm = _stormExistsCache[_gid] === true;
+          if (_gid && !_stormExistsCache[_gid]) _checkStormExists(_gid);
+          _idleActionBtn.textContent = _hasStorm ? 'Storm \u26a1' : 'Storm';
+          _idleActionBtn.className = _hasStorm ? 'ski-idle-ns-action ski-idle-ns-action--thunder' : 'ski-idle-ns-action ski-idle-ns-action--storm';
+          _idleActionBtn.title = _hasStorm ? `Seal-encrypted Storm with ${label}` : `Open Storm with ${label} (creates on first message)`;
           _idleActionBtn.disabled = false;
         } else if (isOwned) {
-          _idleActionBtn.textContent = 'SUIAMI';
+          const _hasProof = _suiamiVerifyHtml.includes('verified');
+          _idleActionBtn.textContent = _hasProof ? 'SUIAMI \u2713' : 'SUIAMI';
           _idleActionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami-active';
-          _idleActionBtn.title = `SUIAMI? I AM ${_iamName}`;
-
+          _idleActionBtn.title = _hasProof ? `SUIAMI verified \u2014 ${_iamName}.sui` : `SUIAMI? I AM ${_iamName}`;
           _idleActionBtn.disabled = false;
         } else {
           _idleActionBtn.textContent = 'SUIAMI';
@@ -9669,6 +9461,12 @@ function bindEvents() {
         }
       };
 
+      // Track storms the user has explicitly closed via the Storm
+      // button so the auto-open path doesn't immediately re-open them.
+      // Keyed by bare name (lowercase). Cleared when a fresh open is
+      // intentionally triggered (Storm button / quick-action lightning).
+      const _userClosedStorms = new Set<string>();
+
       const _renderThunderComposePreview = () => {
         const raw = _idleThunderInput?.value.trim() || '';
         const draft = _parseThunderCompose(raw);
@@ -9679,9 +9477,41 @@ function bindEvents() {
           _thunderComposeConfirmedRaw = '';
           _thunderComposeStage = 'idle';
           if (_idleThunderSend && !isQuestMode) {
-            _idleThunderSend.textContent = '\u26a1';
-            _idleThunderSend.title = 'Send signal';
+            const _curTarget = (nsLabel || '').toLowerCase();
+            const _curMeHex = (getState().address || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+            const _curTgtHex = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+            const _curGid = _curMeHex && _curTgtHex ? `t-${[_curMeHex, _curTgtHex].sort().join('')}` : '';
+            if (_curGid) _checkStormExists(_curGid);
+            const _curHasStorm = _curGid ? _stormExistsCache[_curGid] === true : true;
+            const _convoVisible = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+            // The × purge button only makes sense when a convo is open
+            // with at least one bubble. Show/hide it in lockstep with
+            // the convo visibility.
+            if (_idleStormPurgeBtn) {
+              const _hasBubbles = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo .ski-idle-bubble'));
+              if (_convoVisible && _hasBubbles) _idleStormPurgeBtn.removeAttribute('hidden');
+              else _idleStormPurgeBtn.setAttribute('hidden', '');
+            }
+            // Auto-open the storm when we know it exists on-chain and
+            // the convo isn't already visible. User-closed convos are
+            // tracked separately so we don't fight a manual close.
+            if (_curHasStorm && !_convoVisible && _curTarget && !_userClosedStorms.has(_curTarget)) {
+              _expandIdleConvo(_curTarget).catch(() => {});
+            }
+            // Icon depends on whether the storm is open in the UI. If
+            // the convo panel is already visible and decrypted, the
+            // button represents "thunder" (ready to fire) — ⚡ bolt +
+            // "Thunder <name>" tooltip. Otherwise ⛈️ "open storm".
+            _idleThunderSend.innerHTML = _convoVisible ? '\u26a1' : '\u26c8\ufe0f';
+            _idleThunderSend.title = _convoVisible
+              ? `Thunder ${_curTarget}`
+              : (_curHasStorm ? `Open Storm to ${_curTarget}` : `Create Storm with ${_curTarget}`);
             _idleThunderSend.disabled = false;
+            // Input always enabled — $ transfers don't need a Storm
+            if (_idleThunderInput) {
+              _idleThunderInput.disabled = false;
+              _idleThunderInput.placeholder = '';
+            }
           }
           return;
         }
@@ -9692,15 +9522,47 @@ function bindEvents() {
           _thunderComposeStage = 'confirmed';
         }
 
+        // Check if Storm exists for the current conversation. Address-
+        // keyed, short-hash form matching makeThunderGroupId.
+        const _meHex = (getState().address || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+        const firstRecip = (draft.recipients[0] || '').toLowerCase();
+        const _tgtHex = (firstRecip && firstRecip === (nsLabel || '').toLowerCase())
+          ? (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14)
+          : '';
+        const groupId = (_meHex && _tgtHex) ? `t-${[_meHex, _tgtHex].sort().join('')}` : '';
+        if (groupId) _checkStormExists(groupId);
+        const hasStorm = groupId ? _stormExistsCache[groupId] === true : false;
+        const stormChecking = groupId ? _stormExistsCache[groupId] === 'checking' : false;
+
         if (_idleThunderSend && !isQuestMode && _thunderComposeStage !== 'sending') {
-          if (_thunderComposeStage === 'confirmed') {
-            _idleThunderSend.textContent = 'Send';
-            _idleThunderSend.title = 'Encrypt and send Thunder';
+          // Balance check — insufficient funds turns amount red
+          const userBal = app.usd ?? 0;
+          const overBudget = draft.amount !== undefined && draft.amount > userBal;
+
+          if (draft.amount !== undefined && firstRecip) {
+            // Amount mode — paper airplane, details in tooltip
+            _idleThunderSend.innerHTML = '\u27A4';
+            _idleThunderSend.title = overBudget ? `Insufficient balance ($${Math.round(userBal)} available)` : draft.amountError || `Send $${draft.amount} to ${firstRecip}`;
+            _idleThunderSend.disabled = !!draft.error || !!draft.amountError || overBudget;
+          } else if (_thunderComposeStage === 'confirmed') {
+            _idleThunderSend.innerHTML = draft.amount !== undefined ? '\u27A4' : '\u26a1 Send';
+            _idleThunderSend.title = draft.amount !== undefined ? `Send $${draft.amount} to ${firstRecip}` : draft.amountError || 'Encrypt and send Thunder';
+            _idleThunderSend.disabled = !!draft.error || !!draft.amountError;
+          } else if (!hasStorm && !stormChecking && groupId && _stormExistsCache[groupId] === false) {
+            _idleThunderSend.innerHTML = '\u26c8\ufe0f';
+            const _myN = (app.suinsName || '').replace(/\.sui$/, '');
+            _idleThunderSend.title = `Encrypt a Storm between ${_myN} and ${firstRecip}`;
+            _idleThunderSend.disabled = !!draft.error;
           } else {
-            _idleThunderSend.textContent = '\u26a1';
-            _idleThunderSend.title = draft.error ? 'Need a recipient (@name)' : 'Send signal';
+            _idleThunderSend.innerHTML = '\u26a1';
+            _idleThunderSend.title = draft.error ? 'Need a recipient (@name)' : draft.amountError || `Open Storm to ${firstRecip || nsLabel || ''}`;
+            _idleThunderSend.disabled = !!draft.error || !!draft.amountError;
           }
-          _idleThunderSend.disabled = !!draft.error;
+          const isAmtMode = draft.amount !== undefined && !!firstRecip;
+          _idleThunderSend.classList.toggle('ski-idle-thunder-send--amt', isAmtMode && !overBudget && !draft.amountError);
+          _idleThunderSend.classList.toggle('ski-idle-thunder-send--amt-error', isAmtMode && (!!draft.amountError || overBudget));
+          // Toggle red mode on input when over budget
+          _idleThunderInputEl?.classList.toggle('ski-idle-thunder-input--over', overBudget);
         }
       };
 
@@ -9717,71 +9579,101 @@ function bindEvents() {
         _idleOverlay?.querySelector('#ski-idle-thunder-convo')?.classList.remove('ski-idle-thunder-convo--frozen');
       };
 
+
+      let _cardCacheKey = ''; // tracks what's currently rendered to avoid redundant updates
+      let _cardBalCache: { addr: string; usd: number; ts: number } | null = null;
+      let _cardCurrentName = ''; // tracks which name the card is showing
+      const _CARD_BAL_TTL = 60_000; // 1 min in-memory cache
+      const _CARD_BAL_PERSIST_TTL = 30 * 60 * 1000; // 30 min localStorage cache
+      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v1:${label.toLowerCase()}`;
+      const _loadCardBalPersisted = (label: string): { usd: number; addr: string } | null => {
+        try {
+          const raw = localStorage.getItem(_CARD_BAL_KEY(label));
+          if (!raw) return null;
+          const parsed = JSON.parse(raw) as { usd: number; addr: string; ts: number };
+          if (typeof parsed?.usd !== 'number' || Date.now() - (parsed.ts ?? 0) > _CARD_BAL_PERSIST_TTL) return null;
+          return { usd: parsed.usd, addr: parsed.addr || '' };
+        } catch { return null; }
+      };
+      const _saveCardBalPersisted = (label: string, usd: number, addr: string) => {
+        try { localStorage.setItem(_CARD_BAL_KEY(label), JSON.stringify({ usd, addr, ts: Date.now() })); } catch {}
+      };
+
       const _updateIdleCard = (name: string) => {
         const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
         if (!card) return;
-        if (!name && !app.suinsName) { card.innerHTML = ''; return; }
-        // Show primary name card when: no active search, or name is available (unregistered)
-        // Don't fall back to primary while fetching if user typed a different name
+        if (!name && !app.suinsName) { if (_cardCacheKey !== '') { card.innerHTML = ''; _cardCacheKey = ''; _cardCurrentName = ''; } return; }
+        // Show primary name card when: name matches connected wallet's primary, or no active search
         const isOwnName = name.toLowerCase() === (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase();
-        if (nsAvail === 'available' || (!nsAvail && (!name || isOwnName))) {
+        // Determine effective display name and collapse roster if it changed
+        const _effectiveName = (isOwnName || nsAvail === 'available' || (!nsAvail && !name))
+          ? (app.suinsName?.replace(/\.sui$/, '') || '').toLowerCase()
+          : name.toLowerCase();
+        if (_effectiveName && _effectiveName !== _cardCurrentName) {
+          _cardCurrentName = _effectiveName;
+          _rosterCache = null;
+          const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+          if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+          // Storm visibility is owned by _expandIdleConvo — don't hide it
+          // here. The card's "effective name" often resolves to the primary
+          // name of the target's owner address, which legitimately differs
+          // from the typed label used to key the storm. Mismatching those
+          // two was nuking the convo milliseconds after it opened.
+        }
+        if (isOwnName || nsAvail === 'available' || (!nsAvail && !name)) {
           const primaryName = app.suinsName?.replace(/\.sui$/, '') || '';
-          if (!primaryName) { card.innerHTML = ''; return; }
-          // Show primary name card with SUIAMI balance
-          const primaryTotal = (_thunderCounts[primaryName.toLowerCase()] ?? 0) + (_thunderLocalCounts[primaryName.toLowerCase()] ?? 0);
+          if (!primaryName) { if (_cardCacheKey !== '') { card.innerHTML = ''; _cardCacheKey = ''; } return; }
+          const totalUsd = app.usd ?? 0;
+          const primaryTotal = (_thunderCounts[primaryName.toLowerCase()] ?? 0);
+          const hasExpiry = !!nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === primaryName.toLowerCase())?.expirationMs;
+          const cacheKey = `own:${primaryName}:${Math.round(totalUsd)}:${primaryTotal}:${hasExpiry ? 1 : 0}`;
+          if (cacheKey === _cardCacheKey) return; // no change
+          // Don't lock cache if data is still loading (balance=0, no expiry)
+          _cardCacheKey = (totalUsd > 0 || hasExpiry) ? cacheKey : '';
           const badgeHtml = primaryTotal > 0 ? `\u26c8\ufe0f${primaryTotal}` : '';
           const primaryOwned = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === primaryName.toLowerCase());
-          let primaryExpiryHtml = '';
-          if (primaryOwned?.expirationMs) {
-            const daysLeft = Math.max(0, Math.ceil((primaryOwned.expirationMs - Date.now()) / 86_400_000));
-            let cls = 'wk-ns-owned-expiry';
-            if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
-            else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
-            primaryExpiryHtml = ` <span class="${cls}">${daysLeft}D</span>`;
-          }
-          const totalUsd = app.usd ?? 0;
           const balHtml = totalUsd >= 0.50 ? `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span></span> ` : '';
-          // iUSD badge — shows after SUIAMI is completed (identity verified)
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
-          card.innerHTML = `${balHtml}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${iusdBadge}${primaryExpiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<button class="ski-idle-card-dismiss" type="button" title="Clear">\u2715</button>`;
+          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+          card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
           return;
         }
-        // Persist as authoritative domain — drives NS input on refresh and menu open
+        // Persist as authoritative domain
         _lastNftCardDomain = name;
         try { sessionStorage.setItem('ski:nft-card-domain', name); } catch {}
         try { localStorage.setItem('ski:ns-label', name); } catch {}
-        const _tcOn = _thunderCounts[name.toLowerCase()] ?? 0;
-        const _tcLocal = _thunderLocalCounts[name.toLowerCase()] ?? 0;
-        const _tcTotal = _tcOn + _tcLocal;
+        const _tcTotal = _thunderCounts[name.toLowerCase()] ?? 0;
         const badgeHtml = _tcTotal > 0 ? `\u26c8\ufe0f${_tcTotal}` : '';
-        // Expiration days — check owned domains first, then fall back to on-chain record
         const ownedEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name.toLowerCase());
         const expMs = ownedEntry?.expirationMs ?? nsExpirationMs;
-        let expiryHtml = '';
-        if (expMs > 0 && expMs > Date.now()) {
-          const daysLeft = Math.max(0, Math.ceil((expMs - Date.now()) / 86_400_000));
-          let cls = 'wk-ns-owned-expiry';
-          if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
-          else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
-          expiryHtml = ` <span class="${cls}">${daysLeft}D</span>`;
-        } else if (nsGraceEndMs > 0) {
-          expiryHtml = ` <span class="wk-ns-owned-expiry wk-ns-owned-expiry--urgent">EXPIRED</span>`;
+        // Use cached balance if available. In-memory cache wins if fresh;
+        // otherwise fall back to the persisted localStorage cache keyed by
+        // name (30 min TTL) so restored overlays paint a real number
+        // instantly while the async GQL refresh runs in the background.
+        const _resolvedAddr = nsTargetAddress || nsNftOwner || '';
+        const _inMemFresh = !!(_cardBalCache && _cardBalCache.addr === _resolvedAddr && (Date.now() - _cardBalCache.ts) < _CARD_BAL_TTL);
+        let cachedBal = _inMemFresh ? _cardBalCache!.usd : -1;
+        let _cacheIsStale = false;
+        if (cachedBal < 0) {
+          const _persisted = _loadCardBalPersisted(name);
+          if (_persisted) { cachedBal = _persisted.usd; _cacheIsStale = true; }
         }
-        card.innerHTML = `<span class="ski-idle-card-bal" id="ski-idle-card-bal"></span><span class="ski-idle-card-name" title="Populate input">${esc(name)}</span>${expiryHtml}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}<button class="ski-idle-card-dismiss" type="button" title="Clear">\u2715</button>`;
-        // Fetch resolved address balance — for listings, use seller address
+        const cacheKey = `other:${name}:${_tcTotal}:${Math.round(cachedBal)}`;
+        if (cacheKey === _cardCacheKey && _inMemFresh) return; // fresh in-memory render, no change
+        _cardCacheKey = cacheKey;
+
+        const cachedBalHtml = cachedBal >= 0.50 ? `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(cachedBal).toLocaleString()}</span>` : '';
+        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+        card.innerHTML = `${_atBtn2}<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span><span class="ski-idle-card-bal" id="ski-idle-card-bal">${cachedBalHtml}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
+
+        // Skip the fetch only when in-memory cache is still fresh. A
+        // persisted (localStorage) hit always triggers a background refresh
+        // so the displayed number converges on the truth.
+        if (cachedBal >= 0 && !_cacheIsStale) return;
         (async () => {
           try {
             const _listing = _nsListing();
             let addr = _listing?.seller || nsTargetAddress || nsNftOwner;
-            if (!addr) {
-              const r = await fetch('https://graphql.mainnet.sui.io/graphql', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ query: `{ resolveSuinsAddress(domain: "${name}.sui") { address } }` }),
-              });
-              const gql = await r.json() as any;
-              addr = gql?.data?.resolveSuinsAddress?.address ?? null;
-            }
             if (!addr) return;
             const r2 = await fetch('https://graphql.mainnet.sui.io/graphql', {
               method: 'POST',
@@ -9789,8 +9681,6 @@ function bindEvents() {
               body: JSON.stringify({ query: `{ address(address: "${addr}") { balances { nodes { coinType { repr } totalBalance } } } }` }),
             });
             const gql2 = await r2.json() as any;
-            const balEl = _idleOverlay?.querySelector('#ski-idle-card-bal');
-            if (!balEl) return;
             let totalUsd = 0;
             const price = suiPriceCache?.price ?? 0.87;
             const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
@@ -9807,48 +9697,49 @@ function bindEvents() {
               else if (ct === IKA_CT) totalUsd += (Number(raw) / 1e9) * 0.003;
               else if (ct === DEEP_CT) totalUsd += (Number(raw) / 1e6) * 0.03;
             }
-            // Add SOL balance if this is the connected wallet
             const ws = getState();
             if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase() && app.solBalance > 0) {
-              const solPrice = getTokenPrice('SOL') ?? 83;
-              totalUsd += app.solBalance * solPrice;
+              totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
             }
-            if (totalUsd >= 0.50) {
+            // Cache the balance (memory + persisted)
+            _cardBalCache = { addr, usd: totalUsd, ts: Date.now() };
+            _saveCardBalPersisted(name, totalUsd, addr);
+            // Update balance in-place (no full rebuild)
+            const balEl = _idleOverlay?.querySelector('#ski-idle-card-bal');
+            if (balEl && totalUsd >= 0.50) {
               balEl.innerHTML = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${Math.round(totalUsd).toLocaleString()}</span>`;
             }
-            // Patch in expiration if it wasn't available at first render
-            if (nsExpirationMs > 0 && !card.querySelector('.wk-ns-owned-expiry')) {
-              const daysLeft = Math.max(0, Math.ceil((nsExpirationMs - Date.now()) / 86_400_000));
-              if (daysLeft > 0) {
-                let cls = 'wk-ns-owned-expiry';
-                if (daysLeft <= 30) cls += ' wk-ns-owned-expiry--urgent';
-                else if (daysLeft <= 90) cls += ' wk-ns-owned-expiry--warn';
-                const nameEl = card.querySelector('.ski-idle-card-name');
-                if (nameEl) nameEl.insertAdjacentHTML('afterend', ` <span class="${cls}">${daysLeft}D</span>`);
-              }
-            }
+            _cardCacheKey = `other:${name}:${_tcTotal}:${Math.round(totalUsd)}`;
           } catch {}
         })();
       };
 
-      // Click card → populate name input with the card's name
+      // Dismiss button — clear everything
+      _idleOverlay.querySelector('#ski-idle-card-dismiss')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input', { bubbles: true })); }
+        nsLabel = '';
+        const _clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+        if (_clearBtn) _clearBtn.style.display = 'none';
+        const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
+        if (mainInput) mainInput.value = '';
+        const thunderInp = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+        if (thunderInp) thunderInp.value = '';
+        const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (convoEl) convoEl.setAttribute('hidden', '');
+        nsAvail = null;
+        nsTargetAddress = null;
+        nsNftOwner = null;
+        _updateIdleStatus();
+        _updateIdleCard('');
+      });
+
+      // Click card → populate name input OR open roster (blue square)
       _idleOverlay.querySelector('#ski-idle-card')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Dismiss button — clear everything
-        if ((e.target as HTMLElement).closest('.ski-idle-card-dismiss')) {
-          if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input', { bubbles: true })); }
-          nsLabel = '';
-          const _clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
-          if (_clearBtn) _clearBtn.style.display = 'none';
-          const mainInput = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
-          if (mainInput) mainInput.value = '';
-          const thunderInp = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-          if (thunderInp) thunderInp.value = '';
-          const card = _idleOverlay?.querySelector('#ski-idle-card') as HTMLElement | null;
-          if (card) card.innerHTML = '';
-          const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-          if (convoEl) convoEl.setAttribute('hidden', '');
-          _updateIdleStatus();
+        // Blue square → toggle roster
+        if ((e.target as HTMLElement).closest('#ski-idle-thunder-at')) {
+          _toggleRoster();
           return;
         }
         const nameEl = _idleOverlay?.querySelector('.ski-idle-card-name') as HTMLElement | null;
@@ -9887,27 +9778,288 @@ function bindEvents() {
       _idleNsInput?.addEventListener('blur', _unfreezeGif);
 
       const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-      _idleThunderInputEl?.addEventListener('focus', _freezeGif);
-      _idleThunderInputEl?.addEventListener('blur', _unfreezeGif);
-
-      // @ button — insert @tag and focus thunder input for autocomplete
-      // Reads from card name first (authoritative), then falls back to input
-      _idleOverlay.querySelector('#ski-idle-thunder-at')?.addEventListener('click', (e) => {
+      const _thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
+      const _thunderMirror = _idleOverlay.querySelector('#ski-idle-thunder-mirror') as HTMLElement | null;
+      const _thunderClearBtn = _idleOverlay.querySelector('#ski-idle-thunder-clear') as HTMLElement | null;
+      const _updateThunderRowActive = () => {
+        const val = _idleThunderInputEl?.value ?? '';
+        const active = _idleThunderInputEl === document.activeElement || !!val;
+        _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
+        if (_thunderClearBtn) _thunderClearBtn.style.display = val ? '' : 'none';
+        // Icon swap:
+        //   - text present → ⚡ bolt (send thunder)
+        //   - empty + storm convo already open in UI → ⚡ bolt (ready to thunder)
+        //   - empty + storm closed → ⛈️ cloud (open storm)
+        // Skip when in quest mode or mid-send — those paths set their own content.
+        const _sendBtnEl = _idleThunderSend as HTMLElement | null;
+        if (_sendBtnEl && !_sendBtnEl.dataset.questMode && !_sendBtnEl.querySelector('.ski-idle-thunder-spinner')) {
+          const _hasSendableText = val.replace(/@[a-z0-9-]+/gi, '').trim().length > 0;
+          const _convoOpen = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+          const _nextIcon = (_hasSendableText || _convoOpen) ? '\u26a1' : '\u26c8\ufe0f';
+          if (!_sendBtnEl.innerHTML.includes(_nextIcon)) {
+            _sendBtnEl.innerHTML = _nextIcon;
+          }
+        }
+        // Color modes: green (valid amount), red (over budget), yellow (thunder only)
+        const hasAmount = val.includes('$');
+        const hasAt = val.includes('@');
+        const parsedAmt = hasAmount ? parseFloat((val.match(/\$(\d+(?:\.\d*)?)/) ?? [])[1] ?? '') : NaN;
+        const overBudget = hasAmount && !isNaN(parsedAmt) && parsedAmt > (app.usd ?? 0);
+        const needsMirror = hasAmount || hasAt;
+        _idleThunderInputEl?.classList.toggle('ski-idle-thunder-input--amount', hasAmount && !overBudget);
+        _idleThunderInputEl?.classList.toggle('ski-idle-thunder-input--over', overBudget);
+        _idleThunderInputEl?.classList.toggle('ski-idle-thunder-input--mirror', needsMirror && !hasAmount);
+        // @ color: green=valid amount, red=over budget, gold=thunder only
+        const atColor = overBudget ? '#ef4444' : hasAmount ? '#22c55e' : '#FFB800';
+        const amtColor = overBudget ? '#ef4444' : '#22c55e';
+        if (_thunderMirror) {
+          if (needsMirror) {
+            _thunderMirror.innerHTML = val.replace(/(@)([a-z0-9-]*)|(\$\d*(?:\.\d*)?)|(\$)/g, (m, atSign, nameBody, amt, dollar) => {
+              if (atSign !== undefined) return `<span style="color:${atColor}">${esc(atSign)}</span><span style="color:#fff">${esc(nameBody || '')}</span>`;
+              if (amt) return `<span style="color:${amtColor}">${esc(amt)}</span>`;
+              if (dollar) return `<span style="color:${amtColor}">${esc(dollar)}</span>`;
+              return esc(m);
+            });
+          } else {
+            _thunderMirror.innerHTML = '';
+          }
+        }
+      };
+      _thunderClearBtn?.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (!_idleThunderInputEl) return;
-        const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.replace(/\.sui$/, '').trim() || '';
-        const resolvedName = cardName || nsLabel || _idleNsInput?.value || '';
-        if (_idleThunderInputEl.value.startsWith('@')) {
-          _idleThunderInputEl.focus();
+        if (_idleThunderInputEl) { _idleThunderInputEl.value = ''; _idleThunderInputEl.focus(); }
+        _updateThunderRowActive();
+        _renderThunderComposePreview();
+      });
+      _idleThunderInputEl?.addEventListener('focus', () => { _freezeGif(); _updateThunderRowActive(); });
+      _idleThunderInputEl?.addEventListener('blur', () => {
+        const val = _idleThunderInputEl?.value?.trim() ?? '';
+        // Clear if only @mention with no actual message
+        if (val && /^@[a-z0-9-]+\s*$/i.test(val)) {
+          _idleThunderInputEl!.value = '';
+        }
+        if (!_idleThunderInputEl?.value) _unfreezeGif();
+        _updateThunderRowActive();
+      });
+      _idleThunderInputEl?.addEventListener('input', _updateThunderRowActive);
+
+      // ─── Thunder tag locking ─────────────────────────────────────────
+      // The `@name ` prefix at the start of the thunder input is an
+      // atomic tag. The cursor can never sit inside or before it and
+      // backspace at the tag boundary deletes the whole tag in a single
+      // keystroke — matching the mental model of a chip, not plain text.
+      const _thunderTagMatch = (): { name: string; len: number } | null => {
+        const val = _idleThunderInputEl?.value ?? '';
+        const m = val.match(/^@([a-z0-9-]{1,63})(\s|$)/i);
+        if (!m) return null;
+        return { name: m[1].toLowerCase(), len: m[0].length };
+      };
+      const _clampCursorPastTag = () => {
+        const el = _idleThunderInputEl;
+        if (!el) return;
+        const tag = _thunderTagMatch();
+        if (!tag) return;
+        const start = el.selectionStart ?? 0;
+        const end = el.selectionEnd ?? 0;
+        if (start < tag.len || end < tag.len) {
+          try { el.setSelectionRange(Math.max(start, tag.len), Math.max(end, tag.len)); } catch {}
+        }
+      };
+      _idleThunderInputEl?.addEventListener('click', _clampCursorPastTag);
+      _idleThunderInputEl?.addEventListener('keyup', _clampCursorPastTag);
+      _idleThunderInputEl?.addEventListener('select', _clampCursorPastTag);
+      _idleThunderInputEl?.addEventListener('keydown', (ev) => {
+        const el = _idleThunderInputEl;
+        if (!el) return;
+        const tag = _thunderTagMatch();
+        if (!tag) return;
+        const start = el.selectionStart ?? 0;
+        const end = el.selectionEnd ?? 0;
+        // Backspace at or inside the tag boundary → delete the whole tag
+        if (ev.key === 'Backspace' && start === end && start <= tag.len) {
+          ev.preventDefault();
+          el.value = el.value.slice(tag.len);
+          try { el.setSelectionRange(0, 0); } catch {}
+          el.dispatchEvent(new Event('input', { bubbles: true }));
           return;
         }
-        _idleThunderInputEl.value = resolvedName ? `@${resolvedName} ` : '@';
-        _idleThunderInputEl.focus();
-        _idleThunderInputEl.setSelectionRange(_idleThunderInputEl.value.length, _idleThunderInputEl.value.length);
+        // Arrow-left / Home past the tag boundary → clamp
+        if ((ev.key === 'ArrowLeft' || ev.key === 'Home') && start <= tag.len && end <= tag.len) {
+          ev.preventDefault();
+          try { el.setSelectionRange(tag.len, tag.len); } catch {}
+        }
       });
+
+      // Sync tag → name input + card. When the storm target tag is
+      // present, mirror it into the top NS search bar so the card shows
+      // the primary reverse resolution of that name. Debounced via the
+      // name input's own handler — we just set .value and dispatch.
+      let _lastSyncedThunderTag = '';
+      const _syncThunderTagToNameInput = () => {
+        const tag = _thunderTagMatch();
+        const tagName = tag?.name ?? '';
+        if (tagName === _lastSyncedThunderTag) return;
+        _lastSyncedThunderTag = tagName;
+        if (!tagName || !_idleNsInput) return;
+        if (_idleNsInput.value.trim().toLowerCase() !== tagName) {
+          _idleNsInput.value = tagName;
+          _idleNsInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      };
+      _idleThunderInputEl?.addEventListener('input', _syncThunderTagToNameInput);
+
+      // @ button — insert @tag and focus thunder input for autocomplete
+      // ── Idle roster cache ──
+      type _RosterEntry = { name: string; expirationMs: number; primary?: boolean };
+      let _rosterCache: { addr: string; names: _RosterEntry[]; ts: number } | null = null;
+      const _ROSTER_TTL = 5 * 60 * 1000; // 5 min cache
+      let _rosterWheelBound = false;
+
+      const _renderRosterChip = ({ name, expirationMs, primary }: _RosterEntry) => {
+        const shape = _shapeOnlySvg('blue-square', 14);
+        let expiryTag = '';
+        let itemCls = '';
+        if (primary) itemCls += ' ski-idle-roster-item--primary';
+        if (expirationMs > 0) {
+          const daysLeft = Math.ceil((expirationMs - Date.now()) / 86_400_000);
+          if (daysLeft <= 0) {
+            itemCls += ' ski-idle-roster-item--expired';
+            expiryTag = `<span class="ski-idle-roster-expiry ski-idle-roster-expiry--urgent">EXP</span>`;
+          } else {
+            const colorCls = daysLeft > 730 ? 'ski-idle-roster-expiry--white'
+              : daysLeft > 180 ? 'ski-idle-roster-expiry--blue'
+              : daysLeft > 90 ? 'ski-idle-roster-expiry--green'
+              : daysLeft > 30 ? 'ski-idle-roster-expiry--warn'
+              : 'ski-idle-roster-expiry--urgent';
+            expiryTag = `<span class="ski-idle-roster-expiry ${colorCls}">${daysLeft}D</span>`;
+          }
+        }
+        return `<button class="ski-idle-roster-item${itemCls}" data-name="${esc(name)}" type="button">${shape} ${esc(name)}${expiryTag}</button>`;
+      };
+
+      const _populateRoster = (rosterPanel: HTMLElement, names: _RosterEntry[], targetAddr: string) => {
+        if (names.length === 0) {
+          rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No names found</div>';
+        } else {
+          rosterPanel.innerHTML = names.map(n => _renderRosterChip(n)).join('');
+        }
+
+        // Bind horizontal wheel scroll (once)
+        if (!_rosterWheelBound) {
+          _rosterWheelBound = true;
+          rosterPanel.addEventListener('wheel', (we) => {
+            if (rosterPanel.scrollWidth > rosterPanel.clientWidth) {
+              we.preventDefault();
+              rosterPanel.scrollLeft += (we as WheelEvent).deltaY;
+            }
+          }, { passive: false });
+        }
+
+        // Click a name → lazy resolve as 'taken', set state directly, no network calls
+        rosterPanel.querySelectorAll('.ski-idle-roster-item').forEach(btn => {
+          btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const name = (btn as HTMLElement).dataset.name || '';
+            if (!name) return;
+            // Toggle active state
+            rosterPanel.querySelectorAll('.ski-idle-roster-item').forEach(b => b.classList.remove('ski-idle-roster-item--active'));
+            btn.classList.add('ski-idle-roster-item--active');
+            // Populate the idle NS input
+            if (_idleNsInput) {
+              _idleNsInput.value = name;
+              _idleNsInput.dispatchEvent(new Event('input'));
+            }
+            // Lazy resolve: set state directly — we know it's taken, owned by targetAddr
+            const entry = names.find(n => n.name === name);
+            nsLabel = name;
+            nsPriceFetchFor = name;
+            nsTargetAddress = targetAddr;
+            nsNftOwner = targetAddr;
+            nsExpirationMs = entry?.expirationMs ?? 0;
+            nsKioskListing = null;
+            nsTradeportListing = null;
+            // Check if it's actually ours
+            const ws = getState();
+            const isOurs = ws.address && normalizeSuiAddress(targetAddr) === normalizeSuiAddress(ws.address);
+            nsAvail = isOurs ? 'owned' : 'taken';
+            _patchNsStatus();
+            _patchNsPrice();
+            _updateIdleStatus();
+            // Card shows the primary SuiNS, not the clicked chip
+            const primaryName = names.find(n => n.primary)?.name ?? name;
+            _updateIdleCard(primaryName);
+            // Keep roster open
+            rosterPanel.removeAttribute('hidden');
+          });
+        });
+      };
+
+      const _toggleRoster = async () => {
+        const rosterPanel = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+        if (!rosterPanel) return;
+
+        // Toggle roster panel
+        if (!rosterPanel.hasAttribute('hidden')) {
+          rosterPanel.setAttribute('hidden', '');
+          _unfreezeGif();
+          return;
+        }
+
+        // Close squids/addr rows if open
+        const _addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        if (_addrRow && !_addrRow.hasAttribute('hidden')) { _addrRow.setAttribute('hidden', ''); try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {} }
+        _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+        const _convoPanel = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (_convoPanel && !_convoPanel.hasAttribute('hidden')) { _convoPanel.setAttribute('hidden', ''); _convoPanel.innerHTML = ''; }
+
+        _freezeGif();
+        const targetAddr = nsTargetAddress || nsNftOwner || getState().address || '';
+        rosterPanel.removeAttribute('hidden');
+
+        // Use cache if valid
+        if (_rosterCache && _rosterCache.addr === targetAddr && (Date.now() - _rosterCache.ts) < _ROSTER_TTL) {
+          const _atBtn = _idleOverlay?.querySelector('#ski-idle-thunder-at') as HTMLElement | null;
+          if (_atBtn) _atBtn.title = `SKI Roster: ${_rosterCache.names.length} names`;
+          _populateRoster(rosterPanel, _rosterCache.names, targetAddr);
+          return;
+        }
+
+        // Show loading, then fetch
+        rosterPanel.innerHTML = '<div class="ski-idle-roster-empty" style="opacity:0.4">\u2026</div>';
+
+        let targetNames: _RosterEntry[] = [];
+        if (targetAddr) {
+          try {
+            const [domains, primaryRes] = await Promise.all([
+              fetchOwnedDomains(targetAddr),
+              fetch('https://graphql.mainnet.sui.io/graphql', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`, variables: { a: targetAddr } }),
+              }).then(r => r.json() as Promise<{ data?: { address?: { defaultNameRecord?: { domain: string } | null } } }>).catch(() => null),
+            ]);
+            const primaryDomain = (primaryRes?.data?.address?.defaultNameRecord?.domain ?? '').replace(/\.sui$/, '').toLowerCase();
+            for (const d of domains) {
+              const bare = d.name.replace(/\.sui$/, '').toLowerCase();
+              if (bare) targetNames.push({ name: bare, expirationMs: d.expirationMs ?? 0, primary: bare === primaryDomain });
+            }
+            targetNames.sort((a, b) => a.primary ? -1 : b.primary ? 1 : a.name.localeCompare(b.name));
+          } catch {}
+        }
+
+        // Cache the result and update tooltip
+        _rosterCache = { addr: targetAddr, names: targetNames, ts: Date.now() };
+        const _atBtn = _idleOverlay?.querySelector('#ski-idle-thunder-at') as HTMLElement | null;
+        if (_atBtn) _atBtn.title = `SKI Roster: ${targetNames.length} names`;
+        _populateRoster(rosterPanel, targetNames, targetAddr);
+      };
       _idleNsInput?.addEventListener('input', () => {
         const val = (_idleNsInput!.value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
         _idleNsInput!.value = val;
+        // Typing a new name is an intentional switch — any "user closed"
+        // flag from a previous target shouldn't carry over. Clear on
+        // label change so the auto-opener fires for the new storm.
+        if (val !== nsLabel) _userClosedStorms.clear();
         nsLabel = val;
         try { localStorage.setItem('ski:ns-label', val); } catch {}
         if (_idleClearBtn) _idleClearBtn.style.display = val ? '' : 'none';
@@ -9928,14 +10080,52 @@ function bindEvents() {
         nsExpirationMs = 0;
         nsNftOwner = null;
         _updateIdleStatus();
-        // Invalid/short input → reset card to primary name
-        _updateIdleCard(validLabel ? val : '');
+        // Card updates on resolution, not keystrokes — only reset when input is cleared
+        if (!val) _updateIdleCard('');
         _renderThunderComposePreview();
         // Debounce fetch to avoid SuiNS rate limits
         if (_idleDebounce) clearTimeout(_idleDebounce);
         if (val.length >= 3 && validLabel) {
           _idleDebounce = setTimeout(() => {
-            fetchAndShowNsPrice(val).then(() => { _updateIdleStatus(); _updateIdleCard(val); _renderThunderComposePreview(); _expandIdleConvo(val); });
+            fetchAndShowNsPrice(val).then(async () => {
+              _updateIdleStatus();
+              // Resolve primary SuiNS of the target address for the card
+              let _addr = nsTargetAddress || nsNftOwner;
+              // Fallback: if no target/owner, look up NFT owner
+              if (!_addr && nsAvail === 'taken') {
+                try {
+                  const { lookupNftOwner: _lno } = await import('./suins.js');
+                  const owner = await _lno(val);
+                  if (owner) { _addr = owner; nsNftOwner = owner; }
+                } catch {}
+              }
+              let cardName = val;
+              if (_addr && _rosterCache?.addr === _addr) {
+                const primary = _rosterCache.names.find(n => n.primary);
+                if (primary) cardName = primary.name;
+              } else if (_addr) {
+                try {
+                  const r = await fetch('https://graphql.mainnet.sui.io/graphql', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`, variables: { a: _addr } }),
+                  });
+                  const g = await r.json() as any;
+                  const prim = (g?.data?.address?.defaultNameRecord?.domain ?? '').replace(/\.sui$/, '').toLowerCase();
+                  if (prim) cardName = prim;
+                } catch {}
+              }
+              _updateIdleCard(cardName);
+              _renderThunderComposePreview();
+              _expandIdleConvo(val);
+              // Re-poll after 3s if input unchanged — catches balance updates, ownership changes
+              setTimeout(() => {
+                if (nsLabel.trim().toLowerCase() === val) {
+                  _cardCacheKey = ''; // force card refresh
+                  _updateIdleCard(cardName);
+                }
+              }, 3000);
+            });
           }, NS_LOOKUP_DEBOUNCE_MS);
         }
       });
@@ -10245,15 +10435,32 @@ function bindEvents() {
             _idleActionBtn!.textContent = 'Shade';
             _idleActionBtn!.disabled = false;
           })();
-        } else if (btnText === 'Storm' || btnText === 'Thunder') {
+        } else if (btnText === 'Storm') {
+          // Toggle Storm convo — open/close conversation with history.
+          // Mirror the lightning quick-action: always pre-fill the thunder
+          // input with the @tag and focus it, and keep the send button
+          // pressed while the convo is visible.
           const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
           if (convoEl && !convoEl.hasAttribute('hidden')) {
             convoEl.setAttribute('hidden', '');
+            _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+            try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+            // Mark as user-closed so the preview auto-opener leaves it alone.
+            if (label) _userClosedStorms.add(label.toLowerCase());
+            // Icon flips back to ⛈️ once the convo is closed.
+            _renderThunderComposePreview?.();
           } else if (label) {
-            _expandIdleConvo(label);
+            // Intentional open — clear the user-closed flag so the
+            // preview auto-opener doesn't fight the button.
+            _userClosedStorms.delete(label.toLowerCase());
+            _expandIdleConvo(label).catch(() => {});
+            // Force the convo visible even if the fetch is still in flight.
+            if (convoEl && convoEl.hasAttribute('hidden')) convoEl.removeAttribute('hidden');
+            _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+            // Focus only — recipient is implicit from the open storm,
+            // auto-prefixed at send time. No @tag clutter in the input.
             const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
             if (thunderInput) {
-              if (!thunderInput.value.includes(`@${label}`)) thunderInput.value = `@${label} `;
               thunderInput.focus();
               _renderThunderComposePreview();
             }
@@ -10270,28 +10477,49 @@ function bindEvents() {
         if (nsAvail) _updateIdleCard(_initLabel);
         // Force re-fetch even if cached — ensures _updateIdleStatus sees fresh ownership
         nsPriceFetchFor = '';
-        fetchAndShowNsPrice(_initLabel).then(() => { _updateIdleStatus(); _updateIdleCard(_initLabel); });
-        // Auto-open conversation if there are pending signals or local history
+        fetchAndShowNsPrice(_initLabel).then(async () => {
+          _updateIdleStatus();
+          // Resolve primary SuiNS of target address for card (same as input debounce)
+          let _addr = nsTargetAddress || nsNftOwner;
+          if (!_addr && nsAvail === 'taken') {
+            try { const { lookupNftOwner: _lno } = await import('./suins.js'); const o = await _lno(_initLabel); if (o) { _addr = o; nsNftOwner = o; } } catch {}
+          }
+          let cardName = _initLabel;
+          if (_addr && _rosterCache?.addr === _addr) {
+            const primary = _rosterCache.names.find(n => n.primary);
+            if (primary) cardName = primary.name;
+          } else if (_addr) {
+            try {
+              const r = await fetch('https://graphql.mainnet.sui.io/graphql', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ defaultNameRecord{domain} } }`, variables: { a: _addr } }) });
+              const g = await r.json() as any;
+              const prim = (g?.data?.address?.defaultNameRecord?.domain ?? '').replace(/\.sui$/, '').toLowerCase();
+              if (prim) cardName = prim;
+            } catch {}
+          }
+          _updateIdleCard(cardName);
+        });
+        // Auto-open conversation unconditionally on overlay mount with a
+        // pre-filled name. Storm is top-priority UI: if a label is loaded,
+        // show the convo without waiting for the user to click the Storm
+        // button. _expandIdleConvo safely hides itself if there are no
+        // messages and no existing bubbles.
         const _pendingCount = _thunderCounts[_initLabel.toLowerCase()] ?? 0;
-        const _localCount = _thunderLocalCounts[_initLabel.toLowerCase()] ?? 0;
-        if (_pendingCount > 0 || _localCount > 0) {
-          _expandIdleConvo(_initLabel);
-        }
+        _expandIdleConvo(_initLabel);
         // Activate quest mode based on aggregate count across ALL owned names
         const _totalPending = _totalThunderCount();
         if (_totalPending > 0) {
           const sendBtn = _idleOverlay?.querySelector('#ski-idle-thunder-send') as HTMLButtonElement | null;
           if (sendBtn) {
             sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${_totalPending}</span>`;
-            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--quest';
-            sendBtn.title = `Quest ${_totalPending} signal${_totalPending > 1 ? 's' : ''} across all names`;
+            sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--quest';
+            sendBtn.title = `Quest ${_totalPending} thunder${_totalPending > 1 ? 's' : ''} across all names`;
             sendBtn.dataset.questMode = '1';
             sendBtn.dataset.questAll = '1';
           }
           const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-          if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_totalPending} signal${_totalPending > 1 ? 's' : ''} waiting...`;
+          if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_totalPending} thunder${_totalPending > 1 ? 's' : ''} waiting...`;
           // Auto-expand conversation for name with most signals
-          if (!_pendingCount && !_localCount) {
+          if (!_pendingCount) {
             const topName = nsOwnedDomains
               .filter(d => d.kind === 'nft')
               .map(d => ({ bare: d.name.replace(/\.sui$/, '').toLowerCase(), count: _thunderCounts[d.name.replace(/\.sui$/, '').toLowerCase()] ?? 0 }))
@@ -10305,6 +10533,16 @@ function bindEvents() {
       _idleOverlay.querySelector('#ski-idle-iusd')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
+        // SAFETY: iUSD routing is disabled while the iUSD Treasury is
+        // undercollateralized. The Treasury reports senior=36, outstanding=133,
+        // so iusd::mint aborts with code 1 — any sweep that lands at the
+        // mint step would revert mid-flight and could leave funds at the
+        // intermediate swap stage. A user accidentally tapped the iUSD logo
+        // and almost paid 36 NS + 235 USDC into a tx that would have failed.
+        // Re-enable once the iUSD mint path is healthy.
+        showToast('iUSD routing temporarily disabled — Treasury collateral being repaired');
+        return;
+        // eslint-disable-next-line @typescript-eslint/no-unreachable
         const ws = getState();
         if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
@@ -10505,6 +10743,37 @@ function bindEvents() {
 
       // iUSD panel — $ quick button toggles panel, shows treasury stats + mint/burn/ignite
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', async (e) => {
+        // Green circle — reset everything to primary
+        const greenBtn = (e.target as HTMLElement).closest('[data-action="green"]');
+        if (greenBtn) {
+          e.stopPropagation();
+          // Close squids
+          const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+          if (addrRow && !addrRow.hasAttribute('hidden')) { addrRow.setAttribute('hidden', ''); try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {} }
+          _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+          // Close roster
+          const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+          if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+          // Clear NS input
+          if (_idleNsInput) { _idleNsInput.value = ''; _idleNsInput.dispatchEvent(new Event('input')); }
+          nsLabel = '';
+          try { localStorage.removeItem('ski:ns-label'); } catch {}
+          const clearBtn = _idleOverlay?.querySelector('#ski-idle-clear') as HTMLElement | null;
+          if (clearBtn) clearBtn.style.display = 'none';
+          // Clear thunder input
+          if (_idleThunderInputEl) { _idleThunderInputEl.value = ''; }
+          _updateThunderRowActive();
+          _renderThunderComposePreview();
+          // Reset state
+          nsAvail = null; nsTargetAddress = null; nsNftOwner = null;
+          nsKioskListing = null; nsTradeportListing = null;
+          _cardCacheKey = '';
+          // Restore primary card
+          _updateIdleStatus();
+          _updateIdleCard('');
+          _unfreezeGif();
+          return;
+        }
         const btn = (e.target as HTMLElement).closest('[data-action="iusd"]');
         if (!btn) return;
         e.stopPropagation();
@@ -10626,31 +10895,55 @@ function bindEvents() {
         showToast('\u26a1 Ignite — coming soon. Burn iUSD, get gas on any chain.');
       });
 
-      // Squid quick-action → toggle rumble panel or show cached squids rows
+      // Squid quick-action → toggle the cached squids rows. Never auto-fires
+      // the Rumble DKG flow — that needs its own explicit button + signature.
+      // Clicking the squid simply shows/hides the already-rendered addrRow,
+      // and closes any competing panels (storm convo, roster, rumble panel).
       _idleOverlay.querySelector('#ski-idle-quick-actions')?.addEventListener('click', (e) => {
         const squid = (e.target as HTMLElement).closest('[data-action="rumble"]');
         if (!squid) return;
         e.stopPropagation();
         const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
-        // If rumble panel is open, close it
-        const convo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-        const panel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
-        if (panel && convo && !convo.hasAttribute('hidden')) {
-          convo.setAttribute('hidden', ''); convo.innerHTML = '';
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          _unfreezeGif();
-          return;
-        }
-        // If squids rows are open, close them
         const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
-        if (addrRow && !addrRow.hasAttribute('hidden')) {
-          addrRow.setAttribute('hidden', '');
-          squidBtn?.classList.remove('ski-idle-quick-btn--active');
-          _unfreezeGif();
-          return;
+        const convo = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+        const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+
+        // Close competing panels whenever we interact with squids.
+        if (convo && !convo.hasAttribute('hidden')) { convo.setAttribute('hidden', ''); convo.innerHTML = ''; }
+        if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+        if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
+
+        if (addrRow) {
+          if (!addrRow.hasAttribute('hidden')) {
+            // Currently open → close
+            addrRow.setAttribute('hidden', '');
+            squidBtn?.classList.remove('ski-idle-quick-btn--active');
+            try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
+            _unfreezeGif();
+          } else {
+            // Currently closed → open (show whatever's already been rendered)
+            addrRow.removeAttribute('hidden');
+            squidBtn?.classList.add('ski-idle-quick-btn--active');
+            try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
+            _freezeGif();
+          }
         }
-        squidBtn?.classList.toggle('ski-idle-quick-btn--active');
-        (_idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null)?.click();
+      });
+
+      // Storm-actions + send-group delegate same iusd/rumble handlers
+      // $ button in storm mode — insert $ after last @name tag
+      _idleOverlay.querySelector('#ski-idle-thunder-at-iusd')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!_idleThunderInputEl) return;
+        // Use card name (authority) — fall back to input label, then primary
+        const cardName = _cardCurrentName || nsLabel.trim().toLowerCase() || (app.suinsName?.replace(/\.sui$/, '') || '');
+        if (!cardName) return;
+        // Set @name$ and focus for amount entry
+        _idleThunderInputEl.value = `@${cardName}$`;
+        _idleThunderInputEl.selectionStart = _idleThunderInputEl.selectionEnd = _idleThunderInputEl.value.length;
+        _idleThunderInputEl.focus();
+        _idleThunderInputEl.dispatchEvent(new Event('input'));
       });
 
       // Diamond click → toggle target address row (own addresses or Roster lookup for others)
@@ -10683,6 +10976,11 @@ function bindEvents() {
           renderWidget();
           renderSkiBtn();
           showToast(`${domain} set as primary \u2713`);
+          _rosterCache = null;
+          _updateIdleCard(domain.replace(/\.sui$/, ''));
+          _updateIdleStatus();
+          // Trigger layout recalculation
+          window.dispatchEvent(new Event('resize'));
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Failed';
           if (!msg.toLowerCase().includes('reject')) showToast(msg);
@@ -10755,6 +11053,7 @@ function bindEvents() {
                 addrRow.setAttribute('hidden', '');
                 _unfreezeGif();
               } else {
+                // Use the card's resolved address — matches whoever the card is showing
                 const addr = nsTargetAddress || nsNftOwner || ws.address || '';
                 const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
                 const cachedBaseAddr = status.ethAddress; // same EVM address
@@ -10768,20 +11067,121 @@ function bindEvents() {
 
                 // Per-row USD balances
                 const _suiUsd2 = app.sui * (suiPriceCache?.price ?? 0) + app.stableUsd;
-                const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 0) : 0;
-                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal">$${Math.round(v).toLocaleString()}</span>` : '';
+                const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 83) : 0;
+                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${Math.round(v).toLocaleString()}</span></span>` : '';
 
-                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}${_fmtBal2(_suiUsd2)}</span>`;
-                const btcLine = `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${status.btcAddress}">${btcIcon} ${status.btcAddress.slice(0, 6)}\u2026${status.btcAddress.slice(-6)}</span>`;
-                const solLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${status.solAddress}">${solIcon} ${status.solAddress.slice(0, 6)}\u2026${status.solAddress.slice(-6)}${_fmtBal2(_solUsd2)}</span>`;
-                const baseChip = cachedBaseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
-                const ethLine = status.ethAddress ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${status.ethAddress}">${ethIcon} ${status.ethAddress.slice(0, 6)}\u2026${status.ethAddress.slice(-6)}${baseChip}</span>` : '';
-                const baseLine = cachedBaseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${cachedBaseAddr}">${baseIcon} ${cachedBaseAddr.slice(0, 6)}\u2026${cachedBaseAddr.slice(-6)}</span>` : '';
-                const tronLine = cachedTronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${cachedTronAddr}">${tronIcon} ${cachedTronAddr.slice(0, 5)}\u2026${cachedTronAddr.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
-                addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}`;
+                // Resolve cross-chain addresses: own wallet first, then cached IKA for any address
+                const _isOwnAddr = ws.address && addr.toLowerCase() === ws.address.toLowerCase();
+                const _hasSuiamiProof = _suiamiVerifyHtml.includes('verified');
+                let _btc = '', _eth = '', _sol = '';
+                if (_isOwnAddr) {
+                  _btc = status.btcAddress || '';
+                  _eth = status.ethAddress || '';
+                  _sol = status.solAddress || '';
+                } else {
+                  // Look up cached IKA addresses for this address
+                  try {
+                    const cached = localStorage.getItem(`ski:ika-addrs:${addr}`);
+                    if (cached) { const p = JSON.parse(cached); _btc = p.btc || ''; _eth = p.eth || ''; _sol = p.sol || ''; }
+                  } catch {}
+                }
+                const _baseAddr = _eth; // same EVM address
+                const _tronAddr = _eth ? ethToTron(_eth) : '';
+                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}${_isOwnAddr ? _fmtBal2(_suiUsd2) : ''}</span>`;
+
+                // --- Cross-chain rows: dark placeholders when viewing others without SUIAMI ---
+                if (!_isOwnAddr && !_hasSuiamiProof) {
+                  // Dark blurred placeholder rows for cross-chain addresses
+                  const _darkText = `<span class="ski-idle-addr-dark-text">\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022</span>`;
+                  const darkBtc = `<span class="ski-idle-addr-line ski-idle-addr-dark">${btcIcon} ${_darkText}</span>`;
+                  const darkSol = `<span class="ski-idle-addr-line ski-idle-addr-dark">${solIcon} ${_darkText}</span>`;
+                  const darkEth = `<span class="ski-idle-addr-line ski-idle-addr-dark">${ethIcon} ${_darkText}</span>`;
+                  const darkTron = `<span class="ski-idle-addr-line ski-idle-addr-dark">${tronIcon} ${_darkText}</span>`;
+                  const _myName = (app.suinsName || '').replace(/\.sui$/, '') || 'you';
+                  const revealQr = `<div class="ski-idle-addr-qr ski-idle-addr-reveal-qr" data-qr-addr="${esc(addr)}"></div>`;
+                  const revealBtn = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--join" type="button" title="SUIAMI? I AM ${esc(_myName)}">SUIAMI REVEAL</button>`;
+                  addrRow.innerHTML = `${suiLine}<div class="ski-idle-addr-reveal-wrap">${darkBtc}${darkSol}${darkEth}${darkTron}${revealQr}${revealBtn}</div>`;
+                  // Populate QR async
+                  const _revealQrEl = addrRow.querySelector('.ski-idle-addr-reveal-qr');
+                  if (_revealQrEl) _getAddrQrSvg(addr, 'usd').then(svg => { _revealQrEl.innerHTML = svg; });
+                } else if (!_isOwnAddr && _hasSuiamiProof) {
+                  // Viewing someone else with SUIAMI proof — fetch from on-chain roster
+                  const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} ${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>` : '';
+                  const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} ${_sol.slice(0, 6)}\u2026${_sol.slice(-6)}</span>` : '';
+                  const baseChip = _baseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
+                  const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} ${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}${baseChip}</span>` : '';
+                  const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} ${_baseAddr.slice(0, 6)}\u2026${_baseAddr.slice(-6)}</span>` : '';
+                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 6)}\u2026${_tronAddr.slice(-6)}</span>` : '';
+                  const suiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified" type="button" title="Click to copy SUIAMI proof">\u2713 SUIAMI</button>`;
+                  addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
+                  // Async fetch from on-chain roster to fill in missing cross-chain addresses
+                  (async () => {
+                    try {
+                      const { readRosterByAddress } = await import('./suins.js');
+                      const roster = await readRosterByAddress(addr);
+                      if (!roster) return;
+                      let rBtc = roster.chains?.['btc'] || '';
+                      let rEth = roster.chains?.['eth'] || '';
+                      let rSol = roster.chains?.['sol'] || '';
+                      // If roster has a walrus_blob_id, fetch the blob for richer data
+                      if (roster.walrus_blob_id) {
+                        try {
+                          const { fetchRosterBlob } = await import('./client/roster.js');
+                          const blob = await fetchRosterBlob<Record<string, any>>(roster.walrus_blob_id);
+                          if (blob) {
+                            rBtc = rBtc || blob.btc || blob.btcAddress || '';
+                            rEth = rEth || blob.eth || blob.ethAddress || '';
+                            rSol = rSol || blob.sol || blob.solAddress || '';
+                          }
+                        } catch {}
+                      }
+                      if (!rBtc && !rEth && !rSol && !roster.verified) return;
+                      // Cache for future use
+                      try { localStorage.setItem(`ski:ika-addrs:${addr}`, JSON.stringify({ btc: rBtc, eth: rEth, sol: rSol })); } catch {}
+                      // Re-render cross-chain rows with roster data
+                      const rBase = rEth;
+                      const rTron = rEth ? ethToTron(rEth) : '';
+                      const rBtcLine = rBtc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${rBtc}">${btcIcon} ${rBtc.slice(0, 6)}\u2026${rBtc.slice(-6)}</span>` : '';
+                      const rSolLine = rSol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${rSol}">${solIcon} ${rSol.slice(0, 6)}\u2026${rSol.slice(-6)}</span>` : '';
+                      const rBaseChip = rBase ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
+                      const rEthLine = rEth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${rEth}">${ethIcon} ${rEth.slice(0, 6)}\u2026${rEth.slice(-6)}${rBaseChip}</span>` : '';
+                      const rBaseLine = rBase ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${rBase}">${baseIcon} ${rBase.slice(0, 6)}\u2026${rBase.slice(-6)}</span>` : '';
+                      const rTronLine = rTron ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${rTron}">${tronIcon} ${rTron.slice(0, 5)}\u2026${rTron.slice(-5)} <span style="opacity:0.5;font-size:0.75rem">USDT</span></span>` : '';
+                      // Update SUIAMI button with dWallet badge if roster is verified
+                      let rSuiamiLine = suiamiLine;
+                      if (roster.verified) {
+                        rSuiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified ski-idle-addr-suiami--dwallet" type="button" title="dWallet-attested identity">\u2713 SUIAMI \u2b21</button>`;
+                      }
+                      addrRow.innerHTML = `${suiLine}${rBtcLine}${rSolLine}${rEthLine}${rBaseLine}${rTronLine}${rSuiamiLine}`;
+                    } catch {}
+                  })();
+                } else {
+                  // Own wallet — show all addresses directly
+                  const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} ${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>` : '';
+                  const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} ${_sol.slice(0, 6)}\u2026${_sol.slice(-6)}${_fmtBal2(_solUsd2)}</span>` : '';
+                  const baseChip = _baseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
+                  const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} ${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}${baseChip}</span>` : '';
+                  const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} ${_baseAddr.slice(0, 6)}\u2026${_baseAddr.slice(-6)}</span>` : '';
+                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 6)}\u2026${_tronAddr.slice(-6)}</span>` : '';
+                  const suiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified" type="button" title="Click to copy SUIAMI proof">\u2713 SUIAMI</button>`;
+                  addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
+                }
+
                 addrRow.removeAttribute('hidden');
                 _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
                 _freezeGif();
+                // Wire up SUIAMI button — copy proof if verified, or request SUIAMI if reveal prompt
+                addrRow.querySelector('.ski-idle-addr-suiami')?.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  if (!_isOwnAddr && !_hasSuiamiProof) {
+                    // "SUIAMI to reveal" button — dispatch request event
+                    window.dispatchEvent(new CustomEvent('ski:request-suiami', {
+                      detail: { name: app.suinsName?.replace(/\.sui$/, '') || '' }
+                    }));
+                  } else if (_suiamiProofToken) {
+                    navigator.clipboard.writeText(_suiamiProofToken).then(() => showToast('SUIAMI proof copied')).catch(() => {});
+                  }
+                });
                 addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
                   el.addEventListener('click', (ev) => {
                     ev.stopPropagation();
@@ -11076,101 +11476,71 @@ function bindEvents() {
       const _freshQuestTs = new Set<number>(); // timestamps of messages quested this session
       const _idleThunderInput = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _sendIdleThunder = async () => {
-        // Quest mode: decrypt pending signals across all owned names
         const sendBtn = _idleThunderSend;
+
+        // Immediately show spinner to prevent "Send" flash
+        if (sendBtn && sendBtn.dataset.questMode !== '1') {
+          sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
+          sendBtn.disabled = true;
+        }
+
+        // Quest mode: decrypt pending signals across all owned names
         if (sendBtn?.dataset.questMode === '1') {
           sendBtn.innerHTML = '\u2026';
           sendBtn.disabled = true;
           try {
             const ws = getState();
             if (!ws.address) return;
-            const { decryptAndQuest, getThunderCountsBatch } = await import('./client/thunder.js');
+            const { getThunders } = await import('./client/thunder.js');
 
             // Build list of all names with pending signals
-            const toQuest: { name: string; nftId: string; count: number }[] = [];
+            const toQuest: { name: string; count: number }[] = [];
             if (sendBtn.dataset.questAll === '1') {
               for (const d of nsOwnedDomains) {
                 if (d.kind !== 'nft') continue;
                 const bare = d.name.replace(/\.sui$/, '').toLowerCase();
                 const c = _thunderCounts[bare] ?? 0;
-                if (c > 0) toQuest.push({ name: bare, nftId: d.objectId, count: c });
+                if (c > 0) toQuest.push({ name: bare, count: c });
               }
             } else {
               const questName = sendBtn.dataset.questName || '';
-              if (!questName) { sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
-              const nftEntry = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === questName.toLowerCase());
-              if (!nftEntry) { showToast('NFT not found'); sendBtn.disabled = false; return; }
-              toQuest.push({ name: questName, nftId: nftEntry.objectId, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
+              if (!questName) { sendBtn.innerHTML = '\u26c8\ufe0f'; sendBtn.disabled = false; return; }
+              toQuest.push({ name: questName, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
             }
 
-            if (toQuest.length === 0) { showToast('No signals to quest'); sendBtn.innerHTML = '\u26a1'; sendBtn.disabled = false; return; }
+            if (toQuest.length === 0) { showToast('No thunders to quest'); sendBtn.innerHTML = '\u26c8\ufe0f'; sendBtn.disabled = false; return; }
 
             let totalDecrypted = 0;
 
-            for (const { name, nftId, count } of toQuest) {
+            for (const { name } of toQuest) {
               try {
-                // Try combined strike + receipt (sends read receipt back to sender)
-                let payloads: import('./client/thunder-types.js').ThunderPayload[];
-                let _usedCombined = false;
-                const _convo = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.replace(/\.sui$/, '').trim() || '';
-                if (_convo && app.suinsName) {
-                  try {
-                    const { buildStrikeWithReceiptTx, lookupRecipientNftId } = await import('./client/thunder.js');
-                    const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
-                    const myName = app.suinsName.replace(/\.sui$/, '');
-                    const targetNftId = await lookupRecipientNftId(_convo);
-                    if (targetNftId) {
-                      const myNft = nsOwnedDomains.find(d => d.name.replace(/\.sui$/, '').toLowerCase() === name && d.kind === 'nft');
-                      if (myNft) {
-                        const raw = buildSuiamiMessage(myName, ws.address, myNft.objectId);
-                        const msgBytes = new TextEncoder().encode(JSON.stringify(raw));
-                        const { signature: suiamiSig } = await signPersonalMessage(msgBytes);
-                        const proof = createSuiamiProof(raw, btoa(String.fromCharCode(...msgBytes)), suiamiSig);
-                        const combinedBytes = await buildStrikeWithReceiptTx(
-                          ws.address, name + '.sui', nftId, count,
-                          _convo, targetNftId, `\u2713 read by ${myName}.sui`, proof.token,
-                        );
-                        const result = await signAndExecuteTransaction(combinedBytes);
-                        const { parseAndDecryptQuestfi } = await import('./client/thunder.js');
-                        payloads = await parseAndDecryptQuestfi(result.effects ?? result);
-                        _usedCombined = true;
-                      }
-                    }
-                  } catch { /* fall back to plain quest */ }
-                }
-                if (!_usedCombined) {
-                  payloads = await decryptAndQuest(ws.address, name, nftId, count, async (txBytes) => {
-                    const { digest, effects } = await signAndExecuteTransaction(txBytes);
-                    return { digest: digest || '', effects };
-                  });
-                }
-                for (const p of payloads) {
-                  const _pSender = p.sender || p.senderAddress.slice(0, 8);
+                const groupUuid = `thunder-${name}`;
+                const { messages } = await getThunders({
+    
+                  groupRef: { uuid: groupUuid },
+                });
+                for (const m of messages) {
                   _freshQuestTs.add(Date.now());
-                  await _storeThunderLocal(name, _pSender, p.message, 'in', _pSender, p.senderAddress);
                 }
-                totalDecrypted += payloads.length;
+                totalDecrypted += messages.length;
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
                 if (!msg.toLowerCase().includes('reject')) showToast(`${name}: ${msg}`);
               }
             }
 
-            // Refresh all counts
-            const allNames = toQuest.map(q => q.name);
-            const freshCounts = await getThunderCountsBatch(allNames);
-            for (const [bare, count] of Object.entries(freshCounts)) {
-              _thunderCounts[bare] = count;
+            // Zero out counts for quested names
+            for (const { name } of toQuest) {
+              _thunderCounts[name] = 0;
             }
             try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
-            await _refreshThunderLocalCounts();
             if (toQuest.length > 0) _expandIdleConvo(toQuest[0].name);
 
             // Reset button via badge updater
             _updateIdleThunderBadge();
             sendBtn.disabled = false;
             _renderThunderComposePreview();
-            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
+            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} thunder${totalDecrypted > 1 ? 's' : ''} purged`);
           } catch (err) {
             sendBtn.innerHTML = '\u26c8\ufe0f';
             sendBtn.disabled = false;
@@ -11180,11 +11550,23 @@ function bindEvents() {
           return;
         }
 
-        const raw = _idleThunderInput?.value.trim() || '';
+        let raw = _idleThunderInput?.value.trim() || '';
         if (!raw) return;
         const ws = getState();
         if (!ws.address) return;
         try {
+          // If an open-storm convo already targets a specific counterparty
+          // and the user's text has no @tag, prepend the counterparty as the
+          // implicit recipient. This lets users type bare messages inside an
+          // open storm without repeating @name on every line.
+          const _openStormTarget = (() => {
+            const convoOpen = _idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])');
+            if (!convoOpen) return '';
+            return (nsLabel || '').replace(/\.sui$/, '').toLowerCase();
+          })();
+          if (_openStormTarget && !/(?:^|[^a-z0-9_-])@[a-z0-9-]{3,63}/i.test(raw)) {
+            raw = `@${_openStormTarget} ${raw}`;
+          }
           const draft = _parseThunderCompose(raw);
           if (!draft || draft.error || draft.recipients.length === 0) {
             _thunderComposeConfirmedRaw = '';
@@ -11207,70 +11589,176 @@ function bindEvents() {
             return;
           }
 
-          const { buildThunderSendTx, lookupRecipientNftId } = await import('./client/thunder.js');
-          const senderName = app.suinsName || '';
+          const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
+          const senderName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
           const recipients = draft.recipients;
           const msgText = draft.message;
-          const origBtnHtml = sendBtn?.innerHTML || '\u26a1';
+          const transferAmtUsd = (draft.amount && !draft.amountError) ? draft.amount : undefined;
+          const origBtnHtml = sendBtn?.innerHTML || '\u26c8\ufe0f';
 
-          // Show loading spinner on send button — hover reveals cancel
+          // Show loading spinner on send button — freeze GIF to show convo
+          _freezeGif();
           let _cancelled = false;
           if (sendBtn) {
             _thunderComposeStage = 'sending';
             sendBtn.innerHTML = '<span class="ski-idle-thunder-spinner"></span>';
-            sendBtn.className = 'ski-idle-thunder-send ski-idle-thunder-send--loading';
+            sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--loading';
             sendBtn.title = 'Cancel';
-            const _onCancel = (ev: Event) => { ev.stopPropagation(); _cancelled = true; sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; sendBtn.removeEventListener('click', _onCancel); };
+            const _onCancel = (ev: Event) => { ev.stopPropagation(); _cancelled = true; sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send'; sendBtn.title = `Open Storm to ${nsLabel || ''}`; sendBtn.removeEventListener('click', _onCancel); };
             sendBtn.addEventListener('click', _onCancel);
           }
 
+          const { lookupRecipientAddressCached, makeThunderGroupId } = await import('./client/thunder.js');
+          const _myAddrForSend = getState().address || '';
           try {
             for (const recip of recipients) {
               if (_cancelled) break;
-              const nftId = await lookupRecipientNftId(recip);
-              if (!nftId) { showToast(`Cannot find ${recip}.sui`); continue; }
-              if (_cancelled) break;
-              const txBytes = await buildThunderSendTx(ws.address, senderName, recip, nftId, msgText);
-              if (_cancelled) break;
-              await signAndExecuteTransaction(txBytes);
-              await _storeThunderLocal(senderName || ws.address, recip, msgText, 'out', undefined, nsTargetAddress ?? undefined);
+              // Resolve the recipient to an address first — the group ID
+              // is pinned to the address pair, never the names.
+              const _recipAddrForGid = await lookupRecipientAddressCached(recip);
+              if (!_recipAddrForGid || !_myAddrForSend) {
+                showToast(`Cannot resolve address for ${recip}`);
+                continue;
+              }
+              const groupUuid = makeThunderGroupId(_myAddrForSend, _recipAddrForGid);
+
+              if (transferAmtUsd) {
+                // $amount transfer — needs on-chain tx. sendThunder swaps the
+                // SUI input → USDC via DeepBook in the same PTB, so we need to
+                // over-provision the SUI side by ~5% to cover pool fee + slippage
+                // and still land the recipient above the requested $ amount.
+                const recipAddr = await lookupRecipientAddress(recip);
+                if (!recipAddr) { showToast(`Cannot resolve address for ${recip}`); continue; }
+                const suiPrice = suiPriceCache?.price ?? 0;
+                if (suiPrice <= 0) { showToast('Cannot determine SUI price'); continue; }
+                const suiAmount = (transferAmtUsd / suiPrice) * 1.05;
+                const amountMist = BigInt(Math.floor(suiAmount * 1e9));
+                const transfer = { recipientAddress: recipAddr, amountMist };
+                if (_cancelled) break;
+                await sendThunder({
+                  groupRef: { uuid: groupUuid },
+                  text: msgText,
+                  recipientAddress: recipAddr,
+                  senderName,
+                  recipientName: recip,
+                  transfer,
+                  signAndExecute: async (txOrBytes: any) => {
+                    if (sendBtn) sendBtn.innerHTML = `\u26a1 $${transferAmtUsd}\u2026`;
+                    showToast(`\u26a1 Sending $${transferAmtUsd} to ${recip}`);
+                    const result = await signAndExecuteTransaction(txOrBytes);
+                    _markStormExists(groupUuid);
+                    return result;
+                  },
+                });
+              } else {
+                // Seal-encrypt + send. Always pass signAndExecute so sendThunder
+                // can build a creation PTB if its dynamic on-chain check finds
+                // the Storm missing — we never trust the session cache for
+                // correctness, only as a UX hint for which toast to show.
+                const _sendText = msgText || draft.raw || '';
+                if (!_sendText.trim()) continue;
+                const recipAddr = await lookupRecipientAddress(recip);
+                const _cacheSaysExists = _stormExistsCache[groupUuid] === true;
+                await sendThunder({
+                  groupRef: { uuid: groupUuid },
+                  text: _sendText,
+                  recipientAddress: recipAddr || undefined,
+                  senderName,
+                  recipientName: recip,
+                  signAndExecute: async (txOrBytes: any) => {
+                    showToast(_cacheSaysExists
+                      ? `\u26a1 Sending to ${recip}`
+                      : `\u26c8\ufe0f Creating encrypted Storm with ${recip}`);
+                    const result = await signAndExecuteTransaction(txOrBytes);
+                    _markStormExists(groupUuid);
+                    _updateIdleStatus();
+                    return result;
+                  },
+                });
+                _markStormExists(groupUuid);
+              }
               _addThunderContact(recip);
             }
             if (_cancelled) {
               if (sendBtn) {
                 sendBtn.innerHTML = origBtnHtml;
-                sendBtn.className = 'ski-idle-thunder-send';
-                sendBtn.title = 'Send signal';
+                sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send';
+                sendBtn.title = `Open Storm to ${nsLabel || ''}`;
               }
               _thunderComposeStage = 'confirmed';
               _renderThunderComposePreview();
               return;
             }
-            // Success: show bubble, clear input, resume GIF
-            if (_idleThunderInput) _idleThunderInput.value = '';
-            _unfreezeGif();
-            const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
-            const bubble = document.createElement('div');
-            bubble.className = 'ski-idle-bubble ski-idle-bubble--out';
-            bubble.textContent = msgText;
-            if (convoEl) { convoEl.appendChild(bubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
-            const names = recipients.map(r => `${r}.sui`).join(', ');
-            showToast(`\u26a1 Signal sent to ${names}`);
-            _expandIdleConvo(recipients[0]);
+            // Success: clear the input completely. Re-query from the live
+            // DOM — the closure-captured _idleThunderInput can be stale if
+            // the overlay was re-rendered, and setting its .value wouldn't
+            // touch the element the user is actually typing in.
+            const _liveInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
+            if (_liveInput) {
+              _liveInput.value = '';
+              _liveInput.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            const names = recipients.join(', ');
+            if (transferAmtUsd) {
+              showToast(`$${transferAmtUsd} iUSD Thunder to ${names} sent`);
+            } else {
+              showToast(`\u26a1 Thunder to ${names} sent`);
+            }
             _thunderComposeConfirmedRaw = '';
             _thunderComposeStage = 'idle';
             _renderThunderComposePreview();
+            // Optimistic: append sent message to convo immediately, with a
+            // confirmed ✓ status indicator so the user has a visual hook
+            // beyond the toast. The convo poll picks up server-side state
+            // on its own cadence.
+            _freezeGif();
+            const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+            if (convoEl) {
+              const _sentBubble = document.createElement('div');
+              _sentBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--sent';
+              const _textSpan = document.createElement('span');
+              _textSpan.className = 'ski-idle-bubble-text';
+              _textSpan.textContent = msgText || draft.raw || '';
+              const _check = document.createElement('span');
+              _check.className = 'ski-idle-bubble-check';
+              _check.textContent = '\u2713';
+              _check.title = 'Sent';
+              _sentBubble.appendChild(_textSpan);
+              _sentBubble.appendChild(_check);
+              convoEl.appendChild(_sentBubble);
+              convoEl.removeAttribute('hidden');
+              convoEl.scrollTop = convoEl.scrollHeight;
+
+              // Re-expand the convo targeting the actual recipient. If the
+              // user had a previous storm open (e.g. devrel) and just sent
+              // an explicit @superteam message, the header was pinned to
+              // the old counterparty — this re-renders with the new bare
+              // so the identity cards and fetched history match who we
+              // actually messaged. _expandIdleConvo preserves existing
+              // optimistic bubbles (harvests .ski-idle-bubble outerHTML
+              // before re-rendering), so our just-appended ✓ bubble
+              // survives the re-render even if the DO fetch lags.
+              const _freshRecipient = recipients[0];
+              if (_freshRecipient) {
+                try { sessionStorage.setItem('ski:idle-convo', _freshRecipient.toLowerCase()); } catch {}
+                try { localStorage.setItem('ski:idle-convo', _freshRecipient.toLowerCase()); } catch {}
+                _expandIdleConvo(_freshRecipient).catch(() => {});
+              }
+            }
           } catch (txErr) {
-            const txMsg = txErr instanceof Error ? txErr.message : 'Signal failed';
+            const { humanizeThunderError } = await import('./client/thunder.js');
+            const humanized = humanizeThunderError(txErr);
             _thunderComposeStage = 'confirmed';
             _renderThunderComposePreview();
-            if (!txMsg.toLowerCase().includes('reject')) {
+            if (!humanized.silent) {
               // Show failed bubble with retry
               const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
               const failBubble = document.createElement('div');
               failBubble.className = 'ski-idle-bubble ski-idle-bubble--out ski-idle-bubble--failed';
               failBubble.textContent = msgText;
-              failBubble.title = txMsg;
+              // Tooltip surfaces both the human message and the raw error for debugging.
+              const rawMsg = txErr instanceof Error ? txErr.message : String(txErr ?? '');
+              failBubble.title = `${humanized.message}\n\n${rawMsg}`;
               failBubble.style.cursor = 'pointer';
               if (convoEl) { convoEl.appendChild(failBubble); convoEl.removeAttribute('hidden'); convoEl.scrollTop = convoEl.scrollHeight; }
               failBubble.addEventListener('click', () => {
@@ -11281,14 +11769,14 @@ function bindEvents() {
                 _renderThunderComposePreview();
                 _sendIdleThunder();
               }, { once: true });
-              showToast(txMsg);
+              showToast(humanized.message);
             }
           } finally {
-            if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-thunder-send'; sendBtn.title = 'Send signal'; }
+            if (sendBtn) { sendBtn.innerHTML = origBtnHtml; sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send'; sendBtn.title = `Open Storm to ${nsLabel || ''}`; }
             _renderThunderComposePreview();
           }
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Signal failed';
+          const errMsg = err instanceof Error ? err.message : 'Thunder failed';
           if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
         }
       };
@@ -11330,117 +11818,447 @@ function bindEvents() {
         if (qrEl) qrEl.setAttribute('hidden', '');
       }
 
+      let _convoPollTimer: ReturnType<typeof setInterval> | null = null;
+      let _convoStreamHandle: { close(): void } | null = null;
+      let _convoLastCount = 0;
+
+      // Storm is top-priority UI. When a convo opens, close every
+      // competing panel (squids addr row, roster, rumble provisioning
+      // panel) so the user's attention isn't split across stacked UIs.
+      // Regular function declaration so it hoists alongside the async
+      // function _expandIdleConvo below. `const` arrow functions live
+      // in TDZ until the declaration line runs; if _renderThunderComposePreview
+      // fires during setup and calls _expandIdleConvo (via the auto-open
+      // path), we hit "Cannot access _closeCompetingPanels before
+      // initialization" because the const line hasn't executed yet.
+      function _closeCompetingPanels() {
+        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
+        const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
+        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
+        if (addrRow && !addrRow.hasAttribute('hidden')) {
+          addrRow.setAttribute('hidden', '');
+          try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
+        }
+        if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
+        if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
+        squidBtn?.classList.remove('ski-idle-quick-btn--active');
+      }
+      // ─── Thunder history stale-while-revalidate cache ────────────────
+      // Decrypted messages are cached in localStorage (AES-GCM encrypted)
+      // keyed by groupId so re-opening a storm paints instantly from the
+      // last known state, with a background fetch refreshing the view if
+      // anything changed. The AES key is a non-extractable CryptoKey
+      // persisted in IndexedDB — raw key material never leaves the
+      // browser's crypto store, so a localStorage dump yields ciphertext
+      // alone with no way to recover plaintext.
+      type _ThunderEntry = { text: string; senderAddress: string; createdAt: number; messageId: string };
+      const _THUNDER_HIST_KEY = (gid: string) => `ski:thunder-hist:v2:${gid}`;
+      const _THUNDER_HIST_TTL = 24 * 60 * 60 * 1000;
+      const _IDB_NAME = 'ski-crypto';
+      const _IDB_STORE = 'keys';
+      const _IDB_KEY_ID = 'thunder-hist-aes';
+
+      let _histKeyPromise: Promise<CryptoKey | null> | null = null;
+      const _openHistIdb = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
+        const req = indexedDB.open(_IDB_NAME, 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore(_IDB_STORE); };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const _idbGet = (db: IDBDatabase, k: string) => new Promise<unknown>((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readonly');
+        const req = tx.objectStore(_IDB_STORE).get(k);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const _idbPut = (db: IDBDatabase, k: string, v: unknown) => new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readwrite');
+        tx.objectStore(_IDB_STORE).put(v, k);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      const _getHistKey = (): Promise<CryptoKey | null> => {
+        if (_histKeyPromise) return _histKeyPromise;
+        _histKeyPromise = (async () => {
+          try {
+            const db = await _openHistIdb();
+            let key = await _idbGet(db, _IDB_KEY_ID) as CryptoKey | undefined;
+            if (!key) {
+              key = await crypto.subtle.generateKey(
+                { name: 'AES-GCM', length: 256 },
+                false, // non-extractable — raw bits stay in the browser crypto store
+                ['encrypt', 'decrypt'],
+              );
+              await _idbPut(db, _IDB_KEY_ID, key);
+            }
+            return key;
+          } catch { return null; }
+        })();
+        _histKeyPromise.catch(() => { _histKeyPromise = null; });
+        return _histKeyPromise;
+      };
+      const _bytesToB64 = (u8: Uint8Array): string => btoa(String.fromCharCode(...u8));
+      const _b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+      const _loadThunderHist = async (gid: string): Promise<_ThunderEntry[] | null> => {
+        try {
+          const raw = localStorage.getItem(_THUNDER_HIST_KEY(gid));
+          if (!raw) return null;
+          const env = JSON.parse(raw) as { ts: number; iv: string; ct: string };
+          if (!env?.iv || !env?.ct) return null;
+          if (Date.now() - env.ts > _THUNDER_HIST_TTL) return null;
+          const key = await _getHistKey();
+          if (!key) return null;
+          const iv = _b64ToBytes(env.iv);
+          const ct = _b64ToBytes(env.ct);
+          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+          const entries = JSON.parse(new TextDecoder().decode(pt)) as _ThunderEntry[];
+          return Array.isArray(entries) ? entries : null;
+        } catch { return null; }
+      };
+      const _saveThunderHist = async (gid: string, entries: _ThunderEntry[]): Promise<void> => {
+        try {
+          const key = await _getHistKey();
+          if (!key) return;
+          const trimmed = entries.slice(-20);
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const pt = new TextEncoder().encode(JSON.stringify(trimmed));
+          const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt);
+          localStorage.setItem(_THUNDER_HIST_KEY(gid), JSON.stringify({
+            ts: Date.now(),
+            iv: _bytesToB64(iv),
+            ct: _bytesToB64(new Uint8Array(ct)),
+          }));
+        } catch {}
+      };
+
       async function _expandIdleConvo(counterparty: string) {
+        _closeCompetingPanels();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         if (!convoEl) return;
-        const entries = await _getConversation(counterparty);
-        if (!entries.length) {
-          convoEl.setAttribute('hidden', '');
-          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-          return;
+
+        // Paint the loader IMMEDIATELY so the user sees storm-opening
+        // feedback even while we're waiting on an async wallet address
+        // or SuiNS resolution. Without this, hard refresh races the
+        // wallet reconnect and the storm appears to never open at all.
+        const _hasBubblesBeforeAddr = convoEl.querySelectorAll('.ski-idle-bubble').length > 0;
+        if (!_hasBubblesBeforeAddr) {
+          convoEl.innerHTML = `<div class="ski-idle-convo-loading"><span class="ski-idle-convo-loading-spinner"></span><span class="ski-idle-convo-loading-text">Opening Storm\u2026</span></div>`;
+          convoEl.removeAttribute('hidden');
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--loading');
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
         }
+
+        // Resolve both participants to addresses so the storm groupId is
+        // pinned to immutable identity. Names are display-only — they can
+        // rotate without orphaning history.
+        const myName = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
+        // On hard refresh the wallet address can take a moment to land
+        // (dappkit reconnect is async). Wait up to ~3s for it before
+        // giving up — otherwise the restore path silently bails and
+        // leaves the storm closed.
+        let myAddr = (getState().address || '').toLowerCase();
+        if (!myAddr) {
+          for (let i = 0; i < 30 && !myAddr; i++) {
+            await new Promise(r => setTimeout(r, 100));
+            myAddr = (getState().address || '').toLowerCase();
+          }
+        }
+        if (!myAddr) return;
+        let counterpartyAddr = '';
+        try {
+          const { lookupRecipientAddressCached } = await import('./client/thunder.js');
+          counterpartyAddr = (await lookupRecipientAddressCached(bare)) || '';
+        } catch {}
+        if (!counterpartyAddr) return;
+        const { makeThunderGroupId } = await import('./client/thunder.js');
+        const groupId = makeThunderGroupId(myAddr, counterpartyAddr);
+
+        // Stale-while-revalidate: paint cached history immediately so the
+        // storm feels instant. The fetch below still runs in the background
+        // and re-renders when fresh data arrives (or the cache expires).
+        // Cached plaintext is AES-GCM-encrypted with a non-extractable key
+        // held in IndexedDB — see _loadThunderHist / _getHistKey above.
+        const _hadExistingBubbles = convoEl.querySelectorAll('.ski-idle-bubble').length > 0;
+        if (!_hadExistingBubbles) {
+          // Show loader first; if cache hit resolves quickly it replaces the loader.
+          convoEl.innerHTML = `<div class="ski-idle-convo-loading"><span class="ski-idle-convo-loading-spinner"></span><span class="ski-idle-convo-loading-text">Opening Storm\u2026</span></div>`;
+          convoEl.removeAttribute('hidden');
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--loading');
+          _loadThunderHist(groupId).then(cached => {
+            if (!cached || cached.length === 0) return;
+            // Only paint cache if the convo is still open on the same target
+            // and no real bubbles have arrived yet (fetch may have beat us).
+            if (convoEl.hasAttribute('hidden')) return;
+            if (convoEl.querySelectorAll('.ski-idle-bubble').length > 0) return;
+            const _myAddrLc = (getState().address || '').toLowerCase();
+            const _cachedBubbles = cached.slice(-20).map(m => {
+              const isOut = m.senderAddress.toLowerCase() === _myAddrLc;
+              const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
+              return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${esc(m.text)}</div>`;
+            }).join('');
+            convoEl.innerHTML = `<div class="ski-idle-convo-progress"><div class="ski-idle-convo-progress-fill"></div></div>${_cachedBubbles}`;
+            _idleThunderSend?.classList.remove('ski-idle-thunder-send--loading');
+          }).catch(() => {});
+        }
+        // Snap the send button into its pressed/active state immediately
+        // so the user sees the storm is engaged without waiting for the
+        // fetch round-trip. If the fetch comes back empty and the convo
+        // closes itself, the class is removed on the failure path below.
+        _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+        // Flip the icon to ⚡ "Thunder <name>" now that the convo is
+        // visible — _renderThunderComposePreview reads the open state.
+        _renderThunderComposePreview?.();
+
+        let entries: Array<{ text: string; senderAddress: string; createdAt: number; messageId: string }> = [];
+        try {
+          // Fetch via getThunders so Seal decryption + padding-strip runs.
+          // The raw DO payload is Seal ciphertext — decoding it as text shows
+          // binary garbage. getThunders handles the full envelope pipeline
+          // including legacy (unencrypted) message fallback.
+          const { getThunders } = await import('./client/thunder.js');
+          const result = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+          entries = (result.messages || []).map((m: any) => ({
+            text: m.text || '',
+            senderAddress: m.senderAddress || '',
+            createdAt: m.createdAt ?? Date.now(),
+            messageId: m.messageId || `msg-${m.order}`,
+          }));
+        } catch { /* fallback to empty */ }
+        // Always clear the loading class on the send button once the fetch
+        // settles — the subsequent render replaces the convo innerHTML anyway.
+        _idleThunderSend?.classList.remove('ski-idle-thunder-send--loading');
+
+        // Harvest any optimistic bubbles already in the DOM — a transient
+        // fetch failure (Seal session race, DO cold start) should never wipe
+        // a just-sent message, AND the header/progress bar must still render.
+        const existingBubbleHtml = Array.from(convoEl.querySelectorAll('.ski-idle-bubble'))
+          .map(b => b.outerHTML)
+          .join('');
+
+        // Empty fetch with no optimistic bubbles is a VALID state — a fresh
+        // storm with no history yet. Keep the convo open so the user can
+        // start composing, persist the target for refresh, and keep the
+        // send button in its pressed/active state. Only mark the storm as
+        // actually existing once there's at least one real message.
+        if (entries.length > 0) {
+          _markStormExists(groupId);
+        }
+        // Always mirror the fresh fetch into the encrypted history cache
+        // — even when empty. If we skipped the save for zero-length
+        // fetches, deletes would silently resurrect on next hard refresh
+        // because the stale cache entries would still paint on SWR.
+        if (entries.length > 0) {
+          _saveThunderHist(groupId, entries).catch(() => {});
+        } else {
+          try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+        }
+        _updateIdleStatus();
+        try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
-        // Secret read receipt: check if counterparty has 0 pending signals on-chain.
-        // If we sent them signals and they're gone → they purged them → mark as read.
-        const cBare = counterparty.replace(/\.sui$/, '').toLowerCase();
-        const cPending = _thunderCounts[cBare] ?? 0;
-        const hasUnread = entries.some(e => (e.dir === 'out' || (!e.dir && !e.from)) && !e.read);
-        if (hasUnread && cPending === 0) {
-          // All signals were purged — mark outgoing as read
-          let changed = false;
-          for (const e of entries) {
-            if ((e.dir === 'out' || (!e.dir && !e.from)) && !e.read) {
-              e.read = true;
-              changed = true;
+        // Real-time subscribe (Jolteon Lv. 25): open a WebSocket to the
+        // TimestreamAgent DO. The DO broadcasts an event on every state
+        // change (new thunder, edit, delete, purge) and we re-expand
+        // the convo to re-render. Falls back to 2s polling if the WS
+        // drops for more than 5s consecutive so delivery never stalls.
+        _convoLastCount = entries.length;
+        if (_convoPollTimer) clearInterval(_convoPollTimer);
+        if (_convoStreamHandle) { try { _convoStreamHandle.close(); } catch {} _convoStreamHandle = null; }
+
+        let _wsHealthy = false;
+        let _wsDropAt = 0;
+        const _startPollFallback = () => {
+          if (_convoPollTimer) return;
+          _convoPollTimer = setInterval(async () => {
+            const _cEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+            if (!_cEl || _cEl.hasAttribute('hidden')) {
+              if (_convoPollTimer) { clearInterval(_convoPollTimer); _convoPollTimer = null; }
+              return;
             }
-          }
-          if (changed) {
-            // Persist the read flags back to encrypted log
             try {
-              const ws = getState();
-              if (ws.address) {
-                const key = await _deriveThunderKey(ws.address);
-                const all = await _readThunderLog();
-                const cAddr = entries[0]?.addr;
-                for (const entry of all) {
-                  if ((entry.dir === 'out' || (!entry.dir && !entry.from))) {
-                    const toBare = (entry.to || '').replace(/\.sui$/i, '').toLowerCase();
-                    if (toBare === cBare || (cAddr && entry.addr === cAddr)) {
-                      entry.read = true;
-                    }
-                  }
-                }
-                const plaintext = new TextEncoder().encode(JSON.stringify(all));
-                const iv = crypto.getRandomValues(new Uint8Array(12));
-                const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
-                localStorage.setItem(`ski:thunder-log:${ws.address}`, JSON.stringify({
-                  ct: btoa(String.fromCharCode(...ct)),
-                  iv: btoa(String.fromCharCode(...iv)),
-                }));
+              const _pRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/fetch`, {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limit: 50, address: getState().address || '' }),
+              });
+              if (!_pRes.ok) return;
+              const _pData = await _pRes.json() as { messages: any[] };
+              if (_pData.messages.length !== _convoLastCount) {
+                _convoLastCount = _pData.messages.length;
+                _expandIdleConvo(bare);
               }
-            } catch { /* best effort */ }
-          }
+            } catch {}
+          }, 2000);
+        };
+
+        const _stopPollFallback = () => {
+          if (_convoPollTimer) { clearInterval(_convoPollTimer); _convoPollTimer = null; }
+        };
+
+        try {
+          const { subscribeThunderStream } = await import('./client/thunder.js');
+          _convoStreamHandle = subscribeThunderStream({
+            groupId,
+            onOpen: () => {
+              _wsHealthy = true;
+              _wsDropAt = 0;
+              _stopPollFallback();
+            },
+            onClose: () => {
+              _wsHealthy = false;
+              _wsDropAt = Date.now();
+              // Start polling as a short-term safety net. The subscribe
+              // handle will auto-reconnect in the background; once it
+              // succeeds, onOpen kills the poll again.
+              setTimeout(() => {
+                if (!_wsHealthy && Date.now() - _wsDropAt >= 5000) _startPollFallback();
+              }, 5000);
+            },
+            onEvent: (ev) => {
+              // Guard: only re-render if the convo is still open on
+              // the same target. Closed convo → ignore push.
+              const _cEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+              if (!_cEl || _cEl.hasAttribute('hidden')) return;
+              if (ev.kind === 'snapshot') {
+                _convoLastCount = (ev.messages || []).length;
+              } else if (ev.kind === 'thunder') {
+                _convoLastCount++;
+                _expandIdleConvo(bare);
+              } else if (ev.kind === 'edit') {
+                _expandIdleConvo(bare);
+              } else if (ev.kind === 'delete') {
+                _convoLastCount = Math.max(0, _convoLastCount - 1);
+                _expandIdleConvo(bare);
+              } else if (ev.kind === 'purge') {
+                _convoLastCount = 0;
+                // Wipe the convo + close. Other side purged.
+                _cEl.innerHTML = '';
+                _cEl.setAttribute('hidden', '');
+                _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+                try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+                try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+              }
+            },
+          });
+        } catch (e) {
+          console.warn('[thunder] subscribe failed, falling back to poll:', e);
+          _startPollFallback();
         }
 
-        const bubbles = entries.slice(-20).map(e => {
-          const isOut = e.dir === 'out' || (!e.dir && !e.from);
-          let msgText = e.msg;
-          if (!isOut && !e.dir) msgText = msgText.replace(/^\u26a1 from [^:]+:\s*/, '');
+        // Render Timestream messages as bubbles with reverse lookup
+        const ws = getState();
+        void ws;
+        // myAddr already bound at function entry for group-id resolution.
+
+        // Resolve sender names via reverse lookup (batch, cached)
+        const _rlCache: Record<string, string> = {};
+        if (myAddr) _rlCache[myAddr] = myName || myAddr.slice(0, 8);
+        const uniqueAddrs = [...new Set(entries.map(m => m.senderAddress.toLowerCase()).filter(a => !_rlCache[a]))];
+        if (uniqueAddrs.length > 0) {
+          try {
+            const { reverseLookupName } = await import('./client/thunder.js');
+            await Promise.all(uniqueAddrs.map(async addr => {
+              const name = await reverseLookupName(addr);
+              _rlCache[addr] = name || addr.slice(0, 8);
+            }));
+          } catch {}
+        }
+
+        const hasStorm = _stormExistsCache[groupId] === true;
+        // Text-based storm indicator. Z-notation brackets ⟬ ⟭ + monospace text
+        // render reliably across browsers and read as "this is an encrypted
+        // channel" without needing emoji glyphs.
+        const stormLabel = hasStorm ? '\u27EC STORM \u27ED' : '\u27E8 open \u27E9';
+        const fetchedBubbles = entries.slice(-20).map(m => {
+          const isOut = m.senderAddress.toLowerCase() === myAddr;
           const cls = isOut ? 'ski-idle-bubble--out' : 'ski-idle-bubble--in';
-          const readCls = isOut && e.read ? ' ski-idle-bubble--read' : '';
-          const freshCls = _freshQuestTs.has(e.ts) ? ' ski-idle-bubble--fresh' : '';
-          // Show which SuiNS name sent/received — links to their SUIAMI
-          const suiamiName = isOut ? (e.to || '').replace(/\.sui$/, '') : (e.from || '').replace(/\.sui$/, '');
-          const suiamiUrl = suiamiName ? `https://sui.ski/?suiami=${encodeURIComponent(suiamiName)}` : '';
-          const arrow = isOut ? '\u2192' : '\u2192';
-          const nameLabel = isOut
-            ? (suiamiName ? `${arrow} ${suiamiName}` : '')
-            : (suiamiName ? `${suiamiName} ${arrow}` : '');
-          const nameBadge = nameLabel && suiamiUrl
-            ? `<a class="ski-idle-bubble-name" href="${suiamiUrl}" target="_blank" rel="noopener" title="SUIAMI? I AM ${esc(suiamiName)}">${esc(nameLabel)}</a>`
-            : nameLabel ? `<span class="ski-idle-bubble-name">${esc(nameLabel)}</span>` : '';
-          return `<div class="ski-idle-bubble ${cls}${readCls}${freshCls}" data-ts="${e.ts}">${nameBadge}${esc(msgText)}</div>`;
+          const senderName = _rlCache[m.senderAddress.toLowerCase()] || m.senderAddress.slice(0, 8);
+          const nameTag = !isOut ? `<span class="ski-idle-bubble-sender">${esc(senderName)}</span> ` : '';
+          return `<div class="ski-idle-bubble ${cls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
         }).join('');
-        const bare = counterparty.replace(/\.sui$/, '').toLowerCase();
-        const title = `<div class="ski-idle-convo-title"><a href="https://${esc(bare)}.sui.ski" target="_blank" rel="noopener" title="${esc(bare)}.sui.ski">\u26a1 <span class="ski-idle-convo-name">${esc(bare)}</span><span class="ski-idle-convo-tld">.sui</span></a></div>`;
-        convoEl.innerHTML = title + bubbles;
+        // If the fetch came back empty but we had optimistic bubbles, keep them.
+        const bubbles = fetchedBubbles || existingBubbleHtml;
+        const progress = `<div class="ski-idle-convo-progress"><div class="ski-idle-convo-progress-fill"></div></div>`;
+        // Identity header — two party cards (self + counterparty). Tap a card to
+        // expand a QR popover encoding https://<name>.sui.ski. Proofs live in
+        // the chrome, not the scroll — no handshake messages are ever sent.
+        const _selfName = (myName || '').toLowerCase();
+        const _hasBothNames = !!_selfName && !!bare;
+        // No header row rendered — the name search bar + card above the
+        // convo already show who the storm is with, and the ⚡/Storm action
+        // button in that same row indicates encryption state. The old
+        // identity-card header was redundant duplication.
+        // _hasBothNames and stormLabel are still computed upstream but
+        // intentionally unused here.
+        void _hasBothNames; void stormLabel;
+        const header = '';
+        convoEl.innerHTML = progress + header + bubbles;
+        // Wire the identity header: tap a party card → render a QR popover
+        // encoding https://<name>.sui.ski. The popover is a sibling that lives
+        // inside the convo container and traps clicks to dismiss itself.
+        convoEl.querySelectorAll<HTMLButtonElement>('.ski-convo-party').forEach(btn => {
+          btn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const name = btn.dataset.name || '';
+            if (!name) return;
+            // Dismiss any existing popover first.
+            convoEl.querySelector('.ski-convo-qr-pop')?.remove();
+            const pop = document.createElement('div');
+            pop.className = 'ski-convo-qr-pop';
+            pop.innerHTML = `<div class="ski-convo-qr-pop-name">${esc(name)}.sui</div><div class="ski-convo-qr-pop-slot">\u2026</div>`;
+            convoEl.appendChild(pop);
+            // Dismiss on outside click.
+            const _dismiss = (e: Event) => {
+              if (!pop.contains(e.target as Node)) { pop.remove(); document.removeEventListener('click', _dismiss, true); }
+            };
+            setTimeout(() => document.addEventListener('click', _dismiss, true), 0);
+            try {
+              // Dark modules on a white slot background — white-on-white is invisible.
+              const svg = await getQrSvg(`https://${name}.sui.ski`, '#0a0a0f');
+              const slot = pop.querySelector('.ski-convo-qr-pop-slot') as HTMLElement | null;
+              if (slot) slot.innerHTML = svg;
+            } catch {
+              const slot = pop.querySelector('.ski-convo-qr-pop-slot') as HTMLElement | null;
+              if (slot) slot.textContent = 'QR unavailable';
+            }
+          });
+        });
         convoEl.removeAttribute('hidden');
         convoEl.scrollTop = convoEl.scrollHeight;
+        // Sync the cloud progress bar with scrollTop — only visible if the
+        // convo overflows. Right edge = newest message.
+        const _progressEl = convoEl.querySelector('.ski-idle-convo-progress') as HTMLElement | null;
+        const _progressFill = convoEl.querySelector('.ski-idle-convo-progress-fill') as HTMLElement | null;
+        const _syncProgress = () => {
+          if (!_progressEl || !_progressFill) return;
+          const range = convoEl.scrollHeight - convoEl.clientHeight;
+          if (range <= 2) {
+            // Nothing to scroll — hide the cloud entirely.
+            _progressEl.classList.remove('ski-idle-convo-progress--needed');
+            _progressFill.style.width = '0%';
+            return;
+          }
+          _progressEl.classList.add('ski-idle-convo-progress--needed');
+          const pct = Math.min(100, Math.max(0, (convoEl.scrollTop / range) * 100));
+          _progressFill.style.width = `${pct}%`;
+        };
+        _syncProgress();
+        convoEl.addEventListener('scroll', _syncProgress, { passive: true });
+        // Recompute on next frame in case layout hasn't settled (fonts, QR svg).
+        requestAnimationFrame(_syncProgress);
 
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)
         // Outgoing or local-only → local delete
         let _deleteBusy = false;
-        const _deleteFromLocalLog = async (ts: number) => {
-          const ws = getState();
-          if (!ws.address) return;
-          try {
-            const key = await _deriveThunderKey(ws.address);
-            const storageKey = `ski:thunder-log:${ws.address}`;
-            const raw = localStorage.getItem(storageKey);
-            if (raw) {
-              const { ct, iv } = JSON.parse(raw);
-              const plaintext = await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
-                key, Uint8Array.from(atob(ct), c => c.charCodeAt(0)),
-              );
-              let all: any[] = JSON.parse(new TextDecoder().decode(plaintext));
-              all = all.filter(entry => entry.ts !== ts);
-              const updated = new TextEncoder().encode(JSON.stringify(all));
-              const newIv = crypto.getRandomValues(new Uint8Array(12));
-              const newCt = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: newIv }, key, updated));
-              localStorage.setItem(storageKey, JSON.stringify({ ct: btoa(String.fromCharCode(...newCt)), iv: btoa(String.fromCharCode(...newIv)) }));
-            }
-          } catch {}
-        };
 
         convoEl.querySelectorAll('.ski-idle-bubble').forEach(bubble => {
           bubble.addEventListener('click', async (ev) => {
             ev.stopPropagation();
             if (_deleteBusy) return;
-            const ts = parseInt((bubble as HTMLElement).dataset.ts || '0', 10);
-            if (!ts) return;
+            const msgId = (bubble as HTMLElement).dataset.id || '';
+            if (!msgId) return;
             const isIncoming = (bubble as HTMLElement).classList.contains('ski-idle-bubble--in');
 
             // First tap: confirm (red)
@@ -11469,41 +12287,87 @@ function bindEvents() {
                 const strikeCount = idx >= 0 ? idx + 1 : 1;
 
                 (bubble as HTMLElement).textContent = '\u2026';
-                const { buildStrikeToTreasuryTx } = await import('./client/thunder.js');
-                const txBytes = await buildStrikeToTreasuryTx(ws.address, bare, nftEntry.objectId, strikeCount);
-                await signAndExecuteTransaction(txBytes);
+                // Delete signals locally (SDK handles off-chain message lifecycle)
 
-                // Delete all struck bubbles from local log + DOM
+                // Delete all struck bubbles from DO (awaited) + DOM.
+                // Include senderAddress so the DO participant check
+                // passes, and await so we know the deletes actually
+                // landed before we stop polling.
+                const _myAddrForStrike = getState().address || '';
                 for (let i = 0; i <= idx; i++) {
                   const b = allBubbles[i] as HTMLElement;
-                  const bTs = parseInt(b.dataset.ts || '0', 10);
-                  if (bTs) await _deleteFromLocalLog(bTs);
-                  _freshQuestTs.delete(bTs);
+                  const bId = b.dataset.id || '';
+                  try {
+                    const _r = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ messageId: bId, senderAddress: _myAddrForStrike }),
+                    });
+                    if (!_r.ok) console.warn('[thunder] strike delete rejected:', _r.status, bId);
+                  } catch (e) { console.warn('[thunder] strike delete threw:', e); }
                   b.remove();
                 }
+                // Prune the local encrypted history cache too so hard
+                // refresh can't resurrect struck messages from SWR.
+                try {
+                  const cached = await _loadThunderHist(groupId);
+                  if (cached) {
+                    const struckIds = new Set(allBubbles.slice(0, idx + 1).map(b => (b as HTMLElement).dataset.id || ''));
+                    const pruned = cached.filter(m => !struckIds.has(m.messageId));
+                    if (pruned.length > 0) await _saveThunderHist(groupId, pruned);
+                    else try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+                  }
+                } catch {}
 
                 // Update counts
-                const { getThunderCountsBatch } = await import('./client/thunder.js');
-                const freshCounts = await getThunderCountsBatch([bare]);
-                _thunderCounts[bare] = freshCounts[bare] ?? 0;
+                _thunderCounts[bare] = 0;
                 try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
 
                 showToast(`\u26a1 ${strikeCount} struck \u2014 rebate \u2192 treasury`);
               } else {
-                // Local-only delete
-                await _deleteFromLocalLog(ts);
-                (bubble as HTMLElement).remove();
+                // Delete from DO + remove from DOM. Check the response
+                // so silent 403/500 failures don't leave the message
+                // alive on the DO while the UI pretends it's gone.
+                let _delOk = false;
+                try {
+                  const _delRes = await fetch(`/api/timestream/${encodeURIComponent(groupId)}/delete`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ messageId: msgId, senderAddress: getState().address || '' }),
+                  });
+                  _delOk = _delRes.ok;
+                  if (!_delRes.ok) {
+                    const _txt = await _delRes.text().catch(() => '');
+                    console.warn('[thunder] delete rejected by DO:', _delRes.status, _txt);
+                    showToast(`Delete failed (${_delRes.status}) — message stays`);
+                  }
+                } catch (e) {
+                  console.warn('[thunder] delete fetch threw:', e);
+                  showToast('Delete network failed');
+                }
+                // Also drop the message from the local encrypted history
+                // cache so the next hard-refresh SWR paint doesn't
+                // resurrect it. Without this, the cache can outlive the
+                // DO entry and repopulate the UI on cold load.
+                if (_delOk) {
+                  try {
+                    const cached = await _loadThunderHist(groupId);
+                    if (cached) {
+                      const pruned = cached.filter(m => m.messageId !== msgId);
+                      if (pruned.length > 0) await _saveThunderHist(groupId, pruned);
+                      else try { localStorage.removeItem(_THUNDER_HIST_KEY(groupId)); } catch {}
+                    }
+                  } catch {}
+                  (bubble as HTMLElement).remove();
+                }
               }
-              _freshQuestTs.delete(ts);
-              await _refreshThunderLocalCounts();
+              _freshQuestTs.delete(0);
             } catch (err) {
               const msg = err instanceof Error ? err.message : '';
               // Signal already gone on-chain (struck/expired) — just clean up locally
               if (msg.includes('dynamic_field') || msg.includes('borrow_child_object') || msg.includes('abort code: 1')) {
-                await _deleteFromLocalLog(ts);
                 (bubble as HTMLElement).remove();
-                await _refreshThunderLocalCounts();
-                showToast('Signal already cleared — removed locally');
+                showToast('Thunder already cleared');
               } else if (!msg.toLowerCase().includes('reject')) {
                 showToast(msg || 'Strike failed');
                 (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete');
@@ -11525,10 +12389,6 @@ function bindEvents() {
         if (app.suinsName) ownedSet.add(app.suinsName.replace(/\.sui$/, '').toLowerCase());
 
         const contactSet = new Set<string>();
-        for (const n of Object.keys(_thunderLocalCounts)) {
-          const bare = n.toLowerCase();
-          if (!ownedSet.has(bare)) contactSet.add(bare);
-        }
         for (const n of Object.keys(_thunderCounts)) {
           const bare = n.toLowerCase();
           if (!ownedSet.has(bare)) contactSet.add(bare);
@@ -11651,7 +12511,7 @@ function bindEvents() {
           const opts = _atDropdown.querySelectorAll('.ski-idle-at-option');
           if (e.key === 'ArrowDown') { e.preventDefault(); _atSelectedIdx = Math.min(_atSelectedIdx + 1, opts.length - 1); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); _atSelectedIdx = Math.max(_atSelectedIdx - 1, 0); opts.forEach((o, i) => o.classList.toggle('ski-idle-at-option--active', i === _atSelectedIdx)); }
-          else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') _sendIdleThunder(); return; }
+          else if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); const sel = opts[_atSelectedIdx] as HTMLElement; if (sel) _insertAtName(sel.dataset.name || ''); else if (e.key === 'Enter') { _thunderComposeStage = 'confirmed'; _thunderComposeConfirmedRaw = _idleThunderInput?.value || ''; _sendIdleThunder(); } return; }
           else if (e.key === 'Escape') { _dismissAtDropdown(); return; }
         }
         // Backspace on @name tag — delete the whole name at once, leave just @
@@ -11670,39 +12530,46 @@ function bindEvents() {
             return;
           }
         }
-        if (e.key === 'Enter') { e.preventDefault(); _sendIdleThunder(); }
+        if (e.key === 'Enter') { e.preventDefault(); _thunderComposeStage = 'confirmed'; _thunderComposeConfirmedRaw = _idleThunderInput?.value || ''; _sendIdleThunder(); }
       });
       _idleThunderSend?.addEventListener('click', (e) => {
         e.stopPropagation();
         const convoEl = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
         const hasText = _idleThunderInput?.value.trim();
-        // If convo is open and no text being composed, toggle it closed
-        if (convoEl && !convoEl.hasAttribute('hidden') && !hasText && !_idleThunderSend?.dataset.questMode) {
-          convoEl.setAttribute('hidden', '');
-          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-          return;
-        }
-        // If convo is closed and no text, open it — or pre-fill @tag if no history
-        if (convoEl && convoEl.hasAttribute('hidden') && !hasText) {
-          const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '') || '';
-          if (cardName) {
+        const cardName = _idleOverlay?.querySelector('.ski-idle-card-name')?.textContent?.trim().replace(/\.sui$/, '') || '';
+
+        // If there's already text in the input, this click is a send.
+        if (hasText) { _sendIdleThunder(); return; }
+
+        // No text → "Open Storm" behavior: ensure the convo is visible and
+        // focus the thunder input pre-filled with @name so the user can type
+        // immediately. Clicking ⚡ never closes the convo anymore — it always
+        // moves toward "ready to compose".
+        if (_idleThunderSend?.dataset.questMode) { _sendIdleThunder(); return; }
+
+        if (convoEl && cardName) {
+          // Intentional open via the ⚡ quick action — clear any user-closed flag.
+          _userClosedStorms.delete(cardName.toLowerCase());
+          if (convoEl.hasAttribute('hidden')) {
             _expandIdleConvo(cardName);
-            _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
-            // If no history existed, expandIdleConvo hid it again — show empty convo + pre-fill @tag
             if (convoEl.hasAttribute('hidden')) {
               convoEl.removeAttribute('hidden');
               convoEl.innerHTML = '';
-              _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
             }
-            // Pre-fill thunder input with @cardName if empty
-            if (_idleThunderInput && !_idleThunderInput.value.trim()) {
-              _idleThunderInput.value = `@${cardName} `;
-              _idleThunderInput.focus();
-              _idleThunderInput.setSelectionRange(_idleThunderInput.value.length, _idleThunderInput.value.length);
-            }
+          }
+          _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
+          // Don't pre-fill the thunder input with an @tag — the convo is
+          // open and the implicit recipient is resolved from the visible
+          // storm at send time. Just focus so the user can type straight
+          // into a clean input.
+          if (_idleThunderInput) {
+            _idleThunderInput.focus();
+            _updateThunderRowActive?.();
+            _renderThunderComposePreview?.();
           }
           return;
         }
+
         _sendIdleThunder();
       });
       // Clean up previous listeners (prevents accumulation on overlay recreate)
@@ -11714,7 +12581,8 @@ function bindEvents() {
         e.stopPropagation();
         const t = e.target as HTMLElement;
         if (!t.closest('input') && !t.closest('button') && !t.closest('.ski-idle-at-dropdown')) {
-          _unfreezeGif();
+          // Don't unfreeze if thunder input has content
+          if (!_idleThunderInputEl?.value) _unfreezeGif();
         }
         // Click outside rumble panel → collapse it + deactivate squid button
         if (!t.closest('#ski-idle-rumble-panel') && !t.closest('#ski-idle-rumble') && !t.closest('.ski-idle-rumble-addrs') && !t.closest('[data-action="rumble"]')) {
@@ -11766,7 +12634,78 @@ function bindEvents() {
       };
       window.addEventListener('ski:name-acquired', _onNameAcquired);
 
+      // Primary SuiNS changed — update card + invalidate roster cache
+      window.addEventListener('ski:primary-changed', (e) => {
+        const name = ((e as CustomEvent).detail?.name ?? '').replace(/\.sui$/, '');
+        if (name) {
+          _rosterCache = null;
+          _cardCacheKey = ''; // force refresh
+          _updateIdleCard(name);
+          _updateIdleStatus();
+        }
+      });
+
+      // SUIAMI proof signed (from any path) — update squids button + refresh panel
+      window.addEventListener('suiami:signed', (e) => {
+        const detail = (e as CustomEvent).detail;
+        if (detail?.proof) {
+          _suiamiProofToken = detail.proof;
+          _suiamiVerifyHtml = `<span class="wk-ns-route wk-suiami-verified">\u2713 ${detail.name || ''}.sui</span>`;
+          _cacheSuiamiProof();
+          document.querySelectorAll('.ski-idle-addr-suiami').forEach(btn => {
+            btn.className = 'ski-idle-addr-suiami ski-idle-addr-suiami--verified';
+            btn.innerHTML = '\u2713 SUIAMI';
+            btn.setAttribute('title', 'Click to copy SUIAMI proof');
+          });
+          // If the squids panel (#ski-idle-addr) is currently open, close and reopen to refresh with new SUIAMI state
+          const _addrPanel = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+          if (_addrPanel && !_addrPanel.hasAttribute('hidden')) {
+            // Close: hide the panel
+            _addrPanel.setAttribute('hidden', '');
+            _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.remove('ski-idle-quick-btn--active');
+            // Reopen after a brief tick so the squid button click re-renders with updated proof state
+            setTimeout(() => {
+              const _squidBtn = _idleOverlay?.querySelector('[data-action="rumble"]') as HTMLElement | null;
+              _squidBtn?.click();
+            }, 100);
+          }
+        }
+      });
+
+      // Balance or owned domains updated — refresh card with new data
+      // Ownership changed (e.g. purchased name now in roster)
+      window.addEventListener('ski:ownership-changed', () => {
+        _updateIdleStatus();
+        _cardCacheKey = '';
+        const cardName = app.suinsName?.replace(/\.sui$/, '') || nsLabel || '';
+        if (cardName) _updateIdleCard(cardName);
+      });
+
+      window.addEventListener('ski:balance-updated', () => {
+        _cardCacheKey = ''; // invalidate so it re-renders with new balance
+        // Use current card name (not primary) to avoid overwriting resolved card
+        const cardName = _cardCurrentName || app.suinsName?.replace(/\.sui$/, '') || '';
+        if (cardName) _updateIdleCard(cardName);
+      });
+
       _updateIdleThunderBadge();
+
+      // Restore squids panel if it was open
+      try {
+        if (sessionStorage.getItem('ski:idle-squids') === '1') {
+          setTimeout(() => {
+            (_idleOverlay?.querySelector('[data-action="rumble"]') as HTMLElement)?.click();
+          }, 300);
+        }
+      } catch {}
+
+      // Restore convo if it was open — unconditional. Storm state persists
+      // across hard refresh so the convo pops back as soon as the overlay
+      // mounts, no click or signature required (session key is warmed above).
+      try {
+        const _savedConvo = (localStorage.getItem('ski:idle-convo') || sessionStorage.getItem('ski:idle-convo') || '').toLowerCase();
+        if (_savedConvo) _expandIdleConvo(_savedConvo);
+      } catch {}
 
       // Close the SKI menu so it doesn't show behind the overlay
       if (app.skiMenuOpen) {
@@ -11800,32 +12739,243 @@ function bindEvents() {
 
       try { localStorage.setItem('ski:idle-open', '1'); } catch {}
 
-      // Cache idle video via Cache API for instant playback on subsequent loads
-      const _idleVideo = _idleOverlay.querySelector('video.ski-idle-img') as HTMLVideoElement | null;
-      if (_idleVideo && 'caches' in self) {
-        const vSrc = '/assets/ski-idle.webm';
-        caches.open('ski-media-v1').then(async (cache) => {
-          const cached = await cache.match(vSrc);
-          if (cached) {
-            // Serve from cache — instant
-            const blob = await cached.blob();
-            if (_idleVideoBlobUrl) URL.revokeObjectURL(_idleVideoBlobUrl);
-            _idleVideoBlobUrl = URL.createObjectURL(blob);
-            _idleVideo.src = _idleVideoBlobUrl;
-            _idleVideo.load();
-          } else {
-            // First visit — fetch, cache, and let the video load normally
-            try {
-              const resp = await fetch(vSrc);
-              if (resp.ok) cache.put(vSrc, resp.clone());
-            } catch {}
+      // Idle background videos — user-cyclable list. Click the video to swap
+      // to the next one; choice is persisted in localStorage. New videos can
+      // be added by appending to IDLE_BACKGROUNDS without any other changes.
+      // Drop stale caches from previous bundles (silent transcodes) so users
+      // don't keep playing an audioless copy after we ship an audio version.
+      if ('caches' in self) {
+        caches.keys().then(keys => {
+          for (const k of keys) {
+            if (k.startsWith('ski-media-') && k !== 'ski-media-v3') {
+              caches.delete(k).catch(() => {});
+            }
           }
         }).catch(() => {});
       }
+      const _idleVideo = _idleOverlay.querySelector('video.ski-idle-img') as HTMLVideoElement | null;
+      const IDLE_BACKGROUNDS: Array<{ id: string; webm: string; mp4: string; label: string }> = [
+        { id: 'basmr',    webm: '/assets/basmr.webm',    mp4: '/assets/basmr.mp4',    label: 'BASMR' },
+        { id: 'ski-idle', webm: '/assets/ski-idle.webm', mp4: '/assets/ski-idle.mp4', label: 'SKI Idle' },
+      ];
+      const _loadIdleBg = async (bg: typeof IDLE_BACKGROUNDS[number]) => {
+        if (!_idleVideo) return;
+        if ('caches' in self) {
+          try {
+            const cache = await caches.open('ski-media-v3');
+            const cached = await cache.match(bg.webm);
+            if (cached) {
+              const blob = await cached.blob();
+              if (_idleVideoBlobUrl) URL.revokeObjectURL(_idleVideoBlobUrl);
+              _idleVideoBlobUrl = URL.createObjectURL(blob);
+              _idleVideo.src = _idleVideoBlobUrl;
+              _idleVideo.load();
+            } else {
+              // First visit for this bg — fall back to direct src and warm the cache.
+              _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
+              _idleVideo.load();
+              try {
+                const resp = await fetch(bg.webm);
+                if (resp.ok) await cache.put(bg.webm, resp.clone());
+              } catch {}
+            }
+          } catch {
+            _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
+            _idleVideo.load();
+          }
+        } else {
+          _idleVideo.innerHTML = `<source src="${bg.webm}" type="video/webm"><source src="${bg.mp4}" type="video/mp4">`;
+          _idleVideo.load();
+        }
+        try { localStorage.setItem('ski:idle-bg', bg.id); } catch {}
+      };
+      // Resolve current choice from localStorage (default to first entry).
+      let _currentBgIdx = 0;
+      try {
+        const saved = localStorage.getItem('ski:idle-bg');
+        if (saved) {
+          const idx = IDLE_BACKGROUNDS.findIndex(b => b.id === saved);
+          if (idx >= 0) _currentBgIdx = idx;
+        }
+      } catch {}
+      void _loadIdleBg(IDLE_BACKGROUNDS[_currentBgIdx]);
 
-      // Auto-resolve pre-filled name on overlay open (e.g. restored from localStorage on refresh)
+      // ── Audio: muted-by-default (autoplay constraint), unmute on first
+      // user gesture, persist preference. Browsers block autoplay-with-sound
+      // unconditionally, so the <video> element keeps the `muted` attribute
+      // until the user interacts; once unmuted we remember the choice and
+      // restore it on subsequent overlay opens.
+      // Audio is on by default. Browsers still block unmuted autoplay
+      // without a user gesture, so playback starts muted and flips to
+      // unmuted on the very first pointerdown/keydown/touchstart anywhere
+      // on the page. The only way to persist "off" is to click the mute
+      // toggle — that writes '0' to localStorage and subsequent loads
+      // honor it.
+      let _userPrefersAudio = true;
+      try {
+        const _saved = localStorage.getItem('ski:idle-bg-audio');
+        if (_saved === '0') _userPrefersAudio = false;
+      } catch {}
+      const _setMuted = (muted: boolean) => {
+        if (!_idleVideo) return;
+        _idleVideo.muted = muted;
+        if (!muted) _idleVideo.volume = 1;
+        // Update the toggle's visual state.
+        const icon = _idleOverlay?.querySelector('.ski-idle-audio-toggle') as HTMLElement | null;
+        if (icon) {
+          icon.textContent = muted ? '\u{1F507}' : '\u{1F50A}';
+          icon.classList.toggle('ski-idle-audio-toggle--on', !muted);
+          icon.title = muted ? 'Unmute background audio' : 'Mute background audio';
+        }
+      };
+      const _tryUnmuteOnGesture = () => {
+        if (!_userPrefersAudio || !_idleVideo) return;
+        _setMuted(false);
+        // Some browsers also pause on src reload — kick playback in case.
+        _idleVideo.play().catch(() => { /* still gated, will retry on next gesture */ });
+      };
+      _setMuted(true); // always start muted so autoplay works
+      // Optimistic unmute attempt right now — on high-engagement sites
+      // (e.g. a previous visit) browsers may allow it with no gesture.
+      // play() throws silently if blocked; no harm in trying.
+      if (_userPrefersAudio && _idleVideo) {
+        requestAnimationFrame(() => {
+          if (!_idleVideo) return;
+          _idleVideo.muted = false;
+          _idleVideo.play().then(() => { _setMuted(false); }).catch(() => {
+            // Blocked — re-mute and wait for a gesture.
+            _idleVideo!.muted = true;
+          });
+        });
+      }
+      // First gesture anywhere on the page lifts the mute. Listening at
+      // the document level so any movement or tap unblocks audio — not
+      // just clicks inside the overlay. Mousemove is included because
+      // most browsers accept a pointer movement inside the document as
+      // "user activation" for autoplay purposes.
+      const _unmuteEvents = ['pointerdown', 'pointermove', 'mousemove', 'keydown', 'touchstart'] as const;
+      const _unmuteOnce = (ev: Event) => {
+        void ev;
+        if (!_userPrefersAudio || !_idleVideo) return;
+        if (!_idleVideo.muted) return; // already unmuted
+        _setMuted(false);
+        _idleVideo.play().catch(() => { /* still gated, next gesture will try again */ });
+      };
+      for (const _ev of _unmuteEvents) {
+        document.addEventListener(_ev, _unmuteOnce, { passive: true });
+      }
+
+      // Small mute / unmute toggle in the corner of the video.
+      const _audioToggle = document.createElement('button');
+      _audioToggle.className = 'ski-idle-audio-toggle';
+      _audioToggle.type = 'button';
+      _audioToggle.title = 'Toggle background audio';
+      _audioToggle.textContent = '\u{1F507}';
+      _idleOverlay?.appendChild(_audioToggle);
+      _audioToggle.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!_idleVideo) return;
+        // Plain mute/unmute toggle — the audio toggle no longer cycles
+        // the background video. Whatever's playing stays playing.
+        const nextMuted = !_idleVideo.muted;
+        _setMuted(nextMuted);
+        _userPrefersAudio = !nextMuted;
+        try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
+        if (!nextMuted) {
+          // Resume playback under user gesture so browsers lift the
+          // autoplay mute gate. Catch + ignore if still blocked.
+          try { await _idleVideo.play(); } catch {}
+        }
+      });
+
+      // ─── Storm purge (×) — bulk-clear all messages in the open storm ──
+      // First click: arms the purge (all bubbles turn red, button goes
+      //   red, 3-second disarm timer starts).
+      // Second click (within the window): deletes every visible message
+      //   from the DO + prunes the local encrypted cache + closes the
+      //   convo. The storm group itself is NOT archived — just its
+      //   message history is wiped.
+      let _purgeArmedTimer: ReturnType<typeof setTimeout> | null = null;
+      const _disarmPurge = () => {
+        const _convoElDisarm = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        _convoElDisarm?.classList.remove('ski-idle-thunder-convo--purge-armed');
+        _idleStormPurgeBtn?.classList.remove('ski-idle-storm-purge--armed');
+        if (_purgeArmedTimer) { clearTimeout(_purgeArmedTimer); _purgeArmedTimer = null; }
+      };
+      _idleStormPurgeBtn?.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const convoElPurge = _idleOverlay?.querySelector('#ski-idle-thunder-convo') as HTMLElement | null;
+        if (!convoElPurge || convoElPurge.hasAttribute('hidden')) return;
+        const bubbles = Array.from(convoElPurge.querySelectorAll<HTMLElement>('.ski-idle-bubble'));
+        if (bubbles.length === 0) return;
+
+        // First click — arm.
+        if (!_idleStormPurgeBtn.classList.contains('ski-idle-storm-purge--armed')) {
+          convoElPurge.classList.add('ski-idle-thunder-convo--purge-armed');
+          _idleStormPurgeBtn.classList.add('ski-idle-storm-purge--armed');
+          if (_purgeArmedTimer) clearTimeout(_purgeArmedTimer);
+          _purgeArmedTimer = setTimeout(_disarmPurge, 3000);
+          return;
+        }
+
+        // Second click — fire. Use the DO's bulk purge endpoint so we
+        // hit EVERY stored thunder in the group, not just the ones
+        // currently rendered as bubbles.
+        _disarmPurge();
+        const _bare = (nsLabel || '').toLowerCase();
+        const _myAddrPurge = getState().address || '';
+        const _myHexPurge = _myAddrPurge.toLowerCase().replace(/^0x/, '').slice(0, 14);
+        const _tgtHexPurge = (nsTargetAddress || '').toLowerCase().replace(/^0x/, '').slice(0, 14);
+        if (!_myHexPurge || !_tgtHexPurge) return;
+        const _purgeGid = `t-${[_myHexPurge, _tgtHexPurge].sort().join('')}`;
+        _idleStormPurgeBtn.disabled = true;
+        _idleStormPurgeBtn.textContent = '\u2026';
+        let _purgedCount = 0;
+        let _ok = false;
+        try {
+          const r = await fetch(`/api/timestream/${encodeURIComponent(_purgeGid)}/purge-all`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ senderAddress: _myAddrPurge }),
+          });
+          const _body = await r.text();
+          if (r.ok) {
+            const j = (() => { try { return JSON.parse(_body); } catch { return {}; } })() as { purged?: number };
+            _purgedCount = j.purged ?? bubbles.length;
+            _ok = true;
+          } else {
+            console.warn('[thunder] purge-all rejected:', r.status, _body, 'gid:', _purgeGid, 'addr:', _myAddrPurge);
+          }
+        } catch (e) { console.warn('[thunder] purge-all threw:', e); }
+
+        if (_ok) {
+          // Drop the local encrypted history cache entry entirely.
+          try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
+          // Strip bubbles from the DOM.
+          for (const b of bubbles) b.remove();
+          // Close the convo + clear the saved-convo pointer so the next
+          // refresh doesn't try to re-open an empty storm.
+          convoElPurge.setAttribute('hidden', '');
+          convoElPurge.innerHTML = '';
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+          if (_bare) _userClosedStorms.add(_bare);
+          showToast(`\u{1F9F9} Storm purged (${_purgedCount})`);
+        } else {
+          showToast('Purge failed — messages still on DO');
+        }
+        _idleStormPurgeBtn.disabled = false;
+        _idleStormPurgeBtn.textContent = '\u2715';
+        _renderThunderComposePreview?.();
+      });
+
+      // Auto-resolve pre-filled name on overlay open (e.g. restored from
+      // localStorage on refresh). Also auto-open storm so the convo is
+      // visible without a click — no signature needed because the Seal
+      // session key was warmed on wallet connect.
       if (_idleNsInput?.value && _idleNsInput.value.length >= 3 && isValidNsLabel(_idleNsInput.value)) {
         fetchAndShowNsPrice(_idleNsInput.value).catch(() => {});
+        _expandIdleConvo(_idleNsInput.value).catch(() => {});
       }
 
       // Match header width to overlay width
@@ -11837,6 +12987,7 @@ function bindEvents() {
           if (hdr) hdr.style.setProperty('--ski-header-w', `${overlayW + 16}px`); // +16 for header padding
         }
       });
+
   };
 
   const _resetIdle = () => {
@@ -11854,6 +13005,7 @@ function bindEvents() {
   // On disconnect, kill the idle timer so overlay doesn't reappear
   window.addEventListener('ski:wallet-disconnected', () => {
     if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+    import('./client/thunder.js').then(({ resetThunderClient }) => resetThunderClient()).catch(() => {});
   });
 
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
@@ -11984,6 +13136,18 @@ export function initUI() {
       window.dispatchEvent(new CustomEvent('ski:wallet-connected', {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
+
+      // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO).
+      // Immediately warm the Seal session key so the first convo open doesn't
+      // stall on a signature round-trip — on refresh this restores from
+      // localStorage with zero prompts.
+      import('./client/thunder.js').then(({ initThunderClient, warmThunderSession }) => {
+        initThunderClient({
+          address: ws.address,
+          signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
+        });
+        warmThunderSession().catch(() => {});
+      }).catch(() => {});
 
       // Execute Prism intent if one was stored from ?prism= URL
       (async () => {

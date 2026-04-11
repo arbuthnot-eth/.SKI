@@ -348,7 +348,15 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  return withBackpackRetry(() => {
+  // Wallets sometimes hang indefinitely on signPersonalMessage (WaaP in
+  // particular, when its iframe's message channel is in a bad state).
+  // Race each attempt against a 30s timeout; if WaaP times out we also
+  // tear down and re-register the iframe before a second attempt, which
+  // recovers from the "target origin mismatch" dead state without a
+  // full page refresh.
+  const timeoutMs = 30_000;
+  const isWaaP = /waap|silk/i.test(wallet.name);
+  const doSign = () => withBackpackRetry(() => {
     if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
     if (!('sui:signPersonalMessage' in wallet.features)) {
       throw new Error(`${wallet.name} does not support personal message signing`);
@@ -358,6 +366,44 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
     };
     return feat.signPersonalMessage({ message, account });
   });
+  const withTimeout = () => Promise.race([
+    doSign(),
+    new Promise<{ bytes: string; signature: string }>((_, reject) =>
+      setTimeout(() => reject(new Error(`${wallet.name} signPersonalMessage timed out after ${timeoutMs / 1000}s`)), timeoutMs),
+    ),
+  ]);
+
+  try {
+    return await withTimeout();
+  } catch (err) {
+    if (!isWaaP) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    const isTimeout = /timed out/i.test(msg);
+    // WaaP's signing backend occasionally returns 400 with "Failed to
+    // generate signature due to unknown server error" — usually a
+    // stale iframe session state. Treat it the same as a timeout:
+    // tear down the iframe, re-register, retry once.
+    const isBackend400 = /backend error\s*\(400\)/i.test(msg)
+      || /failed to generate signature/i.test(msg)
+      || /unknown server error/i.test(msg);
+    if (!isTimeout && !isBackend400) throw err;
+    console.warn('[wallet] WaaP signPersonalMessage failed, reinit + retry:', msg);
+    try {
+      const { reinitWaaP } = await import('./waap.js');
+      await reinitWaaP();
+    } catch { /* best-effort */ }
+    try {
+      return await withTimeout();
+    } catch (retryErr) {
+      const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      // Surface a cleaner second-attempt failure so the upstream
+      // toast doesn't parrot WaaP's opaque "unknown server error".
+      if (/backend error\s*\(400\)/i.test(retryMsg) || /failed to generate signature/i.test(retryMsg)) {
+        throw new Error('Wallet signing service is having trouble. Refresh the page and try again — if it persists, check your WaaP session.');
+      }
+      throw retryErr;
+    }
+  }
 }
 
 // ─── Signature padding ──────────────────────────────────────────────

@@ -370,13 +370,6 @@ window.addEventListener('ski:request-suiami', async (e) => {
   try {
     const { buildSuiamiMessage, createSuiamiProof } = await import('./suiami.js');
 
-    // Get chain-specific address from app state
-    const appState = getAppState();
-    const chainAddr = network === 'btc' ? appState.btcAddress
-      : network === 'sol' ? appState.solAddress
-      : network === 'eth' ? appState.ethAddress
-      : '';
-
     // Look up SuiNS NFT ID and expiry for the primary name
     let nftId = '';
     let expiresInDays = 0;
@@ -409,44 +402,74 @@ window.addEventListener('ski:request-suiami', async (e) => {
       } catch { /* non-fatal */ }
     }
 
-    const raw = buildSuiamiMessage(name, ws.address, nftId);
-    if (name === 'nobody') raw.suiami = 'I am nobody';
-    // Reorder fields: suiami, datetime, chain, chainAddress, ski, network, address, ...rest
-    const message: any = {
-      suiami: raw.suiami,
-      datetime: raw.datetime,
-      chain: network || 'sui',
-      ...(chainAddr ? { chainAddress: chainAddr } : {}),
-      ski: raw.ski,
-      network: raw.network,
-      address: raw.address,
-      nftId: nftId || '',
-      ...(expiresInDays > 0 ? { expiresInDays } : {}),
-      timestamp: raw.timestamp,
-      version: raw.version,
-    };
+    // V2 unified message with all chain addresses
+    const appState = getAppState();
+    const message = buildSuiamiMessage(name, ws.address, nftId, {
+      btc: appState.btcAddress || undefined,
+      sol: appState.solAddress || undefined,
+      eth: appState.ethAddress || undefined,
+    });
+    if (name === 'nobody') message.suiami = 'I am nobody';
 
     const msgBytes = new TextEncoder().encode(JSON.stringify(message, null, 2));
     const { bytes, signature } = await signPersonalMessage(msgBytes);
     const proof = createSuiamiProof(message, bytes, signature);
 
+    // Verify server-side + update squids button
     try {
-      await navigator.clipboard.writeText(proof.token);
+      const verifyRes = await fetch('/api/suiami/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: proof.token }),
+      });
+      const v = await verifyRes.json() as { valid?: boolean };
+      if (v.valid) {
+        showToast(`${name}.sui \u2014 SUIAMI verified \u2713`);
+      } else {
+        showToast(`${name}.sui \u2014 SUIAMI signed \u2713`);
+      }
     } catch {
-      const ta = document.createElement('textarea');
-      ta.value = proof.token;
-      ta.style.cssText = 'position:fixed;left:-9999px';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
+      showToast(`${name}.sui \u2014 SUIAMI signed \u2713`);
     }
 
-    showToast(`${network}@${name} \u2014 SUIAMI proof copied \u2713`);
-
     window.dispatchEvent(new CustomEvent('suiami:signed', {
-      detail: { proof: proof.token, message: proof.message, signature: proof.signature, name, address: ws.address, network },
+      detail: { proof: proof.token, message: proof.message, signature: proof.signature, name, address: ws.address },
     }));
+
+    // Write SUIAMI attestation on-chain (Roster v3). Always writes — even
+    // if the user hasn't rumbled cross-chain addresses yet — so their
+    // IdentityRecord (name + Sui address) exists on-chain. If cross-chain
+    // addresses are present, they're uploaded to Walrus first and the blob
+    // ID is included in the record.
+    try {
+      const { uploadRosterBlob } = await import('./client/roster.js');
+      const { maybeAppendRoster } = await import('./suins.js');
+      const appSt = getAppState();
+      const blobData: Record<string, string> = {};
+      if (appSt.btcAddress) blobData.btc = appSt.btcAddress;
+      if (appSt.ethAddress) blobData.eth = appSt.ethAddress;
+      if (appSt.solAddress) blobData.sol = appSt.solAddress;
+      let blobId = '';
+      if (Object.keys(blobData).length > 0) {
+        try { blobId = await uploadRosterBlob(blobData); } catch (walErr) {
+          console.warn('[suiami] Walrus blob upload failed, proceeding without cross-chain:', walErr);
+        }
+      }
+      const { Transaction } = await import('@mysten/sui/transactions');
+      const tx = new Transaction();
+      maybeAppendRoster(tx, ws.address, name, undefined, blobId);
+      const { digest } = await signAndExecuteTransaction(tx);
+      console.log('[suiami] roster attestation written:', digest);
+      showToast(`\u2713 SUIAMI on-chain for ${name}.sui`);
+    } catch (rosterErr) {
+      const msg = rosterErr instanceof Error ? rosterErr.message : String(rosterErr);
+      console.error('[suiami] roster write failed:', rosterErr);
+      // Don't fail the whole SUIAMI flow — the off-chain proof is still
+      // valid even if the on-chain attestation couldn't be written.
+      if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+        showToast(`SUIAMI saved \u2014 on-chain attest failed: ${msg.slice(0, 80)}`);
+      }
+    }
   } catch (err) {
     console.error('[suiami] Error:', err);
     showToast(err instanceof Error ? err.message : 'SUIAMI signing failed');
@@ -597,7 +620,23 @@ initUI();
 // Start WaaP loading immediately — don't wait for window.load.
 // The preflight fetch inside registerWaaP is non-blocking and the SDK init
 // is fast, so this shaves seconds off the time the modal shows stale state.
-import('./waap.js').then(({ registerWaaP }) => registerWaaP()).catch(() => {});
+import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
+  registerWaaP();
+  // Expose a console helper so users stuck in an INVALID_DEVICE_SESSION
+  // state can recover without a browser-wide localStorage wipe. Usage:
+  //     ski.resetWaaP()     // nuclear reset + reinit
+  //     ski.reinitWaaP()    // just re-register the iframe
+  try {
+    (window as any).ski = Object.assign((window as any).ski || {}, {
+      resetWaaP: async () => {
+        await purgeWaaPState();
+        await registerWaaP();
+        console.log('[.SKI] WaaP state purged and re-registered. Refresh the page to reconnect from scratch.');
+      },
+      reinitWaaP,
+    });
+  } catch {}
+}).catch(() => {});
 
 // Handle ?splash= URL param for cross-device Splash sponsorship
 (async () => {

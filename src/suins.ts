@@ -18,8 +18,7 @@ import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
 /** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
-  // Roster piggyback disabled — v2 contract hits abort on upsert, needs debugging
-  // maybeAppendRoster(tx);
+  maybeAppendRoster(tx);
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -54,8 +53,8 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
 }
 
 // ─── SUIAMI Roster piggyback ──────────────────────────────────────────
-const ROSTER_PKG = '0xef4fa3fa12a1413cf998ea8b03348281bb9edd09f21a0a245a42b103a2e9c3b4'; // v2: chain address reverse lookup
-const ROSTER_OBJ = '0xf382a0e687f03968e80483dca5e82278278396b2d1028e0c1cee63968a62d689';
+const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa'; // v3: +walrus_blob_id, seal_nonce, verified
+const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
 /**
  * Append a Roster set_identity call to an existing Transaction — only if
@@ -74,16 +73,16 @@ export function maybeAppendRoster(
   address?: string,
   name?: string | null,
   crossChain?: { btc?: string; eth?: string; sol?: string },
+  walrusBlobId?: string,
+  sealNonce?: number[],
 ): boolean {
   // Auto-detect address and name if not provided
   const addr = address || (() => { try { const s = localStorage.getItem('ski:session'); return s ? JSON.parse(s).address : ''; } catch { return ''; } })();
   const nm = ((name || (() => { try { return localStorage.getItem(`ski:suins:${addr}`) || ''; } catch { return ''; } })()) as string).replace(/\.sui$/, '');
   if (!nm || !addr) return false;
 
+  // Only SUI address goes on-chain; cross-chain addresses live in the Walrus blob
   const chains: [string, string][] = [['sui', addr]];
-  if (crossChain?.btc) chains.push(['btc', crossChain.btc]);
-  if (crossChain?.eth) chains.push(['eth', crossChain.eth]);
-  if (crossChain?.sol) chains.push(['sol', crossChain.sol]);
 
   // Skip if unchanged since last write
   const rosterKey = `ski:roster:${addr}`;
@@ -105,6 +104,8 @@ export function maybeAppendRoster(
       tx.pure.vector('string', chains.map(c => c[0])),
       tx.pure.vector('string', chains.map(c => c[1])),
       tx.pure.vector('address', []), // dwallet_caps — TODO: populate from IKA state
+      tx.pure.string(walrusBlobId || ''),
+      tx.pure.vector('u8', sealNonce || []),
       tx.object('0x6'),
     ],
   });
@@ -138,6 +139,62 @@ export async function readRoster(name: string): Promise<Record<string, string> |
       result[key] = value;
     }
     return Object.keys(result).length > 0 ? result : null;
+  } catch { return null; }
+}
+
+/** Full identity record returned by address-based roster lookup. */
+export interface RosterRecord {
+  name: string;
+  sui_address: string;
+  chains: Record<string, string>;
+  walrus_blob_id: string;
+  seal_nonce: number[];
+  verified: boolean;
+  dwallet_caps: string[];
+  updated_ms: string;
+}
+
+/**
+ * Read the full identity record from the SUIAMI Roster by Sui address.
+ * Uses the address-keyed dynamic field (second index).
+ * Returns null if no record exists for this address.
+ */
+export async function readRosterByAddress(address: string): Promise<RosterRecord | null> {
+  // Normalize to 0x-prefixed 64-hex-char address, then convert to 32 raw bytes
+  const norm = normalizeSuiAddress(address);
+  const hex = norm.replace(/^0x/, '');
+  const raw = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    raw[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  const addrB64 = btoa(String.fromCharCode(...raw));
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${ROSTER_OBJ}") { dynamicField(name: { type: "address", bcs: "${addrB64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const record = gql?.data?.object?.dynamicField?.value?.json;
+    if (!record) return null;
+    const chains: Record<string, string> = {};
+    if (record.chains?.contents) {
+      for (const { key, value } of record.chains.contents) {
+        chains[key] = value;
+      }
+    }
+    return {
+      name: record.name ?? '',
+      sui_address: record.sui_address ?? '',
+      chains,
+      walrus_blob_id: record.walrus_blob_id ?? '',
+      seal_nonce: record.seal_nonce ?? [],
+      verified: record.verified ?? false,
+      dwallet_caps: record.dwallet_caps ?? [],
+      updated_ms: record.updated_ms ?? '0',
+    };
   } catch { return null; }
 }
 
@@ -1374,6 +1431,7 @@ export async function buildKioskPurchaseTx(
   sellerKioskId: string,
   nftId: string,
   priceMist: string,
+  domainName?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1404,6 +1462,14 @@ export async function buildKioskPurchaseTx(
       transferRequest,
     ],
   });
+
+  // Set target address + default in the same PTB (single sign)
+  if (domainName) {
+    const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+    const suinsTx = new SuinsTransaction(suinsClient, tx);
+    suinsTx.setTargetAddress({ nft, address: walletAddress });
+    suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
+  }
 
   // Transfer NFT directly to buyer (SuiNS needs AddressOwner, not kiosk)
   tx.transferObjects([nft], tx.pure.address(walletAddress));
@@ -1451,6 +1517,8 @@ export async function buildTradeportPurchaseTx(
   rawAddress: string,
   nftTokenId: string,
   priceMist: string,
+  /** If provided, setTargetAddress + setDefault in the same PTB */
+  domainName?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1473,7 +1541,7 @@ export async function buildTradeportPurchaseTx(
     tx.setSender(walletAddress);
     // Tradeport buy expects EXACTLY the listing price — commission is deducted from seller's portion
     const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
-    tx.moveCall({
+    const nft = tx.moveCall({
       target: `${v.pkg}::${v.fn}`,
       typeArguments: [SUINS_REG_TYPE],
       arguments: [
@@ -1484,6 +1552,14 @@ export async function buildTradeportPurchaseTx(
     });
     // buy consumes the entire coin — destroy the zero remainder
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
+    // Set target address + default in the same PTB (single sign)
+    if (domainName) {
+      const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+      const suinsTx = new SuinsTransaction(suinsClient, tx);
+      suinsTx.setTargetAddress({ nft, address: walletAddress });
+      suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
+    }
+    tx.transferObjects([nft], tx.pure.address(walletAddress));
     return buildWithTx(tx, transport);
   });
 

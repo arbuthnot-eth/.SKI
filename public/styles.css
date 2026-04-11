@@ -4392,6 +4392,29 @@ a.ski-idle-bubble-name:hover {
   color: #93c5fd;
 }
 .ski-idle-thunder-send--quest:hover { background: rgba(77, 162, 255, 0.35); }
+/* Valid-amount state: the send button flips to a green ▶ triangle
+ * so the user knows the amount parsed AND is within budget, ready
+ * to fire on Enter. Takes precedence over --convo-open when both
+ * are set (amount → transfer intent wins over storm-open hint). */
+.ski-idle-thunder-send--amount {
+  background: rgba(34, 197, 94, 0.35) !important;
+  border-color: rgba(34, 197, 94, 0.95) !important;
+  color: #22c55e !important;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35), 0 0 12px rgba(34, 197, 94, 0.55) !important;
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+.ski-idle-thunder-send--amount:hover {
+  background: rgba(34, 197, 94, 0.5) !important;
+}
+/* Over-budget state: red, disabled vibe (not actually disabled —
+ * the user can still press to see the error toast). */
+.ski-idle-thunder-send--over {
+  background: rgba(239, 68, 68, 0.3) !important;
+  border-color: rgba(239, 68, 68, 0.7) !important;
+  color: #fca5a5 !important;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35) !important;
+}
 .ski-idle-thunder-count {
   display: inline-flex;
   align-items: center;

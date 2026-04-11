@@ -10086,24 +10086,38 @@ function bindEvents() {
         _thunderRow?.classList.toggle('ski-idle-thunder-row--active', active);
         if (_thunderClearBtn) _thunderClearBtn.style.display = val ? '' : 'none';
         // Icon swap:
-        //   - text present → ⚡ bolt (send thunder)
-        //   - empty + storm convo already open in UI → ⚡ bolt (ready to thunder)
+        //   - valid amount AND not over budget → ▶ green play (send transfer)
+        //   - text present (no amount) → ⚡ bolt (send thunder)
+        //   - empty + storm convo already open → ⚡ bolt (ready to thunder)
         //   - empty + storm closed → ⛈️ cloud (open storm)
         // Skip when in quest mode or mid-send — those paths set their own content.
         const _sendBtnEl = _idleThunderSend as HTMLElement | null;
-        if (_sendBtnEl && !_sendBtnEl.dataset.questMode && !_sendBtnEl.querySelector('.ski-idle-thunder-spinner')) {
-          const _hasSendableText = val.replace(/@[a-z0-9-]+/gi, '').trim().length > 0;
-          const _convoOpen = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
-          const _nextIcon = (_hasSendableText || _convoOpen) ? '\u26a1' : '\u26c8\ufe0f';
-          if (!_sendBtnEl.innerHTML.includes(_nextIcon)) {
-            _sendBtnEl.innerHTML = _nextIcon;
-          }
-        }
-        // Color modes: green (valid amount), red (over budget), yellow (thunder only)
+        // Compute amount validity up-front so the icon swap and the
+        // color mirror below share the same parse.
         const hasAmount = val.includes('$');
         const hasAt = val.includes('@');
         const parsedAmt = hasAmount ? parseFloat((val.match(/\$(\d+(?:\.\d*)?)/) ?? [])[1] ?? '') : NaN;
         const overBudget = hasAmount && !isNaN(parsedAmt) && parsedAmt > (app.usd ?? 0);
+        const validAmount = hasAmount && !isNaN(parsedAmt) && parsedAmt > 0 && !overBudget;
+        if (_sendBtnEl && !_sendBtnEl.dataset.questMode && !_sendBtnEl.querySelector('.ski-idle-thunder-spinner')) {
+          const _hasSendableText = val.replace(/@[a-z0-9-]+/gi, '').trim().length > 0;
+          const _convoOpen = !!(_idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])'));
+          // ▶ U+25B6 BLACK RIGHT-POINTING TRIANGLE — used as the
+          // "ready to send a validated transfer" marker. CSS
+          // colors it green via the --amount class below.
+          const _nextIcon = validAmount
+            ? '\u25B6'
+            : (_hasSendableText || _convoOpen) ? '\u26a1' : '\u26c8\ufe0f';
+          if (!_sendBtnEl.innerHTML.includes(_nextIcon)) {
+            _sendBtnEl.innerHTML = _nextIcon;
+          }
+          _sendBtnEl.classList.toggle('ski-idle-thunder-send--amount', validAmount);
+          _sendBtnEl.classList.toggle('ski-idle-thunder-send--over', overBudget);
+          if (validAmount) {
+            _sendBtnEl.title = `Send $${parsedAmt} · press Enter`;
+          }
+        }
+        // Color modes: green (valid amount), red (over budget), yellow (thunder only)
         const needsMirror = hasAmount || hasAt;
         _idleThunderInputEl?.classList.toggle('ski-idle-thunder-input--amount', hasAmount && !overBudget);
         _idleThunderInputEl?.classList.toggle('ski-idle-thunder-input--over', overBudget);

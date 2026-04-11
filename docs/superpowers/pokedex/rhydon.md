@@ -6,11 +6,14 @@ evolves_from: Rhyhorn
 evolves_to: Rhyperior (unlocked at 10+ successful sweep-cycles)
 captured_by: claude-opus-4.6
 captured_issue: "#74"
+captured_pr: "#90"
 capture_date: 2026-04-11
-total_commits: 0
-total_loc_delta: 0
-merges: []
-status: in-progress
+merge_date: 2026-04-11
+deploy_version: 4fd78fef-0291-4dd2-904a-51e20b0a3fa2
+total_commits: 1
+total_loc_delta: 93
+merges: ["#90"]
+status: captured
 ---
 
 ## Capture story (initial observation)

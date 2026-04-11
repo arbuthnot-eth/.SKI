@@ -2006,6 +2006,62 @@ app.post('/api/cache/reset-sol-cursor', async (c) => {
   }
 });
 
+// Chansey v3 — redeem iUSD for USDC. User-initiated: they transfer
+// iUSD to ultron via their own wallet, then POST their tx digest +
+// address here. Server verifies the transfer and pays back the
+// equivalent USDC from ultron's balance, 1:1 (no fee for v1).
+app.post('/api/cache/redeem-iusd', async (c) => {
+  try {
+    const body = await c.req.json() as { suiAddress: string; suiTxDigest: string };
+    if (!body.suiAddress || !body.suiTxDigest) return c.json({ error: 'suiAddress and suiTxDigest required' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/redeem-iusd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Chansey v3 — transfer ultron's iUSD to a recipient (credit path).
+app.post('/api/cache/send-iusd', async (c) => {
+  try {
+    const body = await c.req.json() as { recipient: string; amountMist?: string };
+    if (!body.recipient) return c.json({ error: 'recipient required' }, 400);
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/send-iusd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Debug mint endpoint.
+app.post('/api/cache/debug-mint', async (c) => {
+  try {
+    const body = await c.req.json() as { usdCents: number; recipient?: string; pkg?: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/debug-mint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Chansey Lv.40 (#76) — manual activity-yield mint trigger. The
 // treasury mints iUSD up to its current surplus above 110% and sends
 // it to ultron's wallet. No-op if senior <= 1.1 * supply. Also fires

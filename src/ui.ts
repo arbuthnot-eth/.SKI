@@ -2419,11 +2419,16 @@ async function selectWallet(wallet: Wallet) {
 const USDC_TYPE   = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const NS_TYPE     = '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS';
 const WAL_TYPE    = '0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL';
+// iUSD v2 type — origin package (0x2c5653668e) is stable across upgrades.
+// The actual dispatch after 2026-04-11 upgrade uses v2 at 0x8230189a.
+// Type origin stays the same — all iUSD coins have this type regardless
+// of which package version was used to mint them.
+const IUSD_TYPE   = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
 
 // Known stablecoin coinTypes (grouped under $ icon)
 const STABLE_TYPES = new Set([
   USDC_TYPE,
-  '0xcf72ec52c0f8ddead746252481fb44ff6e8485a39b803825bde6b00d77cdb0bb::fud::FUD', // not stable, placeholder
+  IUSD_TYPE, // Chansey v3 — iUSD is the .SKI-native activity-backed stable
 ]);
 // Extract short token name from coinType: "0xabc::module::NAME" → "NAME"
 function coinShortName(coinType: string): string {
@@ -2431,9 +2436,12 @@ function coinShortName(coinType: string): string {
   return parts.length >= 3 ? parts[parts.length - 1] : coinType.slice(0, 8);
 }
 // Decimals per coinType — fetched on-chain and cached
-// One-time purge of stale coin caches (NS decimals/balance were incorrectly cached)
+// One-time purge of stale coin caches, bumped each time a cached
+// field's interpretation changes. v5 was added for Chansey v3 —
+// iUSD needed to flow through STABLE_TYPES + the decimals cache
+// needed to pick up iUSD's 9-decimal entry.
 try {
-  if (!localStorage.getItem('ski:dec:v4')) {
+  if (!localStorage.getItem('ski:dec:v5')) {
     localStorage.removeItem('ski:decimals');
     localStorage.removeItem('ski:coin-meta');
     localStorage.removeItem('ski:token-prices');
@@ -2441,7 +2449,8 @@ try {
     for (const k of Object.keys(localStorage)) {
       if (k.startsWith('ski:balances:')) localStorage.removeItem(k);
     }
-    localStorage.setItem('ski:dec:v4', '1');
+    localStorage.setItem('ski:dec:v5', '1');
+    localStorage.removeItem('ski:dec:v4');
   }
 } catch {}
 const _decimalsCache: Record<string, number> = {

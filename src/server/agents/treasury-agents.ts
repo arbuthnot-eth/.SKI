@@ -161,6 +161,12 @@ export interface TreasuryAgentsState {
    *  Cloudflare cron at `*\/10 * * * *` in wrangler.jsonc — the two
    *  paths coexist for redundancy. */
   last_iou_sweep_ms?: number;
+  /** Wall-clock ms of the most recent `_scanOpenBundles` pass. Throttles
+   *  the OpenCLOB bundle scanner to ~30s — Phase 3b only LOGS what it
+   *  would do; Phase 3c wires the real `mark_slot_filled` /
+   *  `settle_bundle` calls. See
+   *  `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`. */
+  last_bundle_scan_ms?: number;
 }
 
 interface Env {
@@ -1345,6 +1351,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       // watcher's match set stays small.
       await this._purgeStaleIntents();
       await this._watchSuiUsdcDeposits();
+      // OpenCLOB bundle scanner — Phase 3b (Porygon-Z Lv. 80).
+      // Lists shared OrderBundle objects and LOGS which ones would
+      // be settled / force-refunded. No on-chain writes yet; Phase 3c
+      // adds the actual settle_bundle + force_refund_bundle calls.
+      await this._scanOpenBundles();
       // IOU expiry sweep — Rhydon Lv.35, issue #74. Runs on a
       // 5-minute throttle, redundant with the Cloudflare cron
       // `*/10 * * * *`. Both call the same idempotent
@@ -3308,6 +3319,110 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
    *  The GraphQL query returns USDC coins owned by ultron; each
    *  coin's `previousTransaction.digest` is the incoming tx.
    */
+  /** Sub-cent Phase 3b — OpenCLOB bundle scanner stub.
+   *
+   * Throttled to every 30s. Queries all `OrderBundle` shared objects
+   * of the `thunder_openclob::bundle` package via GraphQL, decodes
+   * their state from `contents.json`, and LOGS which bundles would
+   * be settled or force-refunded. Phase 3b deliberately does not
+   * submit any transactions — the actual `settle_bundle` /
+   * `force_refund_bundle` calls land in Phase 3c once the scanner
+   * logic has been validated against live on-chain bundles.
+   *
+   * Error behavior: swallowed + warned. The scanner abandons the
+   * tick after ~200ms of wall-clock work so a slow GraphQL node
+   * can't starve the rest of `_tick`.
+   *
+   * Refs:
+   *   - docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md
+   *   - contracts/thunder-openclob/sources/bundle.move
+   */
+  private async _scanOpenBundles(): Promise<void> {
+    const now = Date.now();
+    const SCAN_INTERVAL_MS = 30_000;
+    const lastScan = ((this.state as any).last_bundle_scan_ms as number | undefined) ?? 0;
+    if (now - lastScan < SCAN_INTERVAL_MS) return;
+
+    const started = Date.now();
+    const MAX_WORK_MS = 200;
+    const PKG = '0xdcbabe3d80cd9b421113f66f2a1287daa8259f5c02861c33e7cc92fc542af0d7';
+    const BUNDLE_TYPE = `${PKG}::bundle::OrderBundle`;
+
+    try {
+      const res = await fetch(GQL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($t: String!) {
+            objects(filter: { type: $t }, first: 50) {
+              nodes {
+                address
+                version
+                asMoveObject { contents { json } }
+              }
+            }
+          }`,
+          variables: { t: BUNDLE_TYPE },
+        }),
+        signal: AbortSignal.timeout(6_000),
+      });
+
+      if (Date.now() - started > MAX_WORK_MS) {
+        // Took too long — advance the throttle but skip processing.
+        this.setState({ ...this.state, last_bundle_scan_ms: now } as any);
+        return;
+      }
+
+      const data = await res.json() as {
+        data?: { objects?: { nodes?: Array<{
+          address: string;
+          version: string;
+          asMoveObject?: { contents?: { json?: Record<string, any> } };
+        }> } };
+      };
+      const nodes = data?.data?.objects?.nodes ?? [];
+
+      let wouldSettle = 0;
+      let wouldRefund = 0;
+      let openCount = 0;
+
+      for (const node of nodes) {
+        const json = node.asMoveObject?.contents?.json;
+        if (!json) continue;
+        // Move contents: { tag, creator, status, target_count, filled_count,
+        //   settle_deadline_ms, created_ms, orders: [...] }
+        const status = Number(json.status ?? 0);
+        const targetCount = Number(json.target_count ?? 0);
+        const filledCount = Number(json.filled_count ?? 0);
+        const deadlineMs = Number(json.settle_deadline_ms ?? 0);
+        const tag = Number(json.tag ?? 0);
+
+        if (status === 0) openCount++;
+
+        // STATUS_OPEN (0) + hit target → would settle.
+        if (status === 0 && filledCount >= targetCount && targetCount > 0) {
+          console.log(`[treasury/openclob] would settle bundle ${node.address} (filled=${filledCount}/${targetCount} tag=${tag})`);
+          wouldSettle++;
+          continue;
+        }
+
+        // Not yet settled/refunded (status < 2 = open or complete) and past deadline → would refund.
+        if (status < 2 && deadlineMs > 0 && deadlineMs < now) {
+          console.log(`[treasury/openclob] would force-refund expired bundle ${node.address} (tag=${tag} deadline=${new Date(deadlineMs).toISOString()})`);
+          wouldRefund++;
+        }
+      }
+
+      if (nodes.length > 0) {
+        console.log(`[treasury/openclob] scanner saw ${nodes.length} bundle(s): ${openCount} open, would-settle=${wouldSettle}, would-refund=${wouldRefund}`);
+      }
+    } catch (e) {
+      console.warn('[treasury/openclob] scanner failed:', e instanceof Error ? e.message : e);
+    } finally {
+      this.setState({ ...this.state, last_bundle_scan_ms: now } as any);
+    }
+  }
+
   private async _watchSuiUsdcDeposits(): Promise<void> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return;
     const ultronAddr = this.getUltronAddress();

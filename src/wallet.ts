@@ -378,13 +378,31 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   } catch (err) {
     if (!isWaaP) throw err;
     const msg = err instanceof Error ? err.message : String(err);
-    if (!/timed out/i.test(msg)) throw err;
-    // WaaP timeout → iframe likely dead. Re-register + retry once.
+    const isTimeout = /timed out/i.test(msg);
+    // WaaP's signing backend occasionally returns 400 with "Failed to
+    // generate signature due to unknown server error" — usually a
+    // stale iframe session state. Treat it the same as a timeout:
+    // tear down the iframe, re-register, retry once.
+    const isBackend400 = /backend error\s*\(400\)/i.test(msg)
+      || /failed to generate signature/i.test(msg)
+      || /unknown server error/i.test(msg);
+    if (!isTimeout && !isBackend400) throw err;
+    console.warn('[wallet] WaaP signPersonalMessage failed, reinit + retry:', msg);
     try {
       const { reinitWaaP } = await import('./waap.js');
       await reinitWaaP();
     } catch { /* best-effort */ }
-    return withTimeout();
+    try {
+      return await withTimeout();
+    } catch (retryErr) {
+      const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      // Surface a cleaner second-attempt failure so the upstream
+      // toast doesn't parrot WaaP's opaque "unknown server error".
+      if (/backend error\s*\(400\)/i.test(retryMsg) || /failed to generate signature/i.test(retryMsg)) {
+        throw new Error('Wallet signing service is having trouble. Refresh the page and try again — if it persists, check your WaaP session.');
+      }
+      throw retryErr;
+    }
   }
 }
 

@@ -12616,18 +12616,28 @@ function bindEvents() {
         void ws;
         // myAddr already bound at function entry for group-id resolution.
 
-        // Resolve sender names via reverse lookup (batch, cached)
+        // Resolve sender names via reverse lookup (batch, cached).
+        // Every address — including the local user — goes through the
+        // full reverseLookupName stack (primary → local target-reverse
+        // → global NameIndex) so wallets with no SuiNS primary still
+        // render as their target-reverse name instead of a hex prefix.
         const _rlCache: Record<string, string> = {};
-        if (myAddr) _rlCache[myAddr] = myName || myAddr.slice(0, 8);
-        const uniqueAddrs = [...new Set(entries.map(m => m.senderAddress.toLowerCase()).filter(a => !_rlCache[a]))];
-        if (uniqueAddrs.length > 0) {
+        const _allAddrs = new Set<string>(entries.map(m => m.senderAddress.toLowerCase()));
+        if (myAddr) _allAddrs.add(myAddr);
+        if (_allAddrs.size > 0) {
           try {
             const { reverseLookupName } = await import('./client/thunder.js');
-            await Promise.all(uniqueAddrs.map(async addr => {
+            await Promise.all([..._allAddrs].map(async addr => {
               const name = await reverseLookupName(addr);
-              _rlCache[addr] = name || addr.slice(0, 8);
+              // Prefer app.suinsName for self when reverseLookupName
+              // comes back empty — local state may know a name that
+              // isn't on-chain yet (e.g. just-registered, not propagated).
+              if (addr === myAddr && !name && myName) _rlCache[addr] = myName;
+              else _rlCache[addr] = name || addr.slice(0, 8);
             }));
-          } catch {}
+          } catch {
+            if (myAddr) _rlCache[myAddr] = myName || myAddr.slice(0, 8);
+          }
         }
 
         const hasStorm = _stormExistsCache[groupId] === true;

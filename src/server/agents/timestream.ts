@@ -106,6 +106,9 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
       if (request.method === 'POST' && path === 'delete') {
         return this._handleDelete(request);
       }
+      if (request.method === 'POST' && path === 'purge-all') {
+        return this._handlePurgeAll(request);
+      }
       if (request.method === 'POST' && path === 'add-participant') {
         return this._handleAddParticipant(request);
       }
@@ -321,6 +324,22 @@ export class TimestreamAgent extends Agent<Env, TimestreamState> {
     this.setState({ ...this.state, messages });
 
     return Response.json({ deleted: true });
+  }
+
+  /**
+   * Hard-wipe every thunder in this storm. Called from the × purge
+   * button. Caller must be a participant. Messages array is reset to
+   * empty and nextOrder is preserved (new thunders after purge get
+   * strictly monotonic order regardless — no replay risk).
+   */
+  private async _handlePurgeAll(request: Request): Promise<Response> {
+    const body = await request.json().catch(() => ({})) as { senderAddress?: string };
+    if (body.senderAddress && !this._isParticipant(body.senderAddress)) {
+      return Response.json({ error: 'Not a participant' }, { status: 403 });
+    }
+    const purgedCount = this.state.messages.length;
+    this.setState({ ...this.state, messages: [] });
+    return Response.json({ purged: purgedCount });
   }
 
   private async _handleAddParticipant(request: Request): Promise<Response> {

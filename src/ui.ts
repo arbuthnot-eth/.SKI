@@ -3412,7 +3412,7 @@ function _updateIdleThunderBadge(): void {
   if (total > 0) {
     sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${total}</span>`;
     sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--quest';
-    sendBtn.title = `Quest ${total} signal${total > 1 ? 's' : ''} across all names`;
+    sendBtn.title = `Quest ${total} thunder${total > 1 ? 's' : ''} across all names`;
     sendBtn.dataset.questMode = '1';
     sendBtn.dataset.questAll = '1';
     sendBtn.disabled = false;
@@ -3572,7 +3572,7 @@ async function _renderConversation(counterparty: string, force = false) {
     _thunderConvoTarget = '';
     _renderConversation(bare, true);
     _syncNftCardToInput();
-    showToast(`\u26a1 ${count} signal${count > 1 ? 's' : ''} deleted`);
+    showToast(`\u26a1 ${count} thunder${count > 1 ? 's' : ''} deleted`);
   });
 
   // Bind Quest button — decrypt unquested on-chain signals for the CARD domain (our owned name)
@@ -3642,7 +3642,7 @@ async function _renderConversation(counterparty: string, force = false) {
           skipNextFocusClear = true;
           fetchAndShowNsPrice(replyTarget);
         }
-        showToast(`\u26a1 ${payloads.length} signal${payloads.length > 1 ? 's' : ''} quested`);
+        showToast(`\u26a1 ${payloads.length} thunder${payloads.length > 1 ? 's' : ''} quested`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Quest failed';
@@ -3714,7 +3714,7 @@ function _resolveThunderFallbackRecipient(): { name: string; source: ThunderComp
     return {
       name: topChain,
       source: 'signal',
-      sourceLabel: `top active signal @${topChain}.sui`,
+      sourceLabel: `top active thunder @${topChain}.sui`,
     };
   }
 
@@ -4305,7 +4305,7 @@ function _nsOwnedListHtml(): string {
     const _tcTotal = _tcOn;
     if (_tcTotal > 0) {
       const pulseCls = _tcOn > 0 ? ' wk-ns-thunder-badge--pulse' : '';
-      thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} signal${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
+      thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} thunder${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
     }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
     const dimCls = hasFilter && !matches && _tcTotal <= 0 ? ' wk-ns-owned-chip--dim' : '';
@@ -4563,7 +4563,7 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
   // Thunder badges: ⚡N (unquested on-chain, pulsing)
   const unquestedCount = _thunderCounts[domainBare.toLowerCase()] ?? 0;
   const unquestedBadge = unquestedCount > 0
-    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested" title="${unquestedCount} pending signal${unquestedCount > 1 ? 's' : ''} \u2014 tap to purge">\u26a1${unquestedCount}</span>`
+    ? `<span class="ski-nft-thunder ski-nft-thunder--unquested" title="${unquestedCount} pending thunder${unquestedCount > 1 ? 's' : ''} \u2014 tap to purge">\u26a1${unquestedCount}</span>`
     : '';
   const thunderBadgeHtml = unquestedBadge;
   const thunderCardCls = unquestedCount > 0 ? ' ski-nft-card--thunder' : '';
@@ -4668,7 +4668,7 @@ function _attachNftPopoverListeners() {
           groupRef: { uuid: groupUuid },
         });
 
-        if (messages.length === 0) { showToast('No signals found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
+        if (messages.length === 0) { showToast('No thunders found'); _thunderCounts[badgeDomain] = 0; _patchNsOwnedList(); return; }
 
         const first = messages[0];
         const senderName = first.senderAddress.slice(0, 8) + '\u2026';
@@ -5566,7 +5566,7 @@ function _treasuryPanelHtml(): string {
       <div class="wk-treasury-section">
         <div class="wk-treasury-label">Revenue Streams</div>
         <div class="wk-treasury-row">
-          <span class="wk-treasury-key">Thunder free signals</span>
+          <span class="wk-treasury-key">Thunder free thunders</span>
           <span class="wk-treasury-val wk-treasury-val--yellow">\u26a1 live</span>
         </div>
         <div class="wk-treasury-row">
@@ -6486,7 +6486,7 @@ function renderSkiMenu() {
     } else if (thunderMode) {
       btn.disabled = false;
       btn.textContent = 'Thunder';
-      btn.title = `Thunder \u2014 encrypt a signal to ${nsLabel.trim()}.sui`;
+      btn.title = `Thunder \u2014 encrypt a thunder to ${nsLabel.trim()}.sui`;
     } else if (suiamiMode) {
       btn.disabled = false;
       btn.textContent = 'SUIAMI';
@@ -7404,7 +7404,7 @@ function renderSkiMenu() {
         if (msgInput) msgInput.focus();
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Signal failed';
+      const errMsg = err instanceof Error ? err.message : 'Thunder failed';
       if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
     } finally {
       if (sendBtn) { sendBtn.textContent = '\u26a1'; sendBtn.disabled = false; }
@@ -8773,7 +8773,7 @@ function renderSkiMenu() {
           totalDecrypted += messages.length;
           _thunderCounts[name] = 0;
         }
-        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
+        if (totalDecrypted > 0) showToast(`\u2600\ufe0f ${totalDecrypted} thunder${totalDecrypted > 1 ? 's' : ''} purged`);
       }
       try { localStorage.setItem('ski:thunder-counts', JSON.stringify(_thunderCounts)); } catch {}
       _patchNsOwnedList();
@@ -9249,7 +9249,7 @@ function bindEvents() {
               <input id="ski-idle-thunder-file-input" type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.json,.md" style="display:none">
             </div>
             <div class="ski-idle-thunder-input-wrap">
-              <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypt signal">
+              <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypted thunder">
               <button class="ski-idle-thunder-clear" id="ski-idle-thunder-clear" type="button" title="Clear" style="display:none">\u2715</button>
               <div class="ski-idle-thunder-mirror" id="ski-idle-thunder-mirror" aria-hidden="true"></div>
               <div class="ski-idle-thunder-send-group">
@@ -10512,12 +10512,12 @@ function bindEvents() {
           if (sendBtn) {
             sendBtn.innerHTML = `\u26c8\ufe0f<span class="ski-idle-thunder-count">${_totalPending}</span>`;
             sendBtn.className = 'ski-idle-quick-btn ski-idle-quick-btn--storm ski-idle-thunder-send ski-idle-thunder-send--quest';
-            sendBtn.title = `Quest ${_totalPending} signal${_totalPending > 1 ? 's' : ''} across all names`;
+            sendBtn.title = `Quest ${_totalPending} thunder${_totalPending > 1 ? 's' : ''} across all names`;
             sendBtn.dataset.questMode = '1';
             sendBtn.dataset.questAll = '1';
           }
           const thunderInput = _idleOverlay?.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
-          if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_totalPending} signal${_totalPending > 1 ? 's' : ''} waiting...`;
+          if (thunderInput && !thunderInput.value) thunderInput.placeholder = `${_totalPending} thunder${_totalPending > 1 ? 's' : ''} waiting...`;
           // Auto-expand conversation for name with most signals
           if (!_pendingCount) {
             const topName = nsOwnedDomains
@@ -11508,7 +11508,7 @@ function bindEvents() {
               toQuest.push({ name: questName, count: _thunderCounts[questName.toLowerCase()] ?? 1 });
             }
 
-            if (toQuest.length === 0) { showToast('No signals to quest'); sendBtn.innerHTML = '\u26c8\ufe0f'; sendBtn.disabled = false; return; }
+            if (toQuest.length === 0) { showToast('No thunders to quest'); sendBtn.innerHTML = '\u26c8\ufe0f'; sendBtn.disabled = false; return; }
 
             let totalDecrypted = 0;
 
@@ -11540,7 +11540,7 @@ function bindEvents() {
             _updateIdleThunderBadge();
             sendBtn.disabled = false;
             _renderThunderComposePreview();
-            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} signal${totalDecrypted > 1 ? 's' : ''} purged`);
+            if (totalDecrypted > 0) showToast(`\u26a1 ${totalDecrypted} thunder${totalDecrypted > 1 ? 's' : ''} purged`);
           } catch (err) {
             sendBtn.innerHTML = '\u26c8\ufe0f';
             sendBtn.disabled = false;
@@ -11776,7 +11776,7 @@ function bindEvents() {
             _renderThunderComposePreview();
           }
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Signal failed';
+          const errMsg = err instanceof Error ? err.message : 'Thunder failed';
           if (!errMsg.toLowerCase().includes('reject')) showToast(errMsg);
         }
       };
@@ -12052,7 +12052,10 @@ function bindEvents() {
         try { sessionStorage.setItem('ski:idle-convo', bare); localStorage.setItem('ski:idle-convo', bare); } catch {}
         _idleThunderSend?.classList.add('ski-idle-thunder-send--convo-open');
 
-        // Start polling for new messages (5s interval)
+        // Poll the DO for new thunders. Interval is 2s, which is snappy
+        // enough to feel near-real-time without hammering the DO. The
+        // handler also detects DECREASES in message count (someone
+        // deleted or purged on the other side) and re-renders to sync.
         _convoLastCount = entries.length;
         if (_convoPollTimer) clearInterval(_convoPollTimer);
         _convoPollTimer = setInterval(async () => {
@@ -12064,12 +12067,15 @@ function bindEvents() {
             });
             if (!_pRes.ok) return;
             const _pData = await _pRes.json() as { messages: any[] };
-            if (_pData.messages.length > _convoLastCount) {
+            // Re-render on ANY count change (new thunder or remote
+            // delete). Previously only increases triggered — decreases
+            // left stale bubbles on screen until the next manual open.
+            if (_pData.messages.length !== _convoLastCount) {
               _convoLastCount = _pData.messages.length;
               _expandIdleConvo(bare);
             }
           } catch {}
-        }, 5000);
+        }, 2000);
 
         // Render Timestream messages as bubbles with reverse lookup
         const ws = getState();
@@ -12292,7 +12298,7 @@ function bindEvents() {
               // Signal already gone on-chain (struck/expired) — just clean up locally
               if (msg.includes('dynamic_field') || msg.includes('borrow_child_object') || msg.includes('abort code: 1')) {
                 (bubble as HTMLElement).remove();
-                showToast('Signal already cleared');
+                showToast('Thunder already cleared');
               } else if (!msg.toLowerCase().includes('reject')) {
                 showToast(msg || 'Strike failed');
                 (bubble as HTMLElement).classList.remove('ski-idle-bubble--confirm-delete');
@@ -12843,7 +12849,9 @@ function bindEvents() {
           return;
         }
 
-        // Second click — fire.
+        // Second click — fire. Use the DO's bulk purge endpoint so we
+        // hit EVERY stored thunder in the group, not just the ones
+        // currently rendered as bubbles.
         _disarmPurge();
         const _bare = (nsLabel || '').toLowerCase();
         const _myAddrPurge = getState().address || '';
@@ -12853,33 +12861,41 @@ function bindEvents() {
         const _purgeGid = `t-${[_myHexPurge, _tgtHexPurge].sort().join('')}`;
         _idleStormPurgeBtn.disabled = true;
         _idleStormPurgeBtn.textContent = '\u2026';
-        let _failed = 0;
-        for (const bubble of bubbles) {
-          const bid = bubble.dataset.id || '';
-          if (!bid) { bubble.remove(); continue; }
-          try {
-            const r = await fetch(`/api/timestream/${encodeURIComponent(_purgeGid)}/delete`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ messageId: bid, senderAddress: _myAddrPurge }),
-            });
-            if (r.ok) bubble.remove();
-            else { _failed++; console.warn('[thunder] purge delete rejected:', r.status, bid); }
-          } catch (e) { _failed++; console.warn('[thunder] purge delete threw:', e); }
+        let _purgedCount = 0;
+        let _ok = false;
+        try {
+          const r = await fetch(`/api/timestream/${encodeURIComponent(_purgeGid)}/purge-all`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ senderAddress: _myAddrPurge }),
+          });
+          if (r.ok) {
+            const j = await r.json().catch(() => ({})) as { purged?: number };
+            _purgedCount = j.purged ?? bubbles.length;
+            _ok = true;
+          } else {
+            console.warn('[thunder] purge-all rejected:', r.status);
+          }
+        } catch (e) { console.warn('[thunder] purge-all threw:', e); }
+
+        if (_ok) {
+          // Drop the local encrypted history cache entry entirely.
+          try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
+          // Strip bubbles from the DOM.
+          for (const b of bubbles) b.remove();
+          // Close the convo + clear the saved-convo pointer so the next
+          // refresh doesn't try to re-open an empty storm.
+          convoElPurge.setAttribute('hidden', '');
+          convoElPurge.innerHTML = '';
+          _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
+          try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
+          if (_bare) _userClosedStorms.add(_bare);
+          showToast(`\u{1F9F9} Storm purged (${_purgedCount})`);
+        } else {
+          showToast('Purge failed — messages still on DO');
         }
-        // Drop the entire local encrypted history cache for this storm.
-        try { localStorage.removeItem(_THUNDER_HIST_KEY(_purgeGid)); } catch {}
-        // Close the convo + clear the saved-convo pointer so the next
-        // refresh doesn't try to re-open an empty storm.
-        convoElPurge.setAttribute('hidden', '');
-        convoElPurge.innerHTML = '';
-        _idleThunderSend?.classList.remove('ski-idle-thunder-send--convo-open');
-        try { sessionStorage.removeItem('ski:idle-convo'); localStorage.removeItem('ski:idle-convo'); } catch {}
-        if (_bare) _userClosedStorms.add(_bare);
         _idleStormPurgeBtn.disabled = false;
         _idleStormPurgeBtn.textContent = '\u2715';
-        if (_failed > 0) showToast(`Purged ${bubbles.length - _failed}/${bubbles.length} — ${_failed} failed`);
-        else showToast(`\u{1F9F9} Storm purged (${bubbles.length})`);
         _renderThunderComposePreview?.();
       });
 

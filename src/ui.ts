@@ -12977,6 +12977,19 @@ function bindEvents() {
               const _bubEl = bubble as HTMLElement;
               const _txDigest = _bubEl.dataset.tx || '';
               const _role = _bubEl.dataset.iouRole || '';
+              // Settled bubbles are read-only. No arm, no claim, no
+              // explorer redirect. The only active element is the
+              // green ✓ settlement pill, which carries
+              // data-no-bubble-click and is handled above. This
+              // enforces the "once settled, always gray, no reveal"
+              // contract — the decrypted storm note is still visible
+              // to members (that's unchanged, same Seal gate) but
+              // nothing new about the on-chain vault leaks from
+              // clicking.
+              if (_bubEl.classList.contains('ski-idle-bubble--transfer-settled')
+                  || (_txDigest && _settledTxDigests.has(_txDigest))) {
+                return;
+              }
 
               // Sender-side recall uses a two-click confirm pattern:
               //   1st click → paint red, arm for 3s (no tx yet)

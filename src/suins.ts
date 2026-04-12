@@ -16,6 +16,31 @@ import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
 
+// ─── SuiNS network selection ─────────────────────────────────────────
+/**
+ * Determine which SuiNS network to target based on the current hostname.
+ * Runtime-evaluated (not frozen at import) so unit tests and SSR can override.
+ *
+ *   dotski-devnet.*.workers.dev → testnet
+ *   localhost / 127.0.0.1       → testnet
+ *   everything else             → mainnet
+ */
+export function getSuinsNetwork(): 'mainnet' | 'testnet' {
+  try {
+    const loc = (globalThis as { location?: { hostname?: string } }).location;
+    const host = (loc?.hostname || '').toLowerCase();
+    if (!host) return 'mainnet';
+    if (host === 'localhost' || host === '127.0.0.1') return 'testnet';
+    if (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev')) return 'testnet';
+  } catch {}
+  return 'mainnet';
+}
+
+/** Return the active SuiNS config (mainnet or testnet) at call time. */
+export function suinsCfg(): (typeof mainPackage)['mainnet'] {
+  return mainPackage[getSuinsNetwork()];
+}
+
 /** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
   maybeAppendRoster(tx);
@@ -672,7 +697,7 @@ export async function checkDomainStatus(
   additionalOwnerAddresses?: string[],
 ): Promise<DomainStatusResult> {
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
   try {
     const record = await suinsClient.getNameRecord(`${label}.sui`);
     if (!record) return { avail: 'available', targetAddress: null };
@@ -771,7 +796,7 @@ export async function checkDomainStatus(
 export async function lookupNftOwner(domain: string): Promise<string | null> {
   try {
     const transport = gqlClient;
-    const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+    const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
     const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
     const record = await suinsClient.getNameRecord(fullDomain);
     if (!record?.nftId) return null;
@@ -801,7 +826,7 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
   const walletAddress = normalizeSuiAddress(rawAddress);
   const fullDomain = domain.endsWith('.sui') ? domain : `${domain}.sui`;
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
 
   // Find the NFT so we can set target address first
   const owned = await fetchOwnedDomains(walletAddress);
@@ -839,7 +864,7 @@ export async function executeSignedTx(bytesB64: string, signature: string): Prom
 /** Resolve a SuiNS name to its target address. Returns null if not found or no target set. */
 export async function resolveSuiNSName(name: string): Promise<string | null> {
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
   const fullName = name.endsWith('.sui') ? name : `${name}.sui`;
   try {
     const record = await suinsClient.getNameRecord(fullName);
@@ -860,7 +885,7 @@ export async function buildSetTargetAddressTx(
   const walletAddress = normalizeSuiAddress(rawAddress);
   const target = normalizeSuiAddress(newTargetAddress);
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
   const fetchAddr = ownerAddress ? normalizeSuiAddress(ownerAddress) : walletAddress;
   const owned = await fetchOwnedDomains(fetchAddr);
   const domainFull = domain.endsWith('.sui') ? domain : `${domain}.sui`;
@@ -892,12 +917,12 @@ export async function buildSubnameTxBytes(
 /** Returns the NS-discounted registration price in USD for a `.sui` label (1 year). */
 export async function fetchDomainPriceUsd(label: string): Promise<number> {
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
   const [rawPrice, discountMap] = await Promise.all([
     suinsClient.calculatePrice({ name: `${label}.sui`, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
   ]);
-  const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+  const nsKey = suinsCfg().coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   return (rawPrice * (1 - discountPct / 100)) / 1e6;
 }
@@ -953,18 +978,18 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
   // Use GraphQL directly — skip gRPC trial which adds a full extra round-trip on failure.
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
 
   const [usdcCoins, nsCoins, iusdCoins, rawPrice, discountMap, sponsorInfo] = await Promise.all([
-    listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.USDC.type),
-    listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
+    listCoinsOfType(transport, walletAddress, suinsCfg().coins.USDC.type),
+    listCoinsOfType(transport, walletAddress, suinsCfg().coins.NS.type),
     listCoinsOfType(transport, walletAddress, IUSD_TYPE),
     suinsClient.calculatePrice({ name: domain, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
     fetchSponsorInfo(),
   ]);
 
-  const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+  const nsKey = suinsCfg().coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
   const basePriceUsd = rawPrice / 1e6;
@@ -1001,7 +1026,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Pyth price feed for NS/USD — pay oracle update fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+      tx, suinsCfg().coins.NS.feed, tx.gas,
     );
 
     // Merge all NS coins into one, then pass to register — contract takes what it needs via Pyth
@@ -1011,7 +1036,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     }
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
-    const nft = suinsTx.register({ domain, years: 1, coinConfig: mainPackage.mainnet.coins.NS, coin: nsCoin, priceInfoObjectId });
+    const nft = suinsTx.register({ domain, years: 1, coinConfig: suinsCfg().coins.NS, coin: nsCoin, priceInfoObjectId });
     suinsTx.setTargetAddress({ nft, address: walletAddress });
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
@@ -1033,7 +1058,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Pyth price feed for NS/USD — pay oracle update fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+      tx, suinsCfg().coins.NS.feed, tx.gas,
     );
     const dbPool = tx.sharedObjectRef({
       objectId: DB_NS_USDC_POOL,
@@ -1050,12 +1075,12 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
     const [nsCoin, usdcSwapChange, deepChange] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-      typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+      typeArguments: [suinsCfg().coins.NS.type, suinsCfg().coins.USDC.type],
       arguments: [dbPool, usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
     });
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
-    const nft = suinsTx.register({ domain, years: 1, coinConfig: mainPackage.mainnet.coins.NS, coin: nsCoin, priceInfoObjectId });
+    const nft = suinsTx.register({ domain, years: 1, coinConfig: suinsCfg().coins.NS, coin: nsCoin, priceInfoObjectId });
     suinsTx.setTargetAddress({ nft, address: walletAddress });
     if (setAsDefault) suinsTx.setDefault(domain);
     tx.transferObjects([nft], tx.pure.address(walletAddress));
@@ -1090,7 +1115,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     setupGas(tx);
 
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+      tx, suinsCfg().coins.NS.feed, tx.gas,
     );
 
     // Step 1: merge all iUSD, split the input amount
@@ -1104,7 +1129,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     const [zeroDeepIusd] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
     const [iusdChange, usdcFromIusd, deepChangeIusd] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-      typeArguments: [IUSD_TYPE, mainPackage.mainnet.coins.USDC.type],
+      typeArguments: [IUSD_TYPE, suinsCfg().coins.USDC.type],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_IUSD_USDC_POOL, initialSharedVersion: DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
         iusdForSwap, zeroDeepIusd, tx.pure.u64(1), tx.object.clock(),
@@ -1130,7 +1155,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     const [zeroDeepNs] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
     const [nsCoinOut, usdcChange, deepChangeNs] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-      typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+      typeArguments: [suinsCfg().coins.NS.type, suinsCfg().coins.USDC.type],
       arguments: [nsPool, usdcForNs, zeroDeepNs, tx.pure.u64(0), tx.object.clock()],
     });
 
@@ -1145,7 +1170,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain, years: 1,
-      coinConfig: mainPackage.mainnet.coins.NS,
+      coinConfig: suinsCfg().coins.NS,
       coin: finalNsCoin,
       priceInfoObjectId,
     });
@@ -1169,7 +1194,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Pyth oracle fee from gas
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
+      tx, suinsCfg().coins.SUI.feed, tx.gas,
     );
 
     // Split registration coin from gas — use discounted price when possible
@@ -1180,7 +1205,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain, years: 1,
-      coinConfig: mainPackage.mainnet.coins.SUI,
+      coinConfig: suinsCfg().coins.SUI,
       coin: regCoin,
       priceInfoObjectId,
     });
@@ -1249,7 +1274,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       const [zeroDEEP_sui] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
       const [suiChange, usdcFromSui, deepChange_sui] = tx.moveCall({
         target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-        typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', mainPackage.mainnet.coins.USDC.type],
+        typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', suinsCfg().coins.USDC.type],
         arguments: [
           tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
           suiPayment, zeroDEEP_sui, tx.pure.u64(1), tx.object.clock(),
@@ -1276,7 +1301,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
       const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
       const [nsOut, usdcChange, deepChange] = tx.moveCall({
         target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-        typeArguments: [mainPackage.mainnet.coins.NS.type, mainPackage.mainnet.coins.USDC.type],
+        typeArguments: [suinsCfg().coins.NS.type, suinsCfg().coins.USDC.type],
         arguments: [dbPool, usdcForSwap, zeroDEEP, tx.pure.u64(0), tx.object.clock()],
       });
       nsCoinFromSwap = nsOut;
@@ -1300,12 +1325,12 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // If we have NS (from swap or existing), register with NS (25% discount)
     if (finalNsCoin) {
       const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-        tx, mainPackage.mainnet.coins.NS.feed, tx.gas,
+        tx, suinsCfg().coins.NS.feed, tx.gas,
       );
       const suinsTx = new SuinsTransaction(suinsClient, tx);
       const nft = suinsTx.register({
         domain, years: 1,
-        coinConfig: mainPackage.mainnet.coins.NS,
+        coinConfig: suinsCfg().coins.NS,
         coin: finalNsCoin,
         priceInfoObjectId,
       });
@@ -1349,7 +1374,7 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
     // swap_exact_quote_for_base: USDC (quote) → SUI (base)
     const [suiFromSwap, usdcChange, deepChange] = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-      typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', mainPackage.mainnet.coins.USDC.type],
+      typeArguments: ['0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI', suinsCfg().coins.USDC.type],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_ISV, mutable: true }),
         usdcCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
@@ -1361,13 +1386,13 @@ export async function buildRegisterSplashNsTx(rawAddress: string, domain = 'spla
 
     // Step 3: Pyth price feed + register with beefed-up gas coin
     const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-      tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
+      tx, suinsCfg().coins.SUI.feed, tx.gas,
     );
 
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     const nft = suinsTx.register({
       domain, years: 1,
-      coinConfig: mainPackage.mainnet.coins.SUI,
+      coinConfig: suinsCfg().coins.SUI,
       coin: tx.gas,
       priceInfoObjectId,
     });
@@ -1566,7 +1591,7 @@ export async function buildKioskPurchaseTx(
 
   // Set target address + default in the same PTB (single sign)
   if (domainName) {
-    const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+    const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
     const suinsTx = new SuinsTransaction(suinsClient, tx);
     suinsTx.setTargetAddress({ nft, address: walletAddress });
     suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
@@ -1655,7 +1680,7 @@ export async function buildTradeportPurchaseTx(
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
     // Set target address + default in the same PTB (single sign)
     if (domainName) {
-      const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+      const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
       const suinsTx = new SuinsTransaction(suinsClient, tx);
       suinsTx.setTargetAddress({ nft, address: walletAddress });
       suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
@@ -1729,7 +1754,7 @@ export async function buildSwapAndPurchaseTx(
         const [zeroDEEP1] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
         const dbResult1 = tx.moveCall({
           target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-          typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+          typeArguments: [SUI_TYPE, suinsCfg().coins.USDC.type],
           arguments: [
             tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
             usdcForSwap, zeroDEEP1, tx.pure.u64(minSuiOut), tx.object.clock(),
@@ -1754,10 +1779,10 @@ export async function buildSwapAndPurchaseTx(
         // Bluefin: XAUM → USDC (balance-based)
         const [xaumBal] = tx.moveCall({ target: '0x2::coin::into_balance', typeArguments: [XAUM_TYPE], arguments: [xaumCoin] });
         const [xaumBalVal] = tx.moveCall({ target: '0x2::balance::value', typeArguments: [XAUM_TYPE], arguments: [xaumBal] });
-        const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [mainPackage.mainnet.coins.USDC.type] });
+        const [zeroUsdcBal] = tx.moveCall({ target: '0x2::balance::zero', typeArguments: [suinsCfg().coins.USDC.type] });
         const [xaumDust, usdcBalOut] = tx.moveCall({
           target: `${BF_PACKAGE}::pool::swap`,
-          typeArguments: [XAUM_TYPE, mainPackage.mainnet.coins.USDC.type],
+          typeArguments: [XAUM_TYPE, suinsCfg().coins.USDC.type],
           arguments: [
             tx.object('0x6'), tx.object(BF_GLOBAL_CONFIG), tx.object(BF_XAUM_USDC_POOL),
             xaumBal, zeroUsdcBal,
@@ -1766,7 +1791,7 @@ export async function buildSwapAndPurchaseTx(
           ],
         });
         const [xaumDustCoin] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [XAUM_TYPE], arguments: [xaumDust] });
-        const [usdcFromXaum] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [mainPackage.mainnet.coins.USDC.type], arguments: [usdcBalOut] });
+        const [usdcFromXaum] = tx.moveCall({ target: '0x2::coin::from_balance', typeArguments: [suinsCfg().coins.USDC.type], arguments: [usdcBalOut] });
 
         // DeepBook: USDC → SUI — use expected USDC value to set min SUI out
         const expectedSuiFromXaum = suiPrice > 0
@@ -1776,7 +1801,7 @@ export async function buildSwapAndPurchaseTx(
         const [zeroDEEP2] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
         const dbResult2 = tx.moveCall({
           target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-          typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+          typeArguments: [SUI_TYPE, suinsCfg().coins.USDC.type],
           arguments: [
             tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
             usdcFromXaum, zeroDEEP2, tx.pure.u64(minSuiFromXaum), tx.object.clock(),
@@ -1809,7 +1834,7 @@ export async function buildSwapAndPurchaseTx(
         const [zeroDEEP3] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
         const dbResult3 = tx.moveCall({
           target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-          typeArguments: [SUI_TYPE, mainPackage.mainnet.coins.USDC.type],
+          typeArguments: [SUI_TYPE, suinsCfg().coins.USDC.type],
           arguments: [
             tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
             usdcForSwap, zeroDEEP3, tx.pure.u64(minSuiFromBackup), tx.object.clock(),
@@ -1981,7 +2006,7 @@ export async function buildCreateShadeOrderTx(
 ): Promise<{ txBytes: Uint8Array; orderInfo: Omit<ShadeOrderInfo, 'objectId'> }> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
 
   // Calculate deposit: NS-discounted price / SUI price * 1.10 buffer
   // Executor does SUI→USDC→NS two-hop swap via DeepBook for 25% NS discount.
@@ -1990,7 +2015,7 @@ export async function buildCreateShadeOrderTx(
     suinsClient.calculatePrice({ name: `${domain}.sui`, years: 1 }),
     suinsClient.getCoinTypeDiscount(),
   ]);
-  const nsKey = mainPackage.mainnet.coins.NS.type.replace(/^0x/, '');
+  const nsKey = suinsCfg().coins.NS.type.replace(/^0x/, '');
   const discountPct = discountMap.get(nsKey) ?? 0;
   const discountedUsd = (rawPrice * (1 - discountPct / 100)) / 1e6;
   const depositMist = BigInt(Math.ceil(discountedUsd / suiPrice * 1.10 * 1e9));
@@ -2046,7 +2071,7 @@ export async function buildExecuteShadeOrderTx(
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
-  const suinsClient = new SuinsClient({ client: transport as never, network: 'mainnet' });
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
 
   const tx = new Transaction();
   tx.setSender(walletAddress);
@@ -2068,7 +2093,7 @@ export async function buildExecuteShadeOrderTx(
 
   // Step 2: Get Pyth SUI/USD price info for SuiNS registration
   const [priceInfoObjectId] = await suinsClient.getPriceInfoObject(
-    tx, mainPackage.mainnet.coins.SUI.feed, tx.gas,
+    tx, suinsCfg().coins.SUI.feed, tx.gas,
   );
 
   // Step 3: Register the domain with released SUI
@@ -2077,7 +2102,7 @@ export async function buildExecuteShadeOrderTx(
   const nft = suinsTx.register({
     domain: fullDomain,
     years: 1,
-    coinConfig: mainPackage.mainnet.coins.SUI,
+    coinConfig: suinsCfg().coins.SUI,
     coin: releasedCoin,
     priceInfoObjectId,
   });
@@ -2373,12 +2398,12 @@ export async function buildConsolidateToUsdcTx(
 ): Promise<ConsolidateResult> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
-  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
 
   // Fetch all swappable coins + sponsor info in parallel
   const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
   const [nsCoins, walCoins, suiCoins, xaumCoins, ikaCoins, sponsorInfo] = await Promise.all([
-    listCoinsOfType(transport, walletAddress, mainPackage.mainnet.coins.NS.type),
+    listCoinsOfType(transport, walletAddress, suinsCfg().coins.NS.type),
     listCoinsOfType(transport, walletAddress, WAL_TYPE),
     includeSui ? listCoinsOfType(transport, walletAddress, SUI_TYPE) : Promise.resolve([]),
     listCoinsOfType(transport, walletAddress, XAUM_TYPE),
@@ -2428,7 +2453,7 @@ export async function buildConsolidateToUsdcTx(
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
     const nsSwapResult = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_base_for_quote`,
-      typeArguments: [mainPackage.mainnet.coins.NS.type, USDC_TYPE],
+      typeArguments: [suinsCfg().coins.NS.type, USDC_TYPE],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
         nsCoin, zeroDEEP, tx.pure.u64(0), tx.object.clock(),
@@ -2553,7 +2578,7 @@ export async function buildSelfSwapTx(
 ): Promise<SelfSwapResult> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
-  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
   const tx = new Transaction();
   tx.setSender(walletAddress);
 
@@ -2634,7 +2659,7 @@ export async function buildSwapTx(
   // Same token — no swap needed
   if (inputCoinType === outputCoinType) throw new Error('Input and output are the same token');
 
-  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
 
   // Slippage protection — 2% tolerance on all swaps
   const SLIPPAGE_BPS = 200n;
@@ -2652,7 +2677,7 @@ export async function buildSwapTx(
   tx.setSender(walletAddress);
 
   // NS → USDC (DeepBook: NS is base, USDC is quote)
-  if (inputCoinType === mainPackage.mainnet.coins.NS.type && outputCoinType === USDC_TYPE) {
+  if (inputCoinType === suinsCfg().coins.NS.type && outputCoinType === USDC_TYPE) {
     const nsCoins = await listCoinsOfType(transport, walletAddress, inputCoinType);
     if (!nsCoins.length) throw new Error('No NS found');
     const nsCoin = tx.objectRef(nsCoins[0]);
@@ -2885,7 +2910,7 @@ export async function buildSwapTx(
   }
 
   // NS → XAUM (DeepBook NS→USDC, then Bluefin USDC→XAUM)
-  if (inputCoinType === mainPackage.mainnet.coins.NS.type && outputCoinType === XAUM_TYPE) {
+  if (inputCoinType === suinsCfg().coins.NS.type && outputCoinType === XAUM_TYPE) {
     const nsCoins = await listCoinsOfType(transport, walletAddress, inputCoinType);
     if (!nsCoins.length) throw new Error('No NS found');
     const nsCoin = tx.objectRef(nsCoins[0]);
@@ -2927,7 +2952,7 @@ export async function buildSwapTx(
   }
 
   // XAUM → NS (Bluefin XAUM→USDC, then DeepBook USDC→NS)
-  if (inputCoinType === XAUM_TYPE && outputCoinType === mainPackage.mainnet.coins.NS.type) {
+  if (inputCoinType === XAUM_TYPE && outputCoinType === suinsCfg().coins.NS.type) {
     const xaumCoins = await listCoinsOfType(transport, walletAddress, XAUM_TYPE);
     if (!xaumCoins.length) throw new Error('No XAUM found');
     const xaumCoin = tx.objectRef(xaumCoins[0]);
@@ -2954,7 +2979,7 @@ export async function buildSwapTx(
     const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
     const dbResult = tx.moveCall({
       target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
-      typeArguments: [mainPackage.mainnet.coins.NS.type, USDC_TYPE],
+      typeArguments: [suinsCfg().coins.NS.type, USDC_TYPE],
       arguments: [
         tx.sharedObjectRef({ objectId: DB_NS_USDC_POOL, initialSharedVersion: DB_NS_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
         usdcFromBf, zeroDEEP, tx.pure.u64(1), tx.object.clock(),
@@ -3218,8 +3243,8 @@ interface NsQuoteResult {
  * Returns best route with a compose function to add the swap to a PTB.
  */
 async function raceNsQuotes(usdcAmount: bigint): Promise<NsQuoteResult> {
-  const NS_TYPE = mainPackage.mainnet.coins.NS.type;
-  const USDC_TYPE = mainPackage.mainnet.coins.USDC.type;
+  const NS_TYPE = suinsCfg().coins.NS.type;
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
 
   // DeepBook direct: always available, known-good
   const deepbookQuote: NsQuoteResult = {

@@ -866,11 +866,14 @@ export function createZkLoginWallet(): Wallet {
             return { accounts: [] as readonly WalletAccount[] };
           }
 
-          // Interactive connect — generate ephemeral session and redirect to Google
-          // (UI should call startZkLogin() directly for provider choice, but default to Google)
-          const session = await generateEphemeralSession();
-          const url = buildOAuthUrl('google', session.nonce);
-          window.location.href = url;
+          // Interactive connect — prompt user to pick a provider, then redirect.
+          const picked = await showZkLoginPicker();
+          if (!picked) {
+            // User cancelled — return empty accounts, no redirect
+            return { accounts: [] as readonly WalletAccount[] };
+          }
+
+          await startZkLogin(picked);
 
           // This won't resolve — page is navigating away
           return { accounts: [] as readonly WalletAccount[] };
@@ -1032,4 +1035,163 @@ export function signOutZkLogin(): void {
   activeZkSession = null;
   clearEphemeralSession();
   clearZkLoginProof();
+}
+
+/**
+ * Convenience wrapper — start zkLogin with Google.
+ */
+export function signInWithGoogle(): Promise<void> {
+  return startZkLogin('google');
+}
+
+/**
+ * Convenience wrapper — start zkLogin with Apple.
+ */
+export function signInWithApple(): Promise<void> {
+  return startZkLogin('apple');
+}
+
+/**
+ * Show a minimal inline provider picker modal.
+ * Returns the chosen provider, or null if the user cancels.
+ *
+ * Pure DOM — no framework imports. Styled to match the .SKI aesthetic
+ * (monospace, green/cyan on black). Keyboard accessible (Esc cancels).
+ * The modal root has id `ski-zklogin-picker`.
+ */
+export function showZkLoginPicker(): Promise<OAuthProvider | null> {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined') {
+      resolve(null);
+      return;
+    }
+
+    // If a previous picker is still in the DOM, remove it first
+    const existing = document.getElementById('ski-zklogin-picker');
+    if (existing) existing.remove();
+
+    const root = document.createElement('div');
+    root.id = 'ski-zklogin-picker';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-label', 'Choose sign-in provider');
+    root.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:2147483646',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'background:rgba(0,0,0,0.82)',
+      'backdrop-filter:blur(4px)',
+      '-webkit-backdrop-filter:blur(4px)',
+      'font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
+    ].join(';');
+
+    const panel = document.createElement('div');
+    panel.style.cssText = [
+      'min-width:280px',
+      'max-width:92vw',
+      'padding:24px',
+      'background:#000',
+      'border:1px solid #00ff9c',
+      'border-radius:10px',
+      'box-shadow:0 0 24px rgba(0,255,156,0.25)',
+      'color:#00ff9c',
+      'display:flex',
+      'flex-direction:column',
+      'gap:14px',
+    ].join(';');
+
+    const title = document.createElement('div');
+    title.textContent = 'choose sign-in';
+    title.style.cssText = [
+      'font-size:13px',
+      'letter-spacing:0.12em',
+      'text-transform:uppercase',
+      'color:#7ef9d6',
+      'margin-bottom:4px',
+    ].join(';');
+
+    const makeButton = (label: string, accent: string): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.style.cssText = [
+        'appearance:none',
+        'cursor:pointer',
+        'padding:12px 16px',
+        'background:#000',
+        `color:${accent}`,
+        `border:1px solid ${accent}`,
+        'border-radius:6px',
+        'font:inherit',
+        'font-size:14px',
+        'text-align:left',
+        'transition:background 0.12s ease',
+      ].join(';');
+      b.addEventListener('mouseenter', () => {
+        b.style.background = 'rgba(0,255,156,0.08)';
+      });
+      b.addEventListener('mouseleave', () => {
+        b.style.background = '#000';
+      });
+      return b;
+    };
+
+    const googleBtn = makeButton('> continue with google', '#00ff9c');
+    const appleBtn = makeButton('> continue with apple', '#7ef9d6');
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'cancel';
+    cancelBtn.style.cssText = [
+      'appearance:none',
+      'cursor:pointer',
+      'margin-top:4px',
+      'padding:8px 12px',
+      'background:transparent',
+      'color:#6b7a75',
+      'border:1px dashed #2a3a34',
+      'border-radius:6px',
+      'font:inherit',
+      'font-size:12px',
+      'text-transform:uppercase',
+      'letter-spacing:0.1em',
+    ].join(';');
+
+    panel.appendChild(title);
+    panel.appendChild(googleBtn);
+    panel.appendChild(appleBtn);
+    panel.appendChild(cancelBtn);
+    root.appendChild(panel);
+    document.body.appendChild(root);
+
+    let settled = false;
+    const cleanup = (result: OAuthProvider | null) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      if (root.parentNode) root.parentNode.removeChild(root);
+      resolve(result);
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cleanup(null);
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+
+    googleBtn.addEventListener('click', () => cleanup('google'));
+    appleBtn.addEventListener('click', () => cleanup('apple'));
+    cancelBtn.addEventListener('click', () => cleanup(null));
+    root.addEventListener('click', (e) => {
+      if (e.target === root) cleanup(null);
+    });
+
+    // Focus first button for keyboard users
+    queueMicrotask(() => googleBtn.focus());
+  });
 }

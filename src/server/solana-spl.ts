@@ -14,6 +14,18 @@
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
+
+// Helius Sender — low-latency dual-routed (validator + Jito) tx broadcast.
+// Requires: skipPreflight=true, maxRetries=0, and a priority-fee tip
+// of at least 0.0002 SOL via ComputeBudget.setComputeUnitPrice.
+// https://www.helius.dev/docs/sending-transactions/sender
+const HELIUS_SENDER_URL = 'https://sender.helius-rpc.com/fast';
+// 0.0002 SOL = 200_000 lamports. For a 200k-CU tx this is
+// 200_000 * 1_000_000 / 200_000 = 1_000_000 micro-lamports/CU.
+// We set price at 1.2M micro-lamports/CU to clear the floor with margin.
+const SENDER_MIN_CU_PRICE_MICROLAMPORTS = 1_200_000n;
+const SENDER_CU_LIMIT = 200_000; // plenty for our 2-ix mint creations + 3-ix transfers
 
 // ── Base58 ────────────────────────────────────────────────────────────
 // Canonical Bitcoin-style Base58, verified to round-trip the Solana
@@ -220,6 +232,32 @@ function createATAIdempotentIx(
   };
 }
 
+/** ComputeBudget: SetComputeUnitLimit — bounds the max CU the tx can consume. */
+function setComputeUnitLimitIx(units: number): SolInstruction {
+  const b = new Uint8Array(5);
+  b[0] = 2; // instruction discriminator for SetComputeUnitLimit
+  new DataView(b.buffer).setUint32(1, units, true);
+  return { programId: b58decode(COMPUTE_BUDGET_PROGRAM), accounts: [], data: b };
+}
+
+/** ComputeBudget: SetComputeUnitPrice — priority-fee tip in micro-lamports per CU. */
+function setComputeUnitPriceIx(microLamports: bigint): SolInstruction {
+  const b = new Uint8Array(9);
+  b[0] = 3; // instruction discriminator for SetComputeUnitPrice
+  new DataView(b.buffer).setBigUint64(1, microLamports, true);
+  return { programId: b58decode(COMPUTE_BUDGET_PROGRAM), accounts: [], data: b };
+}
+
+/** Helper: prepend ComputeBudget instructions so Helius Sender's min-tip
+ *  requirement (0.0002 SOL via priority fee) is always met. */
+function withPriorityFee(ixs: SolInstruction[], cuPrice = SENDER_MIN_CU_PRICE_MICROLAMPORTS, cuLimit = SENDER_CU_LIMIT): SolInstruction[] {
+  return [
+    setComputeUnitLimitIx(cuLimit),
+    setComputeUnitPriceIx(cuPrice),
+    ...ixs,
+  ];
+}
+
 /** SPL Token: MintTo */
 function mintToIx(
   mint: Uint8Array,
@@ -322,6 +360,54 @@ function buildMessage(
 export interface SolanaRpcConfig {
   rpcs: string[];
   timeout?: number;
+  /** Optional Helius API key for the Sender endpoint. When set, every
+   *  sendTransaction call goes through Helius Sender first (low-latency
+   *  dual routing) and falls back to the `rpcs` pool on rejection. */
+  heliusApiKey?: string;
+}
+
+/**
+ * Submit a signed transaction via Helius Sender with an RPC fallback.
+ * Sender gives low-latency dual routing (validator + Jito) but rejects
+ * txs that don't meet its tip floor or skipPreflight/maxRetries
+ * requirements. On any non-success, fall back to the regular RPC pool
+ * via rpcCall('sendTransaction', ...).
+ */
+async function sendViaHelius(
+  config: SolanaRpcConfig,
+  txBase64: string,
+  apiKey: string | undefined,
+): Promise<string> {
+  const url = apiKey ? `${HELIUS_SENDER_URL}?api-key=${apiKey}` : HELIUS_SENDER_URL;
+  const body = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 'ski-' + Date.now(),
+    method: 'sendTransaction',
+    params: [txBase64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 }],
+  });
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(config.timeout || 15000),
+    });
+    if (r.ok) {
+      const d = await r.json() as { result?: string; error?: { message?: string } };
+      if (d.result) {
+        console.log(`[solana-spl] Helius Sender accepted ${d.result.slice(0, 12)}…`);
+        return d.result;
+      }
+      if (d.error) console.warn(`[solana-spl] Helius Sender rejected: ${d.error.message}`);
+    } else {
+      console.warn(`[solana-spl] Helius Sender HTTP ${r.status} ${r.statusText}`);
+    }
+  } catch (err) {
+    console.warn(`[solana-spl] Helius Sender fetch failed: ${err instanceof Error ? err.message : err}`);
+  }
+  // Fallback — use the regular RPC pool (Helius RPC → publicnode → ankr → mainnet-beta)
+  console.log('[solana-spl] falling back to RPC pool for sendTransaction');
+  return rpcCall(config, 'sendTransaction', [txBase64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 }]);
 }
 
 async function rpcCall(config: SolanaRpcConfig, method: string, params: any[]): Promise<any> {
@@ -398,10 +484,13 @@ export async function createSplMint(
 
   const tokenProgram = b58decode(TOKEN_PROGRAM);
 
-  const instructions: SolInstruction[] = [
+  // ComputeBudget instructions must be first in the PTB. withPriorityFee
+  // prepends setComputeUnitLimit + setComputeUnitPrice so Helius Sender's
+  // 0.0002 SOL minimum tip is met.
+  const instructions: SolInstruction[] = withPriorityFee([
     createAccountIx(payerPubkey, mintPubRaw, rentLamports, 82n, tokenProgram),
     initializeMint2Ix(mintPubRaw, decimals, payerPubkey), // payer = mint authority
-  ];
+  ]);
 
   const { message, signerCount } = buildMessage(payerPubkey, instructions, blockhash);
 
@@ -417,7 +506,7 @@ export async function createSplMint(
   const rawTx = concat(sigBytes, message);
   const txB64 = btoa(String.fromCharCode(...rawTx));
 
-  const result = await rpcCall(config, 'sendTransaction', [txB64, { encoding: 'base64' }]);
+  const result = await sendViaHelius(config, txB64, config.heliusApiKey);
   const mintAddr = b58encode(mintPubRaw);
   console.log(`[solana-spl] Created mint: ${mintAddr}, tx: ${result}`);
 
@@ -446,17 +535,17 @@ export async function mintSplTokens(
   const ata = await deriveATA(recipientPubkey, mintPubkey);
   const blockhash = await getRecentBlockhash(config);
 
-  const instructions: SolInstruction[] = [
+  const instructions: SolInstruction[] = withPriorityFee([
     createATAIdempotentIx(payerPubkey, ata, recipientPubkey, mintPubkey),
     mintToIx(mintPubkey, ata, payerPubkey, amount),
-  ];
+  ]);
 
   const { message } = buildMessage(payerPubkey, instructions, blockhash);
   const sig = await signFn(message);
   const rawTx = concat(compactU16(1), sig, message);
   const txB64 = btoa(String.fromCharCode(...rawTx));
 
-  const result = await rpcCall(config, 'sendTransaction', [txB64, { encoding: 'base64' }]);
+  const result = await sendViaHelius(config, txB64, config.heliusApiKey);
   const ataAddr = b58encode(ata);
   console.log(`[solana-spl] Minted ${amount} to ATA ${ataAddr}, tx: ${result}`);
 

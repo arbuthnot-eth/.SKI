@@ -5897,6 +5897,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     return {
       rpcs: this._solRpcs,
       timeout: 15000,
+      heliusApiKey: this.env.HELIUS_API_KEY,
     };
   }
 

@@ -10470,8 +10470,7 @@ function bindEvents() {
             const _scR = await fetch('https://graphql.mainnet.sui.io/graphql', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: `query($a:SuiAddress!){ address(address:$a){ objects(filter:{type:"0x2::coin::Coin<0x2::sui::SUI>"}, first:3){ nodes{ address version digest } } } }`, variables: { a: ws.address } }) });
             const _sc2 = (await _scR.json() as any)?.data?.address?.objects?.nodes ?? [];
             if (_sc2.length > 0) _tx.setGasPayment([{ objectId: _sc2[0].address, version: String(_sc2[0].version), digest: _sc2[0].digest }]);
-            const _bytes = await _tx.build();
-            const { digest } = await signAndExecuteTransaction(_bytes);
+            const { digest } = await signAndExecuteTransaction(_tx);
             showToast(`\u2713 ${data.count} vault${(data.count ?? 0) > 1 ? 's' : ''} recalled (${(data.totalSui ?? 0).toFixed(2)} SUI)`);
             setTimeout(() => refreshPortfolio(true), 3000);
           } catch (err) {
@@ -13201,6 +13200,8 @@ function bindEvents() {
             const names = recipients.join(', ');
             if (transferAmtUsd) {
               showToast(`$${transferAmtUsd} iUSD Thunder to ${names} sent`);
+              // Refresh balance after spending — 2s delay for tx indexing
+              setTimeout(() => refreshPortfolio(true), 2000);
             } else {
               showToast(`\u26a1 Thunder to ${names} sent`);
             }
@@ -14075,9 +14076,9 @@ function bindEvents() {
             if (_isFirstSettled && _settledCount > 0) {
               const _parts: string[] = [];
               const _netOut = _settledOutUsd > _settledInUsd;
-              if (_settledOutUsd > 0) _parts.push(`<span style="color:#ef4444">\u2191$</span>${_settledOutUsd % 1 === 0 ? _settledOutUsd : _settledOutUsd.toFixed(2)} sent`);
-              if (_settledInUsd > 0) _parts.push(`<span style="color:#4ade80">\u2193$</span>${_settledInUsd % 1 === 0 ? _settledInUsd : _settledInUsd.toFixed(2)} received`);
-              _parts.push(`${_settledCount} tx${_settledCount > 1 ? 's' : ''}`);
+              if (_settledOutUsd > 0) _parts.push(`<span style="color:#ef4444">\u2191</span>$${_settledOutUsd % 1 === 0 ? _settledOutUsd : _settledOutUsd.toFixed(2)}`);
+              if (_settledInUsd > 0) _parts.push(`<span style="color:#4ade80">\u2193</span>$${_settledInUsd % 1 === 0 ? _settledInUsd : _settledInUsd.toFixed(2)}`);
+              _parts.push(`${_settledCount}tx`);
               const _summaryContent = _parts.join(' \u00b7 ');
               const _explorerUrl = _lastSettledDigest ? `https://suiscan.xyz/mainnet/tx/${_lastSettledDigest}` : '';
               return _explorerUrl
@@ -14254,6 +14255,59 @@ function bindEvents() {
               _actionBtn.className = 'ski-idle-ns-action ski-idle-ns-action--suiami';
               _actionBtn.title = `Claim / recall ${_liveBubbles.length} transfer${_liveBubbles.length > 1 ? 's' : ''} ($${_liveTotal.toFixed(2)})`;
               _actionBtn.disabled = false;
+            }
+
+            // Fix 2: Show claimable amount pill on the idle card balance
+            const _unclaimedIncoming = _liveBubbles.filter(b => b.classList.contains('ski-idle-bubble--in'));
+            let _unclaimedUsd = 0;
+            for (const b of _unclaimedIncoming) {
+              const amtEl = b.querySelector('.ski-idle-bubble-amt');
+              const m = (amtEl?.textContent || '').match(/\$(\d+(?:\.\d+)?)/);
+              if (m) _unclaimedUsd += parseFloat(m[1]);
+            }
+            if (_unclaimedUsd > 0) {
+              const cardBal = _idleOverlay?.querySelector('#ski-idle-card-bal') as HTMLElement | null;
+              if (cardBal) {
+                const existing = cardBal.querySelector('.ski-idle-claimable');
+                if (existing) existing.remove();
+                const pill = document.createElement('span');
+                pill.className = 'ski-idle-claimable';
+                pill.style.cssText = 'margin-left:4px;padding:1px 6px;border-radius:8px;background:rgba(251,191,36,0.2);color:#fbbf24;font-size:0.6rem;font-weight:700;cursor:pointer';
+                pill.title = 'Click transfer bubbles in Storm to claim';
+                pill.textContent = `+$${_unclaimedUsd % 1 === 0 ? _unclaimedUsd : _unclaimedUsd.toFixed(2)} claimable`;
+                cardBal.appendChild(pill);
+              }
+
+              // Fix 3: Prepend a "Claim All" button to the convo
+              const _existingClaimAll = convoEl.querySelector('.ski-idle-claim-all');
+              if (!_existingClaimAll) {
+                const claimAllBtn = document.createElement('button');
+                claimAllBtn.className = 'ski-idle-bubble ski-idle-bubble--summary ski-idle-claim-all';
+                claimAllBtn.style.cssText = 'cursor:pointer;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.3);color:#fbbf24;font-weight:700;width:100%;margin-bottom:6px';
+                claimAllBtn.textContent = `\u26A1 Claim $${_unclaimedUsd % 1 === 0 ? _unclaimedUsd : _unclaimedUsd.toFixed(2)}`;
+                claimAllBtn.addEventListener('click', async () => {
+                  claimAllBtn.disabled = true;
+                  claimAllBtn.textContent = 'Claiming\u2026';
+                  const unclaimed = convoEl.querySelectorAll('.ski-idle-bubble--transfer.ski-idle-bubble--in:not(.ski-idle-bubble--transfer-settled)');
+                  for (const bub of unclaimed) {
+                    try { (bub as HTMLElement).click(); await new Promise(r => setTimeout(r, 4000)); } catch {}
+                  }
+                  claimAllBtn.textContent = '\u2713 Done';
+                  setTimeout(() => claimAllBtn.remove(), 3000);
+                });
+                // Insert after the progress bar but before the bubbles
+                const _progressBar = convoEl.querySelector('.ski-idle-convo-progress');
+                if (_progressBar && _progressBar.nextSibling) {
+                  convoEl.insertBefore(claimAllBtn, _progressBar.nextSibling);
+                } else {
+                  convoEl.prepend(claimAllBtn);
+                }
+                convoEl.scrollTop = convoEl.scrollHeight;
+              }
+            } else {
+              // No unclaimed incoming — remove stale pill/button if present
+              _idleOverlay?.querySelector('.ski-idle-claimable')?.remove();
+              convoEl.querySelector('.ski-idle-claim-all')?.remove();
             }
           } catch (e) {
             console.warn('[iou] settlement poll failed:', e instanceof Error ? e.message : e);
@@ -14614,6 +14668,8 @@ function bindEvents() {
                       // paint and the stamped pill.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                       _markSettled(_txDigest, claimDigest || undefined);
+                      // Refresh balance immediately so the claimed funds show up
+                      setTimeout(() => refreshPortfolio(true), 2000);
                       if (claimDigest) {
                         _bubEl.dataset.tx = claimDigest;
                         _bubEl.dataset.claimTx = claimDigest;
@@ -15280,7 +15336,7 @@ function bindEvents() {
         if (icon) {
           icon.textContent = muted ? '\u{1F507}' : '\u{1F50A}';
           icon.classList.toggle('ski-idle-audio-toggle--on', !muted);
-          icon.title = muted ? 'Unmute background audio' : 'Mute background audio';
+          icon.title = muted ? 'Unmute \u2192 BASMR' : 'Mute \u2192 SKI';
         }
       };
       const _tryUnmuteOnGesture = () => {
@@ -15320,42 +15376,39 @@ function bindEvents() {
         document.addEventListener(_ev, _unmuteOnce, { passive: true });
       }
 
-      // Small mute / unmute toggle in the corner of the video.
+      // Unified audio/video toggle — muted = ski-idle, unmuted = BASMR.
+      // One button controls both scene and sound.
       const _audioToggle = document.createElement('button');
       _audioToggle.className = 'ski-idle-audio-toggle';
       _audioToggle.type = 'button';
-      _audioToggle.title = 'Toggle background audio';
+      _audioToggle.title = 'Unmute \u2192 BASMR';
       _audioToggle.textContent = '\u{1F507}';
       _idleOverlay?.appendChild(_audioToggle);
       _audioToggle.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!_idleVideo) return;
-        // Plain mute/unmute toggle — the audio toggle no longer cycles
-        // the background video. Whatever's playing stays playing.
-        const nextMuted = !_idleVideo.muted;
-        _setMuted(nextMuted);
-        _userPrefersAudio = !nextMuted;
-        try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
-        if (!nextMuted) {
-          // Resume playback under user gesture so browsers lift the
-          // autoplay mute gate. Catch + ignore if still blocked.
+        const goingToUnmuted = _idleVideo.muted;
+        if (goingToUnmuted) {
+          // Unmute → switch to BASMR
+          const basmrIdx = IDLE_BACKGROUNDS.findIndex(b => b.id === 'basmr');
+          if (basmrIdx >= 0 && _currentBgIdx !== basmrIdx) {
+            _currentBgIdx = basmrIdx;
+            void _loadIdleBg(IDLE_BACKGROUNDS[basmrIdx]);
+          }
+          _setMuted(false);
+          _userPrefersAudio = true;
           try { await _idleVideo.play(); } catch {}
+        } else {
+          // Mute → switch to ski-idle
+          const skiIdx = IDLE_BACKGROUNDS.findIndex(b => b.id === 'ski-idle');
+          if (skiIdx >= 0 && _currentBgIdx !== skiIdx) {
+            _currentBgIdx = skiIdx;
+            void _loadIdleBg(IDLE_BACKGROUNDS[skiIdx]);
+          }
+          _setMuted(true);
+          _userPrefersAudio = false;
         }
-      });
-
-      // Video toggle — cycle between idle backgrounds. Small
-      // button next to the audio toggle so the user can switch
-      // scenes without leaving the overlay.
-      const _bgToggle = document.createElement('button');
-      _bgToggle.className = 'ski-idle-bg-toggle';
-      _bgToggle.type = 'button';
-      _bgToggle.title = 'Switch background';
-      _bgToggle.textContent = '\u{1F3AC}';
-      _idleOverlay?.appendChild(_bgToggle);
-      _bgToggle.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        _currentBgIdx = (_currentBgIdx + 1) % IDLE_BACKGROUNDS.length;
-        void _loadIdleBg(IDLE_BACKGROUNDS[_currentBgIdx]);
+        try { localStorage.setItem('ski:idle-bg-audio', _userPrefersAudio ? '1' : '0'); } catch {}
       });
 
       // ─── Storm purge (×) — bulk-clear all messages in the open storm ──

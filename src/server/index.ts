@@ -79,7 +79,7 @@ const ADMIN_ROUTES = [
   '/api/thunder/set-fee', '/api/swap-sui-for-deep', '/api/rumble-ultron',
   '/api/create-iusd-pool', '/api/seed-iusd-pool',
   '/api/create-iusd-sol-mint', '/api/bam-mint-iusd-sol',
-  '/api/lend-usdc', '/api/kamino-deposit', '/api/migrate',
+  '/api/lend-usdc', '/api/kamino-deposit', '/api/kamino-deposit-usdc', '/api/migrate',
 ];
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
@@ -2024,6 +2024,37 @@ app.post('/api/cache/kamino-deposit', async (c) => {
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Kamino USDC deposit — deposit idle Solana USDC to Kamino Lend (admin)
+app.post('/api/cache/kamino-deposit-usdc', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({})) as { amount?: number };
+    const amt = body.amount ? `&amount=${body.amount}` : '';
+    const res = await authedTreasuryStub(c).fetch(new Request(`https://treasury-do/?kamino-deposit-usdc${amt}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: '{}',
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Kamino positions — proof of reserves (public, read-only)
+app.get('/api/cache/kamino-positions', async (c) => {
+  try {
+    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?kamino-positions', {
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

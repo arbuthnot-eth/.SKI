@@ -18,7 +18,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { normalizeSuiAddress, toBase64 } from '@mysten/sui/utils';
 import { raceExecuteTransaction, raceJsonRpc, GQL_URL } from '../rpc.js';
-import { createSplMint, mintSplTokens, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
+import { createSplMint, mintSplTokens, deriveATA, b58decode, b58encode, type SolanaRpcConfig } from '../solana-spl.js';
 import { deriveAddress, chainsForCurve, IkaCurve } from '../../client/chains.js';
 
 // ─── NAVI Protocol constants ──────────────────────────────────────────
@@ -303,8 +303,8 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // ── Internal auth gate ──────────────────────────────────────────
     // All mutating requests from the Worker must include x-treasury-auth.
     // Read-only endpoints (status, squid-stats, shade-list, deposit-status,
-    // deposit-addresses, quest-bounties) are exempt.
-    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties'];
+    // deposit-addresses, quest-bounties, kamino-positions) are exempt.
+    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties', 'kamino-positions'];
     const isReadOnly = readOnlyParams.some(p => url.searchParams.has(p));
     const isWebSocket = request.headers.get('upgrade') === 'websocket';
     if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
@@ -740,6 +740,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         salt: holder ? (s as any).salt : undefined,
       }));
       return new Response(JSON.stringify({ shades: result }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // Kamino positions — proof of reserves (read-only, no auth)
+    if ((url.pathname.endsWith('/kamino-positions') || url.searchParams.has('kamino-positions')) && request.method === 'GET') {
+      const positions = ((this.state as any).kamino_positions ?? []) as Array<Record<string, any>>;
+      return new Response(JSON.stringify({ positions, count: positions.length }), { headers: { 'content-type': 'application/json' } });
     }
 
     // Quest Prism — client sends commitment + amount only, no domain ever leaves the client.
@@ -1428,6 +1434,33 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           prismBlobId,
           commitment: intent.commitment,
           memo: `Send ${solPayAmount} SOL → Kamino ${strategy} → ${iusdValue.toFixed(2)} iUSD on Sui`,
+        }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
+    // Kamino USDC deposit — deposit Solana USDC to Kamino Lend
+    if ((url.pathname.endsWith('/kamino-deposit-usdc') || url.searchParams.has('kamino-deposit-usdc')) && request.method === 'POST') {
+      try {
+        if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
+        const amountParam = parseFloat(url.searchParams.get('amount') || '0');
+        const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        // Accept explicit amount via query param or try to auto-detect balance
+        let depositAmt = amountParam;
+        if (!depositAmt) {
+          const usdcBal = await this._getSolanaUsdcBalance(solAddr);
+          if (usdcBal <= 5) {
+            return new Response(JSON.stringify({ error: `USDC balance too low: $${usdcBal.toFixed(2)} (need >$5). Pass { amount: N } to override.` }), { status: 400, headers: { 'content-type': 'application/json' } });
+          }
+          depositAmt = usdcBal - 5;
+        }
+        const txSig = await this._depositUsdcToKamino(depositAmt);
+        return new Response(JSON.stringify({
+          deposited: depositAmt,
+          txSignature: txSig,
+          solAddress: solAddr,
         }), { headers: { 'content-type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
@@ -5600,6 +5633,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private static readonly KAMINO_API = 'https://api.kamino.finance';
   private static readonly KAMINO_MARKET = '7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF';
   private static readonly KAMINO_SOL_RESERVE = '2gc9Dm1eB6UgVYFBUN9bWks6Kes9PbWSaPaa9DqyvEiN';
+  private static readonly KAMINO_USDC_RESERVE = 'D1cqtVThyebK9KXKGXrCEuiqaNf5L4hXcsLvBMiLevHa';
   private get _solRpcs(): string[] {
     return [
       ...(this.env.HELIUS_API_KEY ? [`https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`] : []),
@@ -5689,6 +5723,18 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         const d = await r.json() as { result?: string; error?: { message?: string } };
         if (d.result) {
           console.log(`[OpenCLOB] Kamino Lend deposit: ${solAmount.toFixed(4)} SOL, tx: ${d.result}`);
+
+          // Track position for proof of reserves
+          const positions = ((this.state as any).kamino_positions ?? []) as Array<Record<string, any>>;
+          positions.push({
+            reserve: 'SOL',
+            amount: solAmount,
+            depositTx: d.result,
+            depositedAt: Date.now(),
+            purpose: 'idle-yield',
+          });
+          this.setState({ ...this.state, kamino_positions: positions } as any);
+
           return d.result;
         }
         if (d.error) console.warn(`[OpenCLOB] Kamino submit to ${rpc}: ${d.error.message}`);
@@ -5696,6 +5742,140 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     }
 
     throw new Error('Kamino deposit tx submission failed on all RPCs');
+  }
+
+  /** Deposit USDC into Kamino Lend. Amount in USDC units (6 decimals). Returns Solana tx signature. */
+  private async _depositUsdcToKamino(usdcAmount: number): Promise<string> {
+    if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
+    const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+    const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+
+    // 1. Get unsigned deposit tx from Kamino REST API
+    const resp = await fetch(`${TreasuryAgents.KAMINO_API}/ktx/klend/deposit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        wallet: solAddr,
+        market: TreasuryAgents.KAMINO_MARKET,
+        reserve: TreasuryAgents.KAMINO_USDC_RESERVE,
+        amount: usdcAmount.toFixed(6),
+      }),
+      signal: AbortSignal.timeout(LONG_FETCH_TIMEOUT_MS),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Kamino USDC API ${resp.status}: ${text}`);
+    }
+
+    const { transaction: txBase64 } = await resp.json() as { transaction: string };
+    if (!txBase64) throw new Error('Kamino API returned no transaction');
+
+    // 2. Decode the base64 VersionedTransaction
+    const txRaw = Uint8Array.from(atob(txBase64), c => c.charCodeAt(0));
+
+    // 3. Extract message bytes for signing (same format as SOL deposit)
+    let offset = 0;
+    let sigCount = txRaw[offset];
+    offset += 1;
+    if (sigCount >= 0x80) {
+      sigCount = (sigCount & 0x7f) | (txRaw[offset] << 7);
+      offset += 1;
+    }
+
+    const sigStart = offset;
+    offset += sigCount * 64;
+
+    const messageBytes = txRaw.slice(offset);
+
+    // 4. Sign the message with Ed25519
+    const signature = await keypair.sign(messageBytes);
+
+    // 5. Insert signature into the first slot
+    const signedTx = new Uint8Array(txRaw.length);
+    signedTx.set(txRaw);
+    signedTx.set(signature, sigStart);
+
+    // 6. Submit to Solana
+    const signedB64 = btoa(String.fromCharCode(...signedTx));
+
+    for (const rpc of this._solRpcs) {
+      try {
+        const r = await fetch(rpc, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1,
+            method: 'sendTransaction',
+            params: [signedB64, { encoding: 'base64', skipPreflight: false }],
+          }),
+          signal: AbortSignal.timeout(LONG_FETCH_TIMEOUT_MS),
+        });
+        const d = await r.json() as { result?: string; error?: { message?: string } };
+        if (d.result) {
+          console.log(`[OpenCLOB] Kamino USDC deposit: ${usdcAmount.toFixed(2)} USDC, tx: ${d.result}`);
+
+          // Track position for proof of reserves
+          const positions = ((this.state as any).kamino_positions ?? []) as Array<Record<string, any>>;
+          positions.push({
+            reserve: 'USDC',
+            amount: usdcAmount,
+            depositTx: d.result,
+            depositedAt: Date.now(),
+            purpose: 'idle-yield',
+          });
+          this.setState({ ...this.state, kamino_positions: positions } as any);
+
+          return d.result;
+        }
+        if (d.error) console.warn(`[OpenCLOB] Kamino USDC submit to ${rpc}: ${d.error.message}`);
+      } catch { /* try next */ }
+    }
+
+    throw new Error('Kamino USDC deposit tx submission failed on all RPCs');
+  }
+
+  /** Query USDC SPL token balance for a Solana address. Returns balance in USDC units (6 decimals). */
+  /** Derive the Associated Token Account address for a wallet + mint (base58 strings). */
+  private async _deriveAta(wallet: string, mint: string): Promise<string> {
+    const pda = await deriveATA(b58decode(wallet), b58decode(mint));
+    return b58encode(pda);
+  }
+
+  private async _getSolanaUsdcBalance(solAddress: string): Promise<number> {
+    // Query USDC balance via getTokenAccountBalance on the ATA.
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    let ata: string;
+    try {
+      ata = await this._deriveAta(solAddress, USDC_MINT);
+    } catch {
+      ata = '27kwRYini6NhoyCjeSf7MnxEHjTtXDorpYhU3DuWXbWj'; // ultron fallback
+    }
+    console.log(`[USDC balance] ATA for ${solAddress.slice(0, 8)}…: ${ata}`);
+    const rpcs = [
+      ...(this.env.HELIUS_API_KEY ? [`https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`] : []),
+      'https://api.mainnet-beta.solana.com',
+    ];
+    for (const rpc of rpcs) {
+      try {
+        const res = await fetch(rpc, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1,
+            method: 'getTokenAccountBalance',
+            params: [ata],
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        const data = await res.json() as any;
+        if (data.error) { console.warn(`[USDC balance] ${rpc.slice(0, 30)}… error:`, data.error.message); continue; }
+        const uiStr = data?.result?.value?.uiAmountString;
+        if (uiStr != null) return parseFloat(uiStr);
+        return 0;
+      } catch { continue; }
+    }
+    return 0;
   }
 
   // ─── OpenCLOB: iUSD SPL on Solana (BAM native mint) ─────────────────
@@ -7148,6 +7328,20 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       this.setState({ ...this.state, shades } as any);
 
       console.log(`[shade-proxy] ${label}.sui shaded → ${targetAddress}, deposit=${Number(iusdDepositMist)/1e9} iUSD, orderId=${orderId}, digest=${digest}`);
+
+      // Auto-deposit idle Solana USDC to Kamino for yield
+      try {
+        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const usdcBal = await this._getSolanaUsdcBalance(solAddr);
+        if (usdcBal > 5) { // keep $5 liquid
+          const depositAmt = usdcBal - 5;
+          const kaminoTx = await this._depositUsdcToKamino(depositAmt);
+          console.log(`[shade-proxy] Deposited $${depositAmt.toFixed(2)} USDC to Kamino: ${kaminoTx}`);
+        }
+      } catch (e) {
+        console.warn('[shade-proxy] Kamino auto-deposit failed:', e instanceof Error ? e.message : e);
+      }
+
       return { digest, orderId, depositMist: iusdDepositMist.toString(), depositUsd };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

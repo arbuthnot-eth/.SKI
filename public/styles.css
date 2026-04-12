@@ -2884,33 +2884,11 @@ body {
 /* Audio toggle — matches the .ski-idle-quick-btn family (32x32, black fill,
    colored border + icon, hover fills with accent). Sits top-left of the
    idle overlay on top of the background video. */
-.ski-idle-bg-toggle {
-  all: unset;
-  position: absolute;
-  top: 8px;
-  left: 44px;
-  z-index: 6;
-  width: 28px;
-  height: 28px;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.85rem;
-  background: rgba(0, 0, 0, 0.7);
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #fff;
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 0.15s;
-}
-.ski-idle-bg-toggle:hover { opacity: 1; }
 .ski-idle-audio-toggle {
   all: unset;
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 28px;
+  right: 8px;
   z-index: 6;
   width: 32px;
   height: 32px;
@@ -2935,13 +2913,13 @@ body {
 /* When unmuted, use the green "active" treatment matching --iusd and --squid
    active states so it reads as an engaged toggle at a glance. */
 .ski-idle-audio-toggle--on {
-  background: rgba(34, 197, 94, 0.3);
-  border-color: rgba(34, 197, 94, 0.6);
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
   color: #22c55e;
 }
 .ski-idle-audio-toggle--on:hover {
-  background: rgba(34, 197, 94, 0.4);
-  border-color: rgba(34, 197, 94, 0.8);
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.5);
 }
 .ski-idle-iusd-btn {
   all: unset;

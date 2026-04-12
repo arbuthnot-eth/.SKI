@@ -2493,6 +2493,135 @@ app.get('/api/cache/rumble', async (c) => {
   }
 });
 
+// ── Helius webhook: general-purpose event receiver ──
+// Auth-gated via HELIUS_WEBHOOK_SECRET. Logs payload and dispatches the
+// set of touched accounts so downstream DOs can trigger balance refresh
+// or event-aware behavior. Separate from /api/sol-webhook, which remains
+// the treasury-specific deposit-detection entry point.
+app.post('/api/helius/webhook', async (c) => {
+  const secret = c.env.HELIUS_WEBHOOK_SECRET;
+  if (secret) {
+    const auth = c.req.header('Authorization') || '';
+    const expected = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+    if (expected !== secret) return c.json({ error: 'Unauthorized' }, 401);
+  }
+  try {
+    const payload = await c.req.json().catch(() => []) as Array<Record<string, unknown>>;
+    const events = Array.isArray(payload) ? payload : [payload];
+    const touched = new Set<string>();
+    for (const ev of events) {
+      const type = ev.type as string | undefined;
+      const sig = ev.signature as string | undefined;
+      // Enhanced Helius payload carries accountData[]; raw payload carries
+      // transaction.message.accountKeys[]. Walk whichever is present.
+      const accountData = ev.accountData as Array<{ account?: string }> | undefined;
+      if (Array.isArray(accountData)) {
+        for (const a of accountData) if (a.account) touched.add(a.account);
+      }
+      const nativeTransfers = ev.nativeTransfers as Array<{ fromUserAccount?: string; toUserAccount?: string }> | undefined;
+      if (Array.isArray(nativeTransfers)) {
+        for (const t of nativeTransfers) {
+          if (t.fromUserAccount) touched.add(t.fromUserAccount);
+          if (t.toUserAccount) touched.add(t.toUserAccount);
+        }
+      }
+      const tokenTransfers = ev.tokenTransfers as Array<{ fromUserAccount?: string; toUserAccount?: string }> | undefined;
+      if (Array.isArray(tokenTransfers)) {
+        for (const t of tokenTransfers) {
+          if (t.fromUserAccount) touched.add(t.fromUserAccount);
+          if (t.toUserAccount) touched.add(t.toUserAccount);
+        }
+      }
+      console.log(`[helius-webhook] ${type ?? 'UNKNOWN'} ${sig ?? ''} touched ${touched.size} accounts`);
+    }
+    // Forward to treasury so it can cache-invalidate per-address state.
+    // Fire-and-forget; the HTTP 200 to Helius must not wait on fan-out.
+    if (touched.size > 0) {
+      const addresses = Array.from(touched);
+      c.executionCtx.waitUntil(
+        authedTreasuryStub(c).fetch(new Request('https://treasury-do/?helius-event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+          body: JSON.stringify({ events, addresses }),
+        })).catch((e) => console.warn('[helius-webhook] treasury fan-out failed:', e?.message ?? e)),
+      );
+    }
+    return c.json({ ok: true, received: events.length, touched: touched.size });
+  } catch (err) {
+    console.warn('[helius-webhook] parse failed:', err instanceof Error ? err.message : err);
+    return c.json({ error: String(err) }, 400);
+  }
+});
+
+// ── Helius webhook management ──
+// Register a new webhook subscription through Helius's v0 API. Admin
+// endpoint: requires the internal treasury auth header derived from the
+// ultron keeper key, same gate we use elsewhere.
+app.post('/api/cache/helius-webhook-register', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not set' }, 500);
+    const body = await c.req.json() as {
+      accountAddresses: string[];
+      transactionTypes?: string[];
+      webhookType?: string;
+    };
+    if (!Array.isArray(body.accountAddresses) || body.accountAddresses.length === 0) {
+      return c.json({ error: 'accountAddresses required' }, 400);
+    }
+    // Derive our own public webhook URL from the inbound host — works
+    // identically on sui.ski and the dotski-devnet staging worker.
+    const origin = new URL(c.req.url).origin;
+    const webhookURL = `${origin}/api/helius/webhook`;
+    const secret = c.env.HELIUS_WEBHOOK_SECRET;
+    if (!secret) return c.json({ error: 'HELIUS_WEBHOOK_SECRET not set — configure it first' }, 500);
+    const createRes = await fetch(`https://api-mainnet.helius-rpc.com/v0/webhooks?api-key=${c.env.HELIUS_API_KEY}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        webhookURL,
+        authHeader: `Bearer ${secret}`,
+        webhookType: body.webhookType || 'enhanced',
+        transactionTypes: body.transactionTypes || ['TRANSFER', 'SWAP', 'TOKEN_MINT', 'NFT_SALE'],
+        accountAddresses: body.accountAddresses,
+      }),
+    });
+    const text = await createRes.text();
+    try { return c.json(JSON.parse(text), createRes.status as any); }
+    catch { return c.json({ error: text }, createRes.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// List all registered webhooks for this project — read-only, no auth
+// needed (the API key scope already restricts to our project).
+app.get('/api/cache/helius-webhook-list', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not set' }, 500);
+    const r = await fetch(`https://api-mainnet.helius-rpc.com/v0/webhooks?api-key=${c.env.HELIUS_API_KEY}`);
+    const text = await r.text();
+    try { return c.json(JSON.parse(text), r.status as any); }
+    catch { return c.json({ error: text }, r.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Delete a webhook by ID — cleanup path for stale subscriptions.
+app.post('/api/cache/helius-webhook-delete', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not set' }, 500);
+    const body = await c.req.json() as { webhookID: string };
+    if (!body.webhookID) return c.json({ error: 'webhookID required' }, 400);
+    const r = await fetch(`https://api-mainnet.helius-rpc.com/v0/webhooks/${body.webhookID}?api-key=${c.env.HELIUS_API_KEY}`, { method: 'DELETE' });
+    const text = await r.text();
+    try { return c.json(JSON.parse(text), r.status as any); }
+    catch { return c.json({ ok: r.ok }, r.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Helius webhook: instant SOL deposit detection ──
 app.post('/api/sol-webhook', async (c) => {
   const secret = c.env.HELIUS_WEBHOOK_SECRET;

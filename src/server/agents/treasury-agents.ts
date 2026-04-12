@@ -1792,6 +1792,36 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Helius webhook fan-out: the worker's /api/helius/webhook forwards
+    // every Solana event's touched-account set here so the DO can
+    // invalidate any per-address caches. Right now we log + store the
+    // most recent events in state; a later move hooks this into
+    // per-user push notifications.
+    if ((url.pathname.endsWith('/helius-event') || url.searchParams.has('helius-event')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as {
+          events: Array<Record<string, unknown>>;
+          addresses: string[];
+        };
+        const recent = ((this.state as any).helius_recent_events as Array<{ ts: number; addresses: string[]; type?: string; signature?: string }> | undefined) || [];
+        for (const ev of body.events ?? []) {
+          recent.unshift({
+            ts: Date.now(),
+            addresses: body.addresses,
+            type: ev.type as string | undefined,
+            signature: ev.signature as string | undefined,
+          });
+        }
+        // Keep the last 64 events, drop the rest.
+        const trimmed = recent.slice(0, 64);
+        this.setState({ ...this.state, helius_recent_events: trimmed } as any);
+        console.log(`[TreasuryAgents] helius-event: ingested ${body.events?.length ?? 0} events, ${body.addresses?.length ?? 0} addresses, retained ${trimmed.length}`);
+        return new Response(JSON.stringify({ ok: true, ingested: body.events?.length ?? 0 }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     // OpenCLOB: iUSD SPL on Solana — read-only mint address (no auth)
     if ((url.pathname.endsWith('/iusd-sol-mint') || url.searchParams.has('iusd-sol-mint')) && request.method === 'GET') {
       const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;

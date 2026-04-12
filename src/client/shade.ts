@@ -90,6 +90,40 @@ export async function scheduleShadeExecution(params: {
 }
 
 /**
+ * Schedule a StableShadeOrder<T> for auto-execution. Same as
+ * scheduleShadeExecution but targets the `scheduleStable` DO method
+ * so the server knows to use execute_stable + iUSD→USDC→NS swap at
+ * grace-end alarm time. `initialSharedVersion` is mandatory — the
+ * executor builds a sharedObjectRef against the order object.
+ */
+export async function scheduleStableShadeExecution(params: {
+  objectId: string;
+  domain: string;
+  executeAfterMs: number;
+  targetAddress: string;
+  salt: string;
+  ownerAddress: string;
+  depositMist: string;
+  initialSharedVersion: number;
+  coinType?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  if (client) {
+    try {
+      return await client.call<{ success: boolean; error?: string }>('scheduleStable', [params]);
+    } catch { /* fall through to HTTP */ }
+  }
+  const host = _host();
+  const proto = host.startsWith('localhost') ? 'http' : 'https';
+  const url = `${proto}://${host}/agents/shade-executor-agent/${params.ownerAddress}?schedule-stable`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return res.json() as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
  * Cancel a scheduled Shade order (removes the alarm).
  * Call this after the user cancels the on-chain order.
  */

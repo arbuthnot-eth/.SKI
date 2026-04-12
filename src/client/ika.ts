@@ -26,11 +26,31 @@ import { grpcClient, gqlClient, jsonRpcClient } from '../rpc.js';
 
 let ikaClient: IkaClient | null = null;
 
+/**
+ * Runtime IKA network detection — mirrors getSuinsNetwork() in src/suins.ts.
+ * Returns 'testnet' for localhost and dotski-devnet.*.workers.dev, else 'mainnet'.
+ *
+ * NOTE: IKA testnet DKG is currently BLOCKED — IKA_ENC_KEY table IDs below
+ * are mainnet-specific and testnet equivalents aren't wired up yet. The
+ * network detection exists so IkaClient can be pointed at the right Sui
+ * network, and so getProtocolPublicParametersDirect() can throw a clear
+ * "testnet not yet supported" error instead of silently hitting nonexistent
+ * mainnet object IDs.
+ */
+export function getIkaNetwork(): 'mainnet' | 'testnet' {
+  try {
+    const host = (typeof location !== 'undefined' ? location.hostname : '') || '';
+    if (host === 'localhost' || host === '127.0.0.1') return 'testnet';
+    if (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev')) return 'testnet';
+  } catch {}
+  return 'mainnet';
+}
+
 /** JSON-RPC via same-origin proxy — used for getCoins, executeTransactionBlock */
 let localJsonRpc: SuiJsonRpcClient | null = null;
 function getLocalJsonRpc(): SuiJsonRpcClient {
   if (!localJsonRpc) {
-    localJsonRpc = new SuiJsonRpcClient({ url: '/api/rpc', network: 'mainnet' });
+    localJsonRpc = new SuiJsonRpcClient({ url: '/api/rpc', network: getIkaNetwork() });
   }
   return localJsonRpc;
 }
@@ -39,7 +59,7 @@ let initPromise: Promise<void> | null = null;
 
 async function getClient(): Promise<IkaClient> {
   if (!ikaClient) {
-    const config = getNetworkConfig('mainnet');
+    const config = getNetworkConfig(getIkaNetwork());
 
     // Race all three transports — first one to initialize() wins.
     // gRPC has pagination bug, GraphQL hung before, JSON-RPC works but sunsets April 2026.
@@ -97,6 +117,14 @@ async function getProtocolPublicParametersDirect(
   // Use gRPC for TableVec reads — fast binary protocol, no query size limit.
   // readTableVecAsRawBytes uses hasNextPage (not the broken cursor===cursor pattern)
   // so gRPC pagination works fine here. GraphQL hits 5KB query payload limit.
+  //
+  // IKA_ENC_KEY table IDs are mainnet-specific. On testnet we don't yet have
+  // equivalent network-DKG / reconfig TableVec object IDs, so this path must
+  // fail loudly rather than silently querying nonexistent objects.
+  // TODO(devnet): populate testnet IKA_ENC_KEY constants once available.
+  if (getIkaNetwork() !== 'mainnet') {
+    throw new Error('IKA testnet not yet supported — mainnet only. DKG table IDs are not wired up for testnet.');
+  }
   const config = getNetworkConfig('mainnet');
   const readerClient = new IkaClient({ config, suiClient: grpcClient as any });
   await readerClient.initialize().catch(() => {}); // non-fatal

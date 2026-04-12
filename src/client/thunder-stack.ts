@@ -106,20 +106,25 @@ const SEAL_SERVERS_MAINNET = [
   { objectId: '0x4a65b4ff7ba8f4b538895ee35959f982a95f0db7e2a202ec989d261ea927286a', weight: 1 }, // H2O Nodes
 ];
 
-// Testnet Seal key servers (Mysten-operated open-mode allowlist, 2-of-3 threshold).
+// Testnet Seal key servers (Mysten-operated open-mode allowlist, 2-of-2 threshold).
 // @mysten/seal v1.1.1 does NOT export testnet defaults — these object IDs come from
-// the Seal testnet registry. If decryption fails on testnet, verify against:
+// the Seal testnet registry. Only two verified servers are included here; a third
+// was previously hand-coded with the wrong length (65 hex chars, caught by reviewer5)
+// and has been dropped. SDK will fall back to 2-of-2 threshold until a third
+// verified testnet server is added.
 //   TODO: https://github.com/MystenLabs/seal/blob/main/Design.md (key server list)
 const SEAL_SERVERS_TESTNET = [
   { objectId: '0x73d05d62c18d9374e3ea529e8e0ed6161da1a141a001dcc14df90e2c2154c95c', weight: 1 }, // mysten-testnet-1
   { objectId: '0xf5d14a81a982144ae441cd7d64b09027f116a468bd36e7eca494f750591623c8', weight: 1 }, // mysten-testnet-2
-  { objectId: '0x8f1a45d4c34a8fd32f34ce20e2b3a4edbc7f68c37c44a8b8e3ef8e5b6d4c9a7e', weight: 1 }, // open-allowlist-3 — TODO verify
 ];
 
 /**
  * Pick Seal key servers based on the current hostname. Testnet hosts get the
  * Mysten-operated testnet servers; everything else (prod, preview, unknown)
  * stays on mainnet so we never silently downgrade a live user.
+ *
+ * Hostname condition mirrors getSuinsNetwork() in src/suins.ts exactly so
+ * that Seal key servers and SuiNS PTB network can never split-brain.
  */
 function pickSealServers(): Array<{ objectId: string; weight: number }> {
   try {
@@ -127,8 +132,7 @@ function pickSealServers(): Array<{ objectId: string; weight: number }> {
     const isTestnet =
       host === 'localhost' ||
       host === '127.0.0.1' ||
-      host.startsWith('dotski-devnet.') ||
-      host.endsWith('.devnet.workers.dev');
+      (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev'));
     return isTestnet ? SEAL_SERVERS_TESTNET : SEAL_SERVERS_MAINNET;
   } catch {
     return SEAL_SERVERS_MAINNET;

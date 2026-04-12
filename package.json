@@ -39,6 +39,8 @@
     "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --format esm --loader .svg:text && bun build src/embed.ts --outfile public/dist/embed.js --target browser --minify --format iife && cp node_modules/@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm public/dist/",
     "dev": "bun build src/ski.ts --outdir public/dist --target browser --watch --splitting --format esm --loader .svg:text",
     "dev:wrangler": "wrangler dev",
+    "dev:devnet": "wrangler dev --config wrangler.devnet.jsonc",
+    "deploy:devnet": "bun run build && npx wrangler deploy --config wrangler.devnet.jsonc",
     "deploy": "bun update && bun run build && npx wrangler deploy",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"

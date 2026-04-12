@@ -77,6 +77,18 @@ export interface ShadeExecutorState {
 
 interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
+  SUI_NETWORK?: string; // 'mainnet' | 'testnet' — set by wrangler.jsonc / wrangler.devnet.jsonc
+}
+
+/**
+ * Shade is mainnet-only: the Move package at SHADE_PACKAGE is not deployed
+ * on testnet, and the keeper ultron.sui account only has mainnet gas. The
+ * devnet worker sets `SUI_NETWORK=testnet`, so guard every state-changing
+ * path on mainnet. Read-only endpoints (status/poke) stay open.
+ */
+function isMainnetEnv(env: Env): boolean {
+  const network = (env.SUI_NETWORK || 'mainnet').toLowerCase();
+  return network === 'mainnet';
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -212,6 +224,10 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
     depositMist: string;
     preferredRoute?: ShadeRoute;
   }): Promise<{ success: boolean; error?: string }> {
+    // Fail-closed on non-mainnet workers — Shade Move package is mainnet-only.
+    if (!isMainnetEnv(this.env)) {
+      return { success: false, error: 'Shade is mainnet-only — this worker is running on a non-mainnet network' };
+    }
     // Verify the ownerAddress matches the DO instance name (keyed by user address)
     if (params.ownerAddress !== this.name) {
       return { success: false, error: 'Owner address does not match DO instance' };
@@ -423,6 +439,13 @@ export class ShadeExecutorAgent extends Agent<Env, ShadeExecutorState> {
   // ─── Core execution logic ──────────────────────────────────────────
 
   private async executeOrder(order: ShadeExecutorOrder) {
+    if (!isMainnetEnv(this.env)) {
+      this.updateOrder(order.objectId, {
+        status: 'failed',
+        error: 'Shade is mainnet-only — this worker is running on a non-mainnet network',
+      });
+      return;
+    }
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
       this.updateOrder(order.objectId, {
         status: 'failed',

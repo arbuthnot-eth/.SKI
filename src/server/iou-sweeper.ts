@@ -36,6 +36,7 @@ const SHIELDED_TYPE = `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::ShieldedVault`
 
 interface SweeperEnv {
   SHADE_KEEPER_PRIVATE_KEY?: string;
+  SUI_NETWORK?: string; // 'mainnet' | 'testnet'
 }
 
 interface IouSnapshot {
@@ -139,6 +140,13 @@ async function recallOne(iou: IouSnapshot, keypair: Ed25519Keypair): Promise<{ o
  * Errors are logged and swallowed so one bad IOU can't halt the sweep.
  */
 export async function sweepExpiredIous(env: SweeperEnv): Promise<{ scanned: number; expired: number; recalled: number; failed: number }> {
+  // Thunder IOU packages are mainnet-only — devnet worker sets SUI_NETWORK=testnet
+  // and has no mainnet keeper, so skip cleanly instead of burning cron cycles.
+  const network = (env.SUI_NETWORK || 'mainnet').toLowerCase();
+  if (network !== 'mainnet') {
+    console.log('[iou-sweeper] non-mainnet worker — skipping');
+    return { scanned: 0, expired: 0, recalled: 0, failed: 0 };
+  }
   if (!env.SHADE_KEEPER_PRIVATE_KEY) {
     console.warn('[iou-sweeper] no SHADE_KEEPER_PRIVATE_KEY — skipping');
     return { scanned: 0, expired: 0, recalled: 0, failed: 0 };

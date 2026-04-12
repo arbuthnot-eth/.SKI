@@ -130,3 +130,40 @@ describe('network-detection consistency', () => {
     expect(mismatches).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// detectNetwork() — shared implementation that feeds rpc.ts singletons.
+// ---------------------------------------------------------------------------
+
+describe('detectNetwork', () => {
+  afterEach(() => restoreHost());
+
+  for (const [host, expected, description] of MATRIX) {
+    test(`${String(host)} → ${expected}  (${description})`, async () => {
+      setHost(host);
+      const { detectNetwork } = await import('./network.js');
+      expect(detectNetwork()).toBe(expected);
+    });
+  }
+});
+
+describe('isMainnet', () => {
+  afterEach(() => restoreHost());
+
+  test('true on mainnet hosts, false on testnet hosts', async () => {
+    const { isMainnet } = await import('./network.js');
+
+    setHost('sui.ski');
+    expect(isMainnet()).toBe(true);
+
+    setHost('dotski-devnet.imbibed.workers.dev');
+    expect(isMainnet()).toBe(false);
+
+    setHost('localhost');
+    expect(isMainnet()).toBe(false);
+
+    // Fail-closed: undefined location → mainnet
+    setHost(undefined);
+    expect(isMainnet()).toBe(true);
+  });
+});

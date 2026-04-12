@@ -15,25 +15,16 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { SuinsClient, SuinsTransaction, mainPackage } from '@mysten/suins';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { grpcClient, GQL_URL, gqlClient } from './rpc.js';
+import { detectNetwork, isMainnet } from './network.js';
 
 // ─── SuiNS network selection ─────────────────────────────────────────
 /**
- * Determine which SuiNS network to target based on the current hostname.
- * Runtime-evaluated (not frozen at import) so unit tests and SSR can override.
- *
- *   dotski-devnet.*.workers.dev → testnet
- *   localhost / 127.0.0.1       → testnet
- *   everything else             → mainnet
+ * Determine which SuiNS network to target. Re-exported from
+ * `./network.js` so existing call sites and the regression test suite
+ * keep importing `getSuinsNetwork` from `./suins.js`.
  */
 export function getSuinsNetwork(): 'mainnet' | 'testnet' {
-  try {
-    const loc = (globalThis as { location?: { hostname?: string } }).location;
-    const host = (loc?.hostname || '').toLowerCase();
-    if (!host) return 'mainnet';
-    if (host === 'localhost' || host === '127.0.0.1') return 'testnet';
-    if (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev')) return 'testnet';
-  } catch {}
-  return 'mainnet';
+  return detectNetwork();
 }
 
 /** Return the active SuiNS config (mainnet or testnet) at call time. */
@@ -93,6 +84,9 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
 }
 
 // ─── SUIAMI Roster piggyback ──────────────────────────────────────────
+// These Move packages are mainnet-only — no testnet deployment exists, so
+// every code path that touches ROSTER_* or IUSD_* must early-exit on testnet
+// hosts. The `isMainnet()` gates below enforce that.
 const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa'; // v3: +walrus_blob_id, seal_nonce, verified
 const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
@@ -116,6 +110,9 @@ export function maybeAppendRoster(
   walrusBlobId?: string,
   sealNonce?: number[],
 ): boolean {
+  // Roster is a mainnet-only Move package — silently skip on testnet hosts
+  // so testnet PTBs don't reference nonexistent package IDs.
+  if (!isMainnet()) return false;
   // Auto-detect address and name if not provided
   const addr = address || (() => { try { const s = localStorage.getItem('ski:session'); return s ? JSON.parse(s).address : ''; } catch { return ''; } })();
   const nm = ((name || (() => { try { return localStorage.getItem(`ski:suins:${addr}`) || ''; } catch { return ''; } })()) as string).replace(/\.sui$/, '');
@@ -160,6 +157,9 @@ export function maybeAppendRoster(
  * Returns { sui?, btc?, eth?, sol? } or null if not found.
  */
 export async function readRoster(name: string): Promise<Record<string, string> | null> {
+  // Roster lives on mainnet only; a testnet lookup would hit mainnet state,
+  // which is confusing and costs a real network round-trip for nothing.
+  if (!isMainnet()) return null;
   const bare = name.replace(/\.sui$/i, '').toLowerCase();
   const nh = keccak_256(new TextEncoder().encode(bare));
   const nhB64 = btoa(String.fromCharCode(...nh));
@@ -200,6 +200,8 @@ export interface RosterRecord {
  * Returns null if no record exists for this address.
  */
 export async function readRosterByAddress(address: string): Promise<RosterRecord | null> {
+  // Roster lives on mainnet only; testnet hosts get no record.
+  if (!isMainnet()) return null;
   // Normalize to 0x-prefixed 64-hex-char address, then convert to 32 raw bytes
   const norm = normalizeSuiAddress(address);
   const hex = norm.replace(/^0x/, '');
@@ -245,6 +247,8 @@ export async function readRosterByAddress(address: string): Promise<RosterRecord
  *  @param coinType - type argument for the split
  */
 function addSwapFee(tx: InstanceType<typeof Transaction>, outputCoin: any, amount: bigint, coinType: string) {
+  // iUSD treasury is a mainnet-only address — skip fee collection on testnet.
+  if (!isMainnet()) return;
   const feeAmount = amount * BigInt(SWAP_FEE_BPS) / 10000n;
   if (feeAmount <= 0n) return;
   const [feeCoin] = tx.splitCoins(outputCoin, [tx.pure.u64(feeAmount)]);
@@ -257,6 +261,8 @@ function addSwapFee(tx: InstanceType<typeof Transaction>, outputCoin: any, amoun
  *  @param suiPrice - current SUI/USD price for conversion
  */
 function addRegistrationFee(tx: InstanceType<typeof Transaction>, priceUsd: number, suiPrice?: number) {
+  // Same reason as addSwapFee — treasury is mainnet-only.
+  if (!isMainnet()) return;
   if (!suiPrice || suiPrice <= 0 || priceUsd <= 0) return;
   const feePct = 0.05; // 5%
   const feeUsd = priceUsd * feePct;
@@ -2673,6 +2679,13 @@ export async function buildSwapTx(
 ): Promise<SwapResult> {
   // Same token — no swap needed
   if (inputCoinType === outputCoinType) throw new Error('Input and output are the same token');
+
+  // iUSD is a mainnet-only Move package — reject testnet swaps touching it
+  // with a clear error instead of silently building a PTB that references
+  // nonexistent objects.
+  if ((inputCoinType === IUSD_TYPE || outputCoinType === IUSD_TYPE) && !isMainnet()) {
+    throw new Error('iUSD swaps are mainnet-only — the iUSD package is not deployed on testnet');
+  }
 
   const USDC_TYPE = suinsCfg().coins.USDC.type;
 

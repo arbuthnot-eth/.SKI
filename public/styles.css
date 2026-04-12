@@ -3534,6 +3534,13 @@ body {
   background: rgba(239, 68, 68, 0.15);
 }
 .ski-idle-card-name { font-weight: 700; font-size: 1.05rem; color: #fff; white-space: nowrap; flex-shrink: 0; cursor: pointer; letter-spacing: -0.01em; }
+.ski-idle-bubble-edited {
+  font-size: 0.65em;
+  opacity: 0.55;
+  font-style: italic;
+  margin-left: 4px;
+  pointer-events: none;
+}
 .ski-idle-card-iusd { vertical-align: middle; margin-left: 3px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
 .ski-idle-card-name:hover { opacity: 0.85; }
 .ski-idle-card-bal {

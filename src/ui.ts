@@ -14217,7 +14217,10 @@ function bindEvents() {
             : [];
           if (_attachments.length === 0) {
             // Plain text bubble, no attachments — fast path.
-            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
+            const _editedBadge = (m as unknown as { isEdited?: boolean }).isEdited
+              ? ' <span class="ski-idle-bubble-edited" title="edited">(edited)</span>'
+              : '';
+            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}${_editedBadge}</div>`;
           }
           // Mixed / attachment-only bubble: one container with an
           // optional text line, then the attachment rows. Keeps the
@@ -14448,6 +14451,44 @@ function bindEvents() {
         convoEl.addEventListener('scroll', _syncProgress, { passive: true });
         // Recompute on next frame in case layout hasn't settled (fonts, QR svg).
         requestAnimationFrame(_syncProgress);
+
+        // Double-click an out-bubble to edit the text. Transfer bubbles,
+        // attachment-mixed bubbles, and incoming bubbles are skipped —
+        // only the plain text the sender wrote is mutable. Delegates
+        // once on convoEl so we don't touch the dense per-bubble click
+        // handler below. Sender auth is enforced server-side; the DO's
+        // /update handler rejects anyone who isn't the original sender.
+        if (!(convoEl as unknown as { _skiEditBound?: boolean })._skiEditBound) {
+          (convoEl as unknown as { _skiEditBound: boolean })._skiEditBound = true;
+          convoEl.addEventListener('dblclick', async (ev) => {
+            const target = ev.target as HTMLElement | null;
+            const bub = target?.closest<HTMLElement>('.ski-idle-bubble--out');
+            if (!bub) return;
+            if (bub.classList.contains('ski-idle-bubble--transfer')) return;
+            if (bub.classList.contains('ski-idle-bubble--mixed')) return;
+            const msgId = bub.dataset.id || '';
+            if (!msgId) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const _currentText = (bub.textContent || '').replace(/\s*\(edited\)\s*$/, '').trim();
+            const next = window.prompt('Edit thunder', _currentText);
+            if (next == null) return; // user cancelled
+            const trimmed = next.trim();
+            if (!trimmed || trimmed === _currentText) return;
+            try {
+              const { editThunder } = await import('./client/thunder-stack.js');
+              // groupUuid is captured from the enclosing convo-open
+              // closure and matches the storm we're viewing.
+              await editThunder({ groupRef: { uuid: groupUuid }, messageId: msgId, text: trimmed });
+              // Optimistic patch — replace text + append (edited)
+              bub.innerHTML = `${esc(trimmed)} <span class="ski-idle-bubble-edited" title="edited">(edited)</span>`;
+              showToast('Thunder edited \u2713');
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              showToast(`Edit failed: ${msg.slice(0, 120)}`);
+            }
+          });
+        }
 
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)

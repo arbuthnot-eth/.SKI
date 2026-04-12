@@ -930,6 +930,30 @@ async function encryptWithRetry(
  * Reads directly from the DO — messages are stored as base64 text.
  * Falls back to SDK's Seal-decrypt path for legacy encrypted messages.
  */
+/**
+ * Edit an existing Thunder. Uses the module-level `_signer` bound at
+ * initThunderClient time so callers don't have to plumb signers
+ * through the UI. Only the original sender can succeed — the DO's
+ * /update handler enforces senderAddress matches the row, and the
+ * Seal envelope uses the same key version as the original so
+ * participants can decrypt it. Attachments are left unchanged.
+ */
+export async function editThunder(opts: {
+  groupRef: GroupRef;
+  messageId: string;
+  text: string;
+}): Promise<{ messageId: string }> {
+  if (!_signer) throw new Error('Thunder client not initialized — call initThunderClient first');
+  const client = getThunderClient();
+  await client.messaging.editMessage({
+    groupRef: opts.groupRef,
+    messageId: opts.messageId,
+    text: opts.text,
+    signer: _signer as unknown as Parameters<typeof client.messaging.editMessage>[0]['signer'],
+  });
+  return { messageId: opts.messageId };
+}
+
 export async function getThunders(opts: {
   groupRef: GroupRef;
   afterOrder?: number;

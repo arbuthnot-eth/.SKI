@@ -10381,7 +10381,7 @@ function bindEvents() {
           const _balLabel = _bal >= 1 ? Math.round(_bal).toLocaleString() : _bal.toFixed(2);
           const balHtml = `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_balLabel}</span></span> `;
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
-          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
           const _recallBtn = `<button class="ski-idle-card-recall" id="ski-idle-recall-vaults" type="button" title="Recall all unclaimed vaults">\u21A9</button>`;
           card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${_recallBtn}`;
           return;
@@ -10416,7 +10416,7 @@ function bindEvents() {
         const _cb = Math.max(0, cachedBal);
         const _cbLabel = cachedBal < 0 ? '\u2026' : (_cb >= 1 ? Math.round(_cb).toLocaleString() : _cb.toFixed(2));
         const cachedBalHtml = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_cbLabel}</span>`;
-        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
         card.innerHTML = `${_atBtn2}<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span><span class="ski-idle-card-bal" id="ski-idle-card-bal">${cachedBalHtml}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
 
         // Skip the fetch only when in-memory cache is still fresh. A

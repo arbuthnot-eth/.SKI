@@ -139,6 +139,7 @@ export async function getCurrentEpoch(): Promise<number> {
   });
   const result = await gql.query({
     query: '{ epoch { epochId } }',
+    variables: {},
   });
   const epochId = (result.data as { epoch: { epochId: number } })?.epoch?.epochId;
   if (epochId == null) throw new Error('Failed to fetch current epoch from GraphQL');

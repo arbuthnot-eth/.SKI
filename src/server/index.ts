@@ -1995,6 +1995,23 @@ app.post('/api/cache/quest-bounty', async (c) => {
 });
 
 // ── OpenCLOB: iUSD SPL on Solana ────────────────────────────────────
+// Public read: returns the mainnet iUSD SPL mint address so the browser
+// can fetch cross-chain iUSD balances against the user's Solana dWallet.
+app.get('/api/cache/iusd-sol-mint', async (c) => {
+  try {
+    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?iusd-sol-mint', {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    const headers: Record<string, string> = { 'cache-control': 'public, max-age=300' };
+    try { return c.json(JSON.parse(text), res.status as any, headers); }
+    catch { return c.json({ error: text || 'unknown' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 app.post('/api/cache/create-iusd-sol-mint', async (c) => {
   try {
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {

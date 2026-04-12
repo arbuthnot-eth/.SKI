@@ -247,6 +247,8 @@ export interface AppState {
   ethAddress: string;
   solAddress: string;
   solBalance: number;
+  /** iUSD SPL balance on Solana for the user's dWallet-derived Solana address. */
+  solIusdBalance: number;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -263,6 +265,7 @@ const app: AppState = {
   ethAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).eth || '') : ''; } catch { return ''; } })(),
   solAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).sol || '') : ''; } catch { return ''; } })(),
   solBalance: 0,
+  solIusdBalance: 0,
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -2931,17 +2934,18 @@ function getTotalSui(): number {
   return totalUsd / price;
 }
 
+const SOL_RPCS = [
+  'https://solana-rpc.publicnode.com',
+  'https://api.mainnet-beta.solana.com',
+];
+
 /** Fetch SOL balance for the IKA dWallet Solana address. Races multiple Solana RPCs. */
 async function _fetchSolBalance(): Promise<void> {
   if (!app.solAddress) return;
-  const endpoints = [
-    'https://solana-rpc.publicnode.com',
-    'https://api.mainnet-beta.solana.com',
-  ];
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] });
   try {
     const result = await Promise.any(
-      endpoints.map(url =>
+      SOL_RPCS.map(url =>
         fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
           .then(r => r.json())
           .then((data: any) => {
@@ -2952,6 +2956,59 @@ async function _fetchSolBalance(): Promise<void> {
       ),
     );
     app.solBalance = result / 1e9;
+  } catch { /* non-blocking */ }
+}
+
+// Cached iUSD SPL mint address from the treasury. Fetched once per page
+// load; if the mint doesn't exist yet the endpoint returns null and we
+// skip the SPL balance fetch for the rest of the session.
+let _iusdSolMintCache: string | null | undefined;
+async function _getIusdSolMint(): Promise<string | null> {
+  if (_iusdSolMintCache !== undefined) return _iusdSolMintCache;
+  try {
+    const res = await fetch('/api/cache/iusd-sol-mint');
+    if (!res.ok) { _iusdSolMintCache = null; return null; }
+    const data = await res.json() as { mintAddress?: string | null };
+    _iusdSolMintCache = data.mintAddress || null;
+    return _iusdSolMintCache;
+  } catch {
+    _iusdSolMintCache = null;
+    return null;
+  }
+}
+
+/**
+ * Fetch iUSD SPL balance for the user's Solana dWallet address.
+ * Uses SPL Token's `getTokenAccountsByOwner` (JSON-parsed) so we don't
+ * need the @solana/web3.js bundle client-side. Races the same RPC pool
+ * as `_fetchSolBalance`. iUSD SPL is 9 decimals (parity with Sui iUSD).
+ */
+async function _fetchSolIusdBalance(): Promise<void> {
+  if (!app.solAddress) return;
+  const mint = await _getIusdSolMint();
+  if (!mint) return;
+  const body = JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner',
+    params: [app.solAddress, { mint }, { encoding: 'jsonParsed' }],
+  });
+  try {
+    const result = await Promise.any(
+      SOL_RPCS.map(url =>
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+          .then(r => r.json())
+          .then((data: any) => {
+            const nodes = data?.result?.value;
+            if (!Array.isArray(nodes)) throw new Error('no value');
+            return nodes as Array<{ account?: { data?: { parsed?: { info?: { tokenAmount?: { uiAmount?: number } } } } } }>;
+          })
+      ),
+    );
+    let total = 0;
+    for (const n of result) {
+      const ui = n?.account?.data?.parsed?.info?.tokenAmount?.uiAmount;
+      if (typeof ui === 'number' && Number.isFinite(ui)) total += ui;
+    }
+    app.solIusdBalance = total;
   } catch { /* non-blocking */ }
 }
 
@@ -2966,13 +3023,14 @@ export async function refreshPortfolio(force = false) {
   const fetchedFor = ws.address; // capture before any await
 
   try {
-    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance in parallel
+    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance + iUSD SPL in parallel
     const [allBalResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.listBalances({ owner: fetchedFor }).catch(() => null),
       lookupSuiNS(fetchedFor),
       fetchSuiPrice(),
       fetchTokenPrices(),
       _fetchSolBalance(),
+      _fetchSolIusdBalance(),
     ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
@@ -3020,13 +3078,15 @@ export async function refreshPortfolio(force = false) {
       const tp = getTokenPrice(c.symbol);
       if (tp != null && tp > 0) tokensUsd += c.balance * tp;
     }
-    // Include Solana balance in total
+    // Include Solana balance in total — native SOL + iUSD SPL ($1 peg)
     const solPrice = getTokenPrice('SOL');
     const solUsd = (solPrice && app.solBalance > 0) ? app.solBalance * solPrice : 0;
+    const solIusdUsd = app.solIusdBalance > 0 ? app.solIusdBalance : 0;
     if (suiUsd != null) {
-      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd;
+      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd;
     } else if (app.usd == null) {
-      app.usd = app.stableUsd + tokensUsd + solUsd > 0 ? app.stableUsd + tokensUsd + solUsd : null;
+      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd;
+      app.usd = nonNullTotal > 0 ? nonNullTotal : null;
     }
 
     // Keep active detail balance in sync if it's showing the connected wallet
@@ -5797,6 +5857,7 @@ function menuCopyAddress(e: Event) {
 function _treasuryPanelHtml(): string {
   const solPrice = getTokenPrice('SOL') ?? 82;
   const solUsd = app.solBalance > 0 ? (app.solBalance * solPrice).toFixed(2) : '0.00';
+  const solIusd = app.solIusdBalance > 0 ? app.solIusdBalance.toFixed(2) : '0.00';
   const totalRevenue = app.usd != null ? (app.usd * 0.05).toFixed(2) : '0.00'; // 5% of portfolio as proxy
 
   return `
@@ -5860,6 +5921,10 @@ function _treasuryPanelHtml(): string {
         <div class="wk-treasury-row">
           <span class="wk-treasury-key">SOL Balance</span>
           <span class="wk-treasury-val">${app.solBalance > 0 ? app.solBalance.toFixed(4) : '—'} SOL ($${solUsd})</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">iUSD (Solana)</span>
+          <span class="wk-treasury-val">${app.solIusdBalance > 0 ? app.solIusdBalance.toFixed(2) : '—'} iUSD ($${solIusd})</span>
         </div>
         <div class="wk-treasury-row">
           <span class="wk-treasury-key">Chains</span>
@@ -10385,8 +10450,9 @@ function bindEvents() {
               else if (ct === DEEP_CT) totalUsd += (Number(raw) / 1e6) * 0.03;
             }
             const ws = getState();
-            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase() && app.solBalance > 0) {
-              totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
+            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase()) {
+              if (app.solBalance > 0) totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
+              if (app.solIusdBalance > 0) totalUsd += app.solIusdBalance; // iUSD is $1 peg
             }
             // Cache the balance (memory + persisted)
             _cardBalCache = { addr, usd: totalUsd, ts: Date.now() };

@@ -304,7 +304,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // All mutating requests from the Worker must include x-treasury-auth.
     // Read-only endpoints (status, squid-stats, shade-list, deposit-status,
     // deposit-addresses, quest-bounties, kamino-positions) are exempt.
-    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties', 'kamino-positions'];
+    const readOnlyParams = ['cache-state', 'squid-stats', 'shade-list', 'deposit-status', 'deposit-addresses', 'quest-bounties', 'kamino-positions', 'iusd-sol-mint'];
     const isReadOnly = readOnlyParams.some(p => url.searchParams.has(p));
     const isWebSocket = request.headers.get('upgrade') === 'websocket';
     if (!isReadOnly && !isWebSocket && !this.verifyInternalAuth(request)) {
@@ -1790,6 +1790,14 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), { status: 400, headers: { 'content-type': 'application/json' } });
       }
+    }
+
+    // OpenCLOB: iUSD SPL on Solana — read-only mint address (no auth)
+    if ((url.pathname.endsWith('/iusd-sol-mint') || url.searchParams.has('iusd-sol-mint')) && request.method === 'GET') {
+      const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;
+      return new Response(JSON.stringify({ mintAddress: mintAddress ?? null, decimals: 9 }), {
+        headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=300' },
+      });
     }
 
     // OpenCLOB: iUSD SPL on Solana

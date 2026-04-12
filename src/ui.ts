@@ -44,7 +44,7 @@ import {
   resolveNameToAddress,
 } from './sponsor.js';
 import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -9002,6 +9002,15 @@ function renderSkiMenu() {
   if (!nsShadeOrdersPruned && ws.address) {
     nsShadeOrdersPruned = true;
     pruneShadeOrders(ws.address).catch(() => {});
+    // Aggressive recall: poke the server-side iou-sweeper so any
+    // expired Thunder IOU / ShieldedVault outbound from this wallet
+    // (or anyone) comes home immediately instead of waiting up to
+    // 10 min for the cron. Fire-and-forget — logs result on success.
+    pokeIouSweeper().then((r) => {
+      if (r.recalled && r.recalled > 0) {
+        showToast(`Recalled ${r.recalled} expired Thunder escrow${r.recalled > 1 ? 's' : ''}`);
+      }
+    }).catch(() => {});
     nsShadeOrder = findShadeOrder(ws.address, nsLabel.trim());
 
     // Auto-schedule recovery — ensure all pending orders are registered with the DO

@@ -15,6 +15,36 @@ let _lastOwnerAddress = '';
 const _host = () => window.location.hostname === 'localhost' ? window.location.host : 'sui.ski';
 
 /**
+ * Aggressive recall trigger — pokes the server-side iou-sweeper to
+ * immediately scan + recall every expired Thunder IOU / ShieldedVault
+ * on-chain. The sweeper already runs on a 10-minute cron; this hook
+ * lets the client fire it on-demand so the connected wallet doesn't
+ * wait up to 10 min for its expired outbound vaults to come home.
+ *
+ * Side-appropriate: the recall function is permissionless after TTL
+ * and always returns funds to the original sender, so whoever is
+ * looking at the UI benefits — sender gets their money back, recipient
+ * gets the commitment slot cleared so a fresh Thunder can land.
+ *
+ * Fire-and-forget. Best-effort. Never throws.
+ */
+export async function pokeIouSweeper(): Promise<{ scanned?: number; recalled?: number; failed?: number; error?: string }> {
+  const host = _host();
+  const proto = host.startsWith('localhost') ? 'http' : 'https';
+  try {
+    const r = await fetch(`${proto}://${host}/api/iou/sweep`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    if (!r.ok) return { error: `HTTP ${r.status}` };
+    return await r.json() as { scanned?: number; recalled?: number; failed?: number };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Connect to the ShadeExecutorAgent Durable Object via WebSocket.
  * Instance name = owner's Sui address (one executor per user).
  */

@@ -749,6 +749,35 @@ const _clearSealCache = () => {
 (window as unknown as { clearSealCache: typeof _clearSealCache }).clearSealCache = _clearSealCache;
 console.log('[ski] clearSealCache hook installed — call clearSealCache() to reset Seal key state');
 
+// Minimal smoke test for the wallet's signPersonalMessage path. Takes
+// a plain ASCII string, hands it straight to wallet.ts with nothing
+// else in the loop — no Seal SDK, no IKA SDK, no canonicalization, no
+// vector-intent wrapping. Isolates whether the wallet backend itself
+// is accepting sign requests, independent of any SKI-specific wrapping.
+//
+// Usage: testWalletSign("hello world")
+// Returns { bytes, signature } on success, { error } on failure.
+const _testWalletSign = async (message: string = 'sui.ski smoke test') => {
+  try {
+    const { signPersonalMessage, getState } = await import('./wallet.js');
+    const ws = getState();
+    console.log('[testWalletSign] address:', ws.address, 'walletName:', ws.walletName);
+    console.log('[testWalletSign] message:', JSON.stringify(message));
+    const msgBytes = new TextEncoder().encode(message);
+    console.log('[testWalletSign] msgBytes length:', msgBytes.length);
+    const res = await signPersonalMessage(msgBytes);
+    console.log('[testWalletSign] ok, signature length:', res.signature?.length);
+    console.log('[testWalletSign] bytes:', res.bytes);
+    console.log('[testWalletSign] signature:', res.signature);
+    return res;
+  } catch (err) {
+    console.error('[testWalletSign] failed:', err);
+    return { error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) };
+  }
+};
+(window as unknown as { testWalletSign: typeof _testWalletSign }).testWalletSign = _testWalletSign;
+console.log('[ski] testWalletSign hook installed — call testWalletSign() to test raw wallet signing');
+
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
 // name immediately has chain addresses (ultron-custodial until user Rumbles).

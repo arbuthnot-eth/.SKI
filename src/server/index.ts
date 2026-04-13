@@ -331,6 +331,105 @@ app.get('/api/shade/status/:address', async (c) => {
   }
 });
 
+// ── Shade Lock-On III — user's pending Shade orders ──
+// Scan on-chain for both legacy ShadeOrder and StableShadeOrder<T>
+// objects where owner == the requested address. Returns a flat list
+// with { objectId, coinType, stable, depositMist, sealedPayload,
+// commitment, graceEndMs, status } so a UI can render pending orders
+// with countdown + refund buttons without opening DevTools.
+//
+// Entirely GraphQL — does not call the ShadeExecutorAgent DO. Safe to
+// poll from any client. No auth gate since the data is already public
+// on-chain; we just filter by owner address (which is visible in the
+// `owner` field of every order object).
+app.get('/api/shade/orders/:address', async (c) => {
+  const address = c.req.param('address');
+  const lower = address.toLowerCase();
+  const SHADE_V4_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
+  const SHADE_V5_PACKAGE = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+  const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+  const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+  const GQL = 'https://graphql.mainnet.sui.io/graphql';
+  type OrderNode = {
+    address: string;
+    asMoveObject?: {
+      contents?: {
+        json?: {
+          owner?: string;
+          deposit?: string;
+          sealed_payload?: string;
+          commitment?: string;
+          grace_end_ms?: string;
+          execute_after_ms?: string;
+        };
+        type?: { repr?: string };
+      };
+    };
+  };
+  const queryType = async (type: string): Promise<OrderNode[]> => {
+    try {
+      const res = await fetch(GQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($type: String!) {
+            objects(filter: { type: $type }) {
+              nodes { address asMoveObject { contents { json type { repr } } } }
+            }
+          }`,
+          variables: { type },
+        }),
+      });
+      if (!res.ok) return [];
+      const json = await res.json() as { data?: { objects?: { nodes?: OrderNode[] } } };
+      return json?.data?.objects?.nodes ?? [];
+    } catch { return []; }
+  };
+  // Scan legacy + stable-over-iUSD + stable-over-USDC in parallel. Stable
+  // type scans are generic per coin type; adding more stables is a matter
+  // of appending to this list. The contract is `StableShadeOrder<T>` so
+  // each instantiation is its own Move type and must be queried separately.
+  const [legacy, stableIusd, stableUsdc] = await Promise.all([
+    queryType(`${SHADE_V4_PACKAGE}::shade::ShadeOrder`),
+    queryType(`${SHADE_V5_PACKAGE}::shade::StableShadeOrder<${IUSD_TYPE}>`),
+    queryType(`${SHADE_V5_PACKAGE}::shade::StableShadeOrder<${USDC_TYPE}>`),
+  ]);
+  const now = Date.now();
+  const toOrder = (n: OrderNode, stable: boolean, coinType: string) => {
+    const json = n.asMoveObject?.contents?.json ?? {};
+    const graceEndMs = Number(json.grace_end_ms ?? json.execute_after_ms ?? 0);
+    const status = graceEndMs === 0
+      ? 'pending'
+      : now < graceEndMs
+      ? 'waiting'
+      : 'expired';
+    return {
+      objectId: n.address,
+      stable,
+      coinType,
+      owner: json.owner ?? '',
+      depositMist: json.deposit ?? '0',
+      sealedPayload: json.sealed_payload,
+      commitment: json.commitment,
+      graceEndMs,
+      msUntilGrace: graceEndMs === 0 ? null : graceEndMs - now,
+      status,
+    };
+  };
+  const orders = [
+    ...legacy
+      .filter(n => (n.asMoveObject?.contents?.json?.owner ?? '').toLowerCase() === lower)
+      .map(n => toOrder(n, false, 'SUI')),
+    ...stableIusd
+      .filter(n => (n.asMoveObject?.contents?.json?.owner ?? '').toLowerCase() === lower)
+      .map(n => toOrder(n, true, IUSD_TYPE)),
+    ...stableUsdc
+      .filter(n => (n.asMoveObject?.contents?.json?.owner ?? '').toLowerCase() === lower)
+      .map(n => toOrder(n, true, USDC_TYPE)),
+  ];
+  return c.json({ address, count: orders.length, orders });
+});
+
 // Schedule a shade order for auto-execution via HTTP POST
 app.post('/api/shade/schedule/:address', async (c) => {
   const address = c.req.param('address');
@@ -3242,11 +3341,39 @@ app.post('/api/helius/webhook', async (c) => {
           if (t.toUserAccount) touched.add(t.toUserAccount);
         }
       }
-      const tokenTransfers = ev.tokenTransfers as Array<{ fromUserAccount?: string; toUserAccount?: string }> | undefined;
+      const tokenTransfers = ev.tokenTransfers as Array<{
+        fromUserAccount?: string;
+        toUserAccount?: string;
+        tokenAmount?: number;
+        mint?: string;
+      }> | undefined;
       if (Array.isArray(tokenTransfers)) {
         for (const t of tokenTransfers) {
           if (t.fromUserAccount) touched.add(t.fromUserAccount);
           if (t.toUserAccount) touched.add(t.toUserAccount);
+        }
+        // ── Porygon-Z Agility v1 — inbound iUSD SPL credit detection ──
+        // When a user sends iUSD SPL to sol@ultron we log a credit intent
+        // that downstream TreasuryAgents will pick up and process into a
+        // Sui-side BAM v2 mint for the sender's Sui identity. This closes
+        // the Shade cross-chain funding gap: the user can bridge in from
+        // their Solana iUSD balance and the credit lands as Sui iUSD
+        // ready to fund a Shade order. Minting itself happens in the
+        // treasury fan-out below — we only detect + log here.
+        //
+        // ULTRON_SOL_ADDRESS is ultron's IKA-native Solana address from
+        // the Registeel Hyper Beam sweep; the iUSD SPL mint address is
+        // whatever OpenCLOB's createIusdSolMint minted first (stored in
+        // TreasuryAgents DO state). We don't hardcode the mint here —
+        // let the downstream handler compare against DO state so a fresh
+        // mint deployment doesn't require a redeploy of this file.
+        const ULTRON_SOL = 'GfVzGHiSPyTnX6bawnahJnUPXeASF6qKPd224VQws1DW';
+        for (const t of tokenTransfers) {
+          if (t.toUserAccount !== ULTRON_SOL) continue;
+          if (!t.fromUserAccount || t.fromUserAccount === ULTRON_SOL) continue;
+          const amount = Number(t.tokenAmount ?? 0);
+          if (amount <= 0) continue;
+          console.log(`[agility] inbound SPL credit to sol@ultron: ${amount} of mint ${t.mint} from ${t.fromUserAccount} (sig ${sig})`);
         }
       }
       console.log(`[helius-webhook] ${type ?? 'UNKNOWN'} ${sig ?? ''} touched ${touched.size} accounts`);

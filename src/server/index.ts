@@ -5,6 +5,7 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
 import { createZkLoginApp } from './zklogin-proxy.js';
 import { encryptProxy } from './encrypt-proxy.js';
+import { verifyVectorIntent } from './vector-intent.js';
 // ika-provision.ts is available for server-side DKG if needed in future,
 // but DKG WASM must run client-side (browser) — Workers can't run it.
 
@@ -2496,74 +2497,16 @@ app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
 app.post('/api/cache/bam-mint-v2', async (c) => {
   try {
     if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
-    const body = await c.req.json() as {
-      intent: {
-        recipientSolAddress: string;
-        amount: string;
-        mintAddress: string;
-        nonce: string;
-        expiresMs: number;
-      };
-      signature: string; // base64
-      publicKey: string; // base64 (32-byte Ed25519 pubkey)
-    };
+    const body = await c.req.json();
 
-    // Basic shape validation
-    if (!body.intent || !body.signature || !body.publicKey) {
-      return c.json({ error: 'Missing intent, signature, or publicKey' }, 400);
-    }
-    const i = body.intent;
-    if (!i.recipientSolAddress || !i.amount || !i.mintAddress || !i.nonce || !i.expiresMs) {
-      return c.json({ error: 'Intent missing required fields' }, 400);
-    }
-
-    // Expiration check
-    if (i.expiresMs <= Date.now()) {
-      return c.json({ error: `Intent expired at ${new Date(i.expiresMs).toISOString()}` }, 400);
-    }
-
-    // Canonical serialization — keys sorted alphabetically, stable
-    // JSON stringification. Both sides compute the same digest.
-    const canonical = JSON.stringify({
-      amount: i.amount,
-      expiresMs: i.expiresMs,
-      mintAddress: i.mintAddress,
-      nonce: i.nonce,
-      recipientSolAddress: i.recipientSolAddress,
-    });
-    const { sha256 } = await import('@noble/hashes/sha2.js');
-    const digest = sha256(new TextEncoder().encode(canonical));
-
-    // Verify the Ed25519 signature over the digest. Uses @noble/curves
-    // so we don't need any heavy SDK on the worker side.
-    const { ed25519 } = await import('@noble/curves/ed25519.js');
-    const sigBytes = Uint8Array.from(atob(body.signature), (ch) => ch.charCodeAt(0));
-    const pubBytes = Uint8Array.from(atob(body.publicKey), (ch) => ch.charCodeAt(0));
-    if (sigBytes.length !== 64 || pubBytes.length !== 32) {
-      return c.json({ error: 'Invalid signature/publicKey length' }, 400);
-    }
-    const valid = ed25519.verify(sigBytes, digest, pubBytes);
-    if (!valid) {
-      return c.json({ error: 'Signature verification failed' }, 403);
-    }
-
-    // Nonce uniqueness check + hashchain advance via TreasuryAgents DO.
-    // The DO rejects duplicate nonces per-publicKey and advances a
-    // seed hashchain so each mint depends on the exact prior history.
-    const pubKeyHex = Array.from(pubBytes, (b) => b.toString(16).padStart(2, '0')).join('');
-    const nonceRes = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?magnemite-nonce', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
-      body: JSON.stringify({
-        publicKey: pubKeyHex,
-        nonce: i.nonce,
-        digest: Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join(''),
-      }),
-    }));
-    if (!nonceRes.ok) {
-      const errText = await nonceRes.text();
-      return c.json({ error: `Nonce check failed: ${errText}` }, 409);
-    }
+    // All five Vector principles live in the shared helper now.
+    const verified = await verifyVectorIntent<{
+      recipientSolAddress: string;
+      amount: string;
+      mintAddress: string;
+    }>(c, body, ['recipientSolAddress', 'amount', 'mintAddress']);
+    if (!verified.ok) return c.json({ error: verified.error }, verified.status as any);
+    const { intent: i, digestHex } = verified;
 
     // Signature is valid, nonce is fresh, intent is not expired.
     // Ultron now acts as a pure relayer: calls the existing BAM mint
@@ -2582,7 +2525,7 @@ app.post('/api/cache/bam-mint-v2', async (c) => {
     const text = await res.text();
     try {
       const parsed = JSON.parse(text);
-      return c.json({ ...parsed, intentDigest: Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('') }, res.status as any);
+      return c.json({ ...parsed, intentDigest: digestHex }, res.status as any);
     } catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
@@ -2812,6 +2755,39 @@ app.post('/api/cache/send-iusd', async (c) => {
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); }
     catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Magneton: send-iusd v2 — intent-authorized ──────────────────────
+// Same Vector principles as bam-mint-v2. Client signs a digest over
+// { recipient, amountMist, nonce, expiresMs }; ultron verifies + relays
+// to the existing treasury-do/send-iusd handler without any ability to
+// mutate the recipient or amount.
+app.post('/api/cache/send-iusd-v2', async (c) => {
+  try {
+    const body = await c.req.json();
+    const verified = await verifyVectorIntent<{
+      recipient: string;
+      amountMist: string;
+    }>(c, body, ['recipient', 'amountMist']);
+    if (!verified.ok) return c.json({ error: verified.error }, verified.status as any);
+    const { intent: i, digestHex } = verified;
+
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/send-iusd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({
+        recipient: i.recipient,
+        amountMist: i.amountMist,
+      }),
+    }));
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      return c.json({ ...parsed, intentDigest: digestHex }, res.status as any);
+    } catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

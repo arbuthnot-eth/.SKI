@@ -3701,6 +3701,32 @@ app.post('/api/helius/webhook', async (c) => {
           if (amount <= 0) continue;
           console.log(`[agility] inbound SPL credit to sol@ultron: ${amount} of mint ${t.mint} from ${t.fromUserAccount} (sig ${sig})`);
 
+          // ── Sableye Lv.40 — Astonish (SOL leg) ──
+          // Append cross-chain touch to ultron's Chronicom xchainLog so the
+          // browser can map fromAddress → SuiNS name via its cached SUIAMI
+          // roster and render a private counterparty hit. We write to
+          // ultron's Chronicom because the webhook only knows ultron as the
+          // destination; TODO: parse tx memo / webhook metadata to find the
+          // real destination user and write to their Chronicom instead.
+          try {
+            const fromAddr = t.fromUserAccount;
+            const txHash = sig ?? '';
+            c.executionCtx.waitUntil((async () => {
+              try {
+                const stub = c.env.Chronicom.get(c.env.Chronicom.idFromName(ULTRON_ADDRESS));
+                await stub.fetch(new Request('https://chronicom-do/sableye-xchain-append', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'x-partykit-room': ULTRON_ADDRESS },
+                  body: JSON.stringify({ fromAddress: fromAddr, chain: 'sol', ts: Date.now(), txHash }),
+                }));
+              } catch (e) {
+                console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+              }
+            })());
+          } catch (e) {
+            console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+          }
+
           // Porygon-Z Agility v2 — fan out to TreasuryAgents.processAgilityInbound
           // which verifies the mint, resolves the Solana sender to a Sui
           // identity via SUIAMI roster, records the credit in DO state,
@@ -3797,6 +3823,29 @@ app.post('/api/alchemy/webhook', async (c) => {
   for (const credit of credits) {
     const split = computeSplit(credit.amountWei);
     console.log(`[alchemy-webhook] credit ${credit.txHash} from ${credit.fromAddress} ${formatEth(credit.amountWei)} ETH → split ${formatEth(split.stablesAmountWei)} to stables + ${formatEth(split.gasReserveWei)} reserved`);
+
+    // ── Sableye Lv.40 — Astonish (ETH leg) ──
+    // See Helius handler above. Write touch to ultron's Chronicom for now;
+    // TODO: once the webhook carries per-user destination metadata, write
+    // to the real destination user's Chronicom.
+    try {
+      const fromAddr = credit.fromAddress;
+      const txHash = credit.txHash;
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const stub = c.env.Chronicom.get(c.env.Chronicom.idFromName(ULTRON_ADDRESS));
+          await stub.fetch(new Request('https://chronicom-do/sableye-xchain-append', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-partykit-room': ULTRON_ADDRESS },
+            body: JSON.stringify({ fromAddress: fromAddr, chain: 'eth', ts: Date.now(), txHash }),
+          }));
+        } catch (e) {
+          console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+        }
+      })());
+    } catch (e) {
+      console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+    }
     // TODO (Porygon-Z Tri Attack): kick off the Uniswap v3 swap + iUSD mint
     // via a dedicated ConversionBeamAgent DO. For v1 scaffold we just log;
     // the actual swap requires the eth@ultron dWallet signing path

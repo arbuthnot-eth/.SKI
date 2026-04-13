@@ -381,13 +381,23 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   //   1. iframe message channel is in a bad state — the call hangs forever
   //   2. WaaP iframe shows its own error toast (e.g. "Backend error 400")
   //      but doesn't re-throw the rejection to our promise — also hangs
-  // Both manifest as "no response" from our caller's perspective. The
-  // timeout MUST be short enough that the retry path fires while the user
-  // is still attentive — 30s was too long. 5s is enough for a healthy
-  // WaaP backend to respond and short enough that a stuck-but-toasted
-  // failure recovers fast.
+  // Both manifest as "no response" from our caller's perspective.
+  //
+  // Timeout history:
+  //   - 30s (original): too long, user dismissed the toast before the
+  //     retry path could fire on desktop
+  //   - 5s (Eevee Charm IX): caused REGRESSION on MOBILE — fired before
+  //     the user could context-switch to the wallet app and tap Confirm
+  //     (mobile signing routinely takes 10-20s of context switch + scroll
+  //     + tap time, vs ~2s on desktop click-to-confirm). The signature
+  //     came back AFTER our timeout had already torn down the iframe.
+  //   - 30s (current): mobile-tolerant. The "WaaP shows its own 400 toast
+  //     and never resolves" case still recovers within 30s — the user
+  //     dismissing the toast before then is acceptable (they get a clean
+  //     error after, can retry). Mobile users with slow taps don't lose
+  //     valid signatures.
   const isWaaP = /waap|silk/i.test(wallet.name);
-  const timeoutMs = isWaaP ? 5_000 : 30_000;
+  const timeoutMs = 30_000;
   const doSign = () => withBackpackRetry(() => {
     if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
     if (!('sui:signPersonalMessage' in wallet.features)) {

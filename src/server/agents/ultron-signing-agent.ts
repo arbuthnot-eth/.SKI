@@ -539,7 +539,6 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
   }
 
   /**
-<<<<<<< HEAD
    * Increment C of the signing flow: request a presign on ultron's
    * Active dWallet. The IKA network performs the MPC presign rounds
    * asynchronously after this PTB lands; the resulting Presign object

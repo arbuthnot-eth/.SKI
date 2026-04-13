@@ -3220,10 +3220,13 @@ body {
   left: 4px;
   right: 4px;
   z-index: 50;
-  display: grid;
-  grid-template-rows: repeat(6, auto);
-  grid-auto-flow: column;
-  grid-auto-columns: max-content;
+  /* Two-tier layout: primary row alone on top, grid below.
+   * The grid is a 6-row × auto-column layout so chips flow column-wise
+   * (top-to-bottom, then wrap right). The primary lives outside the
+   * grid so it visually occupies its own row above the rest of the
+   * roster — making it clear which name is canonical. */
+  display: flex;
+  flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
   background: transparent;
@@ -3239,6 +3242,21 @@ body {
 .ski-idle-roster-panel::-webkit-scrollbar-thumb { background: #ffffff; border-radius: 4px; }
 .ski-idle-roster-panel::-webkit-scrollbar-thumb:hover { background: #ffffff; }
 .ski-idle-roster-panel[hidden] { display: none; }
+.ski-idle-roster-primary-row {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ski-idle-roster-grid {
+  display: grid;
+  grid-template-rows: repeat(5, auto);
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 .ski-idle-roster-item {
   display: inline-flex;
   align-items: center;
@@ -3246,8 +3264,11 @@ body {
   background: rgba(10, 10, 15, 0.8);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 12px;
+  /* Squared-off — full opacity 1px border on all 4 sides, modest
+   * border-radius (was 12px = pill, now 6px = square with rounded
+   * corners). All chip variants below override the border colour. */
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
   color: #e2e8f0;
   font-size: 0.82rem;
   font-weight: 600;
@@ -3259,27 +3280,38 @@ body {
 .ski-idle-roster-item svg { flex-shrink: 0; }
 .ski-idle-roster-item:hover {
   background: rgba(77, 162, 255, 0.15);
-  border-color: rgba(77, 162, 255, 0.4);
+  border-color: rgba(77, 162, 255, 0.95);
   color: #93c5fd;
 }
 .ski-idle-roster-item--active {
   background: rgba(77, 162, 255, 0.3);
-  border-color: rgba(77, 162, 255, 0.6);
+  border-color: rgba(77, 162, 255, 0.85);
   color: #93c5fd;
 }
 .ski-idle-roster-item--primary {
   background: #3d2e00;
-  border-color: #b8860b;
+  border-color: rgba(184, 134, 11, 0.95);
   color: #fff;
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  box-shadow: 4px 0 8px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 0 1px rgba(218, 165, 32, 0.25) inset;
 }
 .ski-idle-roster-item--primary:hover {
   background: #4a3800;
-  border-color: #daa520;
+  border-color: rgba(218, 165, 32, 1);
   color: #fff;
+}
+/* Shade order chip in the idle roster — red-hexagon variant. Always
+ * appears at the front of the grid (sortedShades.map first in
+ * _populateRoster) so users see in-flight shades without opening the
+ * SKI menu. */
+.ski-idle-roster-item--shade {
+  border-color: rgba(239, 68, 68, 0.85);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+.ski-idle-roster-item--shade:hover {
+  border-color: rgba(239, 68, 68, 1);
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
 }
 .ski-idle-roster-expiry {
   font-size: 0.72rem;

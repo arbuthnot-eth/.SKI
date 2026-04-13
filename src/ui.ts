@@ -10920,11 +10920,50 @@ function bindEvents() {
         return `<button class="ski-idle-roster-item${itemCls}" data-name="${esc(name)}" type="button">${shape} ${esc(name)}${expiryTag}</button>`;
       };
 
+      // Render a shade order chip for the idle roster — red-hexagon variant
+      // with countdown to grace expiry. Mirrors the SKI menu roster's shade
+      // chip but uses the idle roster's chip CSS so it slots into the grid
+      // cleanly. Always rendered first so users see in-flight shades at a
+      // glance without opening the SKI menu.
+      const _renderIdleShadeChip = (shade: ShadeOrderInfo) => {
+        const bare = shade.domain || '???';
+        const shape = _shapeOnlySvg('red-hexagon', 14);
+        let countdownTag = '';
+        if (shade.executeAfterMs > 0) {
+          const msLeft = shade.executeAfterMs - Date.now();
+          if (msLeft > 0) {
+            const h = Math.floor(msLeft / 3_600_000);
+            const m = Math.floor((msLeft % 3_600_000) / 60_000);
+            const s = Math.floor((msLeft % 60_000) / 1000);
+            const txt = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            countdownTag = `<span class="ski-idle-roster-expiry ski-idle-roster-expiry--urgent">${txt}</span>`;
+          } else {
+            countdownTag = `<span class="ski-idle-roster-expiry ski-idle-roster-expiry--urgent">ready</span>`;
+          }
+        }
+        return `<button class="ski-idle-roster-item ski-idle-roster-item--shade" data-name="${esc(bare)}" data-shade="1" type="button">${shape} ${esc(bare)}${countdownTag}</button>`;
+      };
+
       const _populateRoster = (rosterPanel: HTMLElement, names: _RosterEntry[], targetAddr: string) => {
-        if (names.length === 0) {
+        if (names.length === 0 && nsShadeOrders.length === 0) {
           rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No names found</div>';
         } else {
-          rosterPanel.innerHTML = names.map(n => _renderRosterChip(n)).join('');
+          // Split: primary into its own top row, others into the grid below.
+          // Shade orders go in the grid at the very front so they're visible
+          // without opening the SKI menu. Sort shades by executeAfterMs asc
+          // (most urgent first).
+          const primaryEntry = names.find(n => n.primary);
+          const otherEntries = names.filter(n => !n.primary);
+          const sortedShades = [...nsShadeOrders].sort(
+            (a, b) => (a.executeAfterMs || Infinity) - (b.executeAfterMs || Infinity),
+          );
+          const shadeChipsHtml = sortedShades.map(_renderIdleShadeChip).join('');
+          const otherChipsHtml = otherEntries.map(n => _renderRosterChip(n)).join('');
+          const primaryRowHtml = primaryEntry
+            ? `<div class="ski-idle-roster-primary-row">${_renderRosterChip(primaryEntry)}</div>`
+            : '';
+          const gridHtml = `<div class="ski-idle-roster-grid">${shadeChipsHtml}${otherChipsHtml}</div>`;
+          rosterPanel.innerHTML = primaryRowHtml + gridHtml;
         }
 
         // Bind horizontal wheel scroll (once)

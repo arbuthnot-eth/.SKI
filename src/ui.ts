@@ -13096,21 +13096,30 @@ function bindEvents() {
         }
 
         let raw = _idleThunderInput?.value.trim() || '';
-        if (!raw) return;
+        // Glaceon Lv.30 #141 Hail — allow attachment-only sends. If
+        // the user has staged one or more attachments, skip the
+        // empty-text short-circuit so the send flow can run with
+        // just the files. Still requires either raw text OR pending
+        // files — totally empty send still returns.
+        const _hasStagedAttachments = _pendingThunderFiles.length > 0;
+        if (!raw && !_hasStagedAttachments) return;
         const ws = getState();
         if (!ws.address) return;
         try {
           // If an open-storm convo already targets a specific counterparty
           // and the user's text has no @tag, prepend the counterparty as the
           // implicit recipient. This lets users type bare messages inside an
-          // open storm without repeating @name on every line.
+          // open storm without repeating @name on every line. Also covers
+          // the attachment-only case where raw starts empty — we need a
+          // recipient tag for the parser even though the user didn't type
+          // text.
           const _openStormTarget = (() => {
             const convoOpen = _idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])');
             if (!convoOpen) return '';
             return (nsLabel || '').replace(/\.sui$/, '').toLowerCase();
           })();
           if (_openStormTarget && !/(?:^|[^a-z0-9_-])@[a-z0-9-]{3,63}/i.test(raw)) {
-            raw = `@${_openStormTarget} ${raw}`;
+            raw = raw ? `@${_openStormTarget} ${raw}` : `@${_openStormTarget}`;
           }
           const draft = _parseThunderCompose(raw);
           if (!draft || draft.error || draft.recipients.length === 0) {

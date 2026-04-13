@@ -1926,6 +1926,139 @@ app.post('/api/ultron/accept-share', async (c) => {
   }
 });
 
+// ── Leafeon Increment D glue: full signing chain end-to-end ──────────
+// POST /api/ultron/sign
+// Body: { curve: 'secp256k1'|'ed25519', message: '<hex>', hashScheme: 'KECCAK256'|'SHA256'|... }
+// Chains four DO calls:
+//   1. /request-presign  — Increment C PTB, returns { presignObjectId, presignCapId }
+//   2. /poll-presign     — waits until presign state === Completed
+//   3. /request-sign     — Increment D PTB, returns { signSessionId }
+//   4. /poll-sign        — waits until sign state === Completed, parses signature
+// Returns { ok, presignDigest, presignObjectId, signDigest, signSessionId, signatureHex, durationMs }.
+//
+// Admin-ish: this burns real IKA on every call, so it's POST + gated
+// behind the same DO route guard as accept-share. Callers should already
+// have ultron's dwallet in Active state (run /accept-share first if not).
+app.post('/api/ultron/sign', async (c) => {
+  const t0 = Date.now();
+  try {
+    const body = await c.req.json() as {
+      curve?: 'ed25519' | 'secp256k1';
+      message?: string;
+      hashScheme?: string;
+    };
+    const curve = body.curve ?? 'secp256k1';
+    const messageHex = (body.message ?? '').replace(/^0x/, '');
+    const hashScheme = body.hashScheme ?? (curve === 'ed25519' ? 'SHA512' : 'KECCAK256');
+    if (!messageHex) return c.json({ error: 'message (hex) required' }, 400);
+
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const headers = { 'content-type': 'application/json', 'x-partykit-room': 'ultron' };
+
+    // 1. Request presign (Increment C)
+    const presignRes = await stub.fetch(new Request(
+      `https://ultron-signer/request-presign?curve=${encodeURIComponent(curve)}`,
+      { method: 'POST', headers },
+    ));
+    const presignJson = await presignRes.json() as {
+      ok?: boolean; error?: string; digest?: string;
+      presignObjectId?: string; presignCapId?: string;
+    };
+    if (!presignJson.ok || !presignJson.presignObjectId || !presignJson.presignCapId) {
+      return c.json({
+        ok: false,
+        step: 'request-presign',
+        error: presignJson.error ?? 'request-presign missing ids',
+        presignJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+    const presignDigest = presignJson.digest;
+    const presignObjectId = presignJson.presignObjectId;
+    const presignCapId = presignJson.presignCapId;
+
+    // 2. Poll presign until Completed
+    const pollPresignRes = await stub.fetch(new Request(
+      `https://ultron-signer/poll-presign?id=${encodeURIComponent(presignObjectId)}`,
+      { method: 'GET', headers },
+    ));
+    const pollPresignJson = await pollPresignRes.json() as {
+      ok?: boolean; error?: string; completed?: boolean; state?: string;
+    };
+    if (!pollPresignJson.ok || !pollPresignJson.completed) {
+      return c.json({
+        ok: false,
+        step: 'poll-presign',
+        error: pollPresignJson.error ?? 'presign not completed',
+        presignDigest, presignObjectId,
+        pollPresignJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+
+    // 3. Request sign (Increment D)
+    const signReqBody = JSON.stringify({ curve, presignObjectId, presignCapId, messageHex, hashScheme });
+    const signRes = await stub.fetch(new Request(
+      'https://ultron-signer/request-sign',
+      { method: 'POST', headers, body: signReqBody },
+    ));
+    const signJson = await signRes.json() as {
+      ok?: boolean; error?: string; digest?: string; signSessionId?: string;
+    };
+    if (!signJson.ok || !signJson.signSessionId) {
+      return c.json({
+        ok: false,
+        step: 'request-sign',
+        error: signJson.error ?? 'request-sign missing session id',
+        presignDigest, presignObjectId,
+        signJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+    const signDigest = signJson.digest;
+    const signSessionId = signJson.signSessionId;
+
+    // 4. Poll sign until Completed and parse signature
+    const pollSignRes = await stub.fetch(new Request(
+      `https://ultron-signer/poll-sign?id=${encodeURIComponent(signSessionId)}&curve=${encodeURIComponent(curve)}`,
+      { method: 'GET', headers },
+    ));
+    const pollSignJson = await pollSignRes.json() as {
+      ok?: boolean; error?: string; completed?: boolean; signatureHex?: string; state?: string;
+    };
+    if (!pollSignJson.ok || !pollSignJson.signatureHex) {
+      return c.json({
+        ok: false,
+        step: 'poll-sign',
+        error: pollSignJson.error ?? 'sign not completed',
+        presignDigest, presignObjectId,
+        signDigest, signSessionId,
+        pollSignJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+
+    return c.json({
+      ok: true,
+      curve,
+      presignDigest,
+      presignObjectId,
+      signDigest,
+      signSessionId,
+      signatureHex: pollSignJson.signatureHex,
+      durationMs: Date.now() - t0,
+    });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      durationMs: Date.now() - t0,
+    }, 500);
+  }
+});
+
 // ── Probe: old sol@ultron balances ──────────────────────────────────
 // Derives the legacy Solana address from SHADE_KEEPER_PRIVATE_KEY
 // (raw ed25519 pubkey, base58-encoded) and reports SOL + SPL balances

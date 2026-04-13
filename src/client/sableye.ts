@@ -23,9 +23,14 @@
 const _IDB_NAME = 'ski-crypto';
 const _IDB_STORE = 'keys';
 const _IDB_KEY_ID = 'sableye-aes';
-const _CHRONICOM_URL = '/api/chronicom/sableye';
 const _PERSIST_DEBOUNCE_MS = 2000;
 const _MAX_NAMES = 512;
+
+// Chronicom is keyed per-wallet by Sui address. warmSableye() stashes
+// the owner so subsequent persists can target the right DO instance
+// without importing ui.ts state.
+let _ownerAddr = '';
+const _chronicomUrl = () => `/api/chronicom/sableye?addr=${encodeURIComponent(_ownerAddr)}`;
 
 type Chain = 'sui' | 'btc' | 'sol' | 'eth' | 'tron';
 
@@ -115,9 +120,11 @@ async function _decrypt(envelope: string): Promise<SableyePayload | null> {
  * Load the encrypted set from Chronicom + decrypt into local cache.
  * Call on wallet connect. Safe to call multiple times — idempotent.
  */
-export async function warmSableye(): Promise<void> {
+export async function warmSableye(ownerAddr: string): Promise<void> {
+  if (!ownerAddr) return;
+  _ownerAddr = ownerAddr;
   try {
-    const r = await fetch(_CHRONICOM_URL);
+    const r = await fetch(_chronicomUrl());
     if (!r.ok) return;
     const j = await r.json() as { cipher?: string; updatedAt?: number; xchainLog?: Array<{ fromAddress: string; chain: string; ts: number }> };
     if (j.cipher) {
@@ -215,6 +222,7 @@ export async function flushSableye(): Promise<void> {
 
 /** Clear in-memory state on disconnect. Does NOT clear Chronicom cipher. */
 export function resetSableye(): void {
+  _ownerAddr = '';
   _set = new Set();
   _payload = { names: [], byChain: {}, lastTouch: {} };
   _pendingXchainLog = [];
@@ -229,10 +237,11 @@ function _schedulePersist(): void {
 }
 
 async function _persist(): Promise<void> {
+  if (!_ownerAddr) return;
   const cipher = await _encrypt(_payload);
   if (!cipher) return;
   try {
-    const r = await fetch(_CHRONICOM_URL, {
+    const r = await fetch(_chronicomUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cipher }),

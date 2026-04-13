@@ -2287,6 +2287,94 @@ app.post('/api/cache/ultron-split-sui', async (c) => {
   }
 });
 
+// ── Ultron iUSD transfer ─────────────────────────────────────────────
+// One-shot endpoint that signs as ultron and transfers iUSD to a
+// recipient. Used to return the 90.75 iUSD loss from the orphan
+// forwardToAddress mistake back to the t2000 treasury — ultron only
+// holds ~$43, so this is a partial repayment. The remainder is
+// blocked on iUSD mint headroom which is currently at 0 (see
+// /api/cache/realize-yield and contracts/iusd/sources/iusd.move
+// EInsufficientCollateral abort).
+app.post('/api/cache/ultron-transfer-iusd', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json().catch(() => ({})) as { recipient?: string; amountMist?: string };
+    if (!body.recipient) return c.json({ error: 'recipient required' }, 400);
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+    const recipient = normalizeSuiAddress(body.recipient);
+
+    const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+
+    // Pull ultron's SUI coins (for gas) + iUSD coins.
+    const rpcCall = async (method: string, params: unknown[]) => {
+      const r = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      return r.json() as Promise<{ result?: unknown; error?: { message?: string } }>;
+    };
+
+    const suiJ = await rpcCall('suix_getCoins', [ultronAddr, '0x2::sui::SUI']) as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+    const suiCoins = (suiJ.result?.data ?? []).sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (suiCoins.length === 0) return c.json({ error: 'ultron has no SUI coins for gas' }, 400);
+    const gasCoin = suiCoins[0];
+
+    const iusdJ = await rpcCall('suix_getCoins', [ultronAddr, IUSD_TYPE]) as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+    const iusdCoins = iusdJ.result?.data ?? [];
+    if (iusdCoins.length === 0) return c.json({ error: 'ultron has no iUSD' }, 400);
+    const totalIusdMist = iusdCoins.reduce((acc, c2) => acc + BigInt(c2.balance), 0n);
+    const amountMist = body.amountMist ? BigInt(body.amountMist) : totalIusdMist;
+    if (amountMist > totalIusdMist) return c.json({ error: `amount ${amountMist} > available ${totalIusdMist}` }, 400);
+
+    const gasPriceJ = await rpcCall('suix_getReferenceGasPrice', []) as { result?: string };
+    const gasPrice = BigInt(gasPriceJ.result ?? '1000');
+
+    const tx = new Transaction();
+    tx.setSender(ultronAddr);
+    tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
+    tx.setGasPrice(gasPrice);
+    tx.setGasBudget(50_000_000n);
+
+    // Pass every iUSD coin as an owned object ref. Merge into the
+    // first then split if we're not sending the full amount, else
+    // just merge + transferObjects the merged coin to recipient.
+    const iusdRefs = iusdCoins.map(cc => tx.objectRef({ objectId: cc.coinObjectId, version: cc.version, digest: cc.digest }));
+    const primary = iusdRefs[0];
+    if (iusdRefs.length > 1) {
+      tx.mergeCoins(primary, iusdRefs.slice(1));
+    }
+    if (amountMist === totalIusdMist) {
+      tx.transferObjects([primary], tx.pure.address(recipient));
+    } else {
+      const [toSend] = tx.splitCoins(primary, [tx.pure.u64(amountMist)]);
+      tx.transferObjects([toSend], tx.pure.address(recipient));
+    }
+
+    const txBytes = await tx.build();
+    const { signature } = await keypair.signTransaction(txBytes);
+    const submitJ = await rpcCall('sui_executeTransactionBlock', [toBase64(txBytes), [signature], { showEffects: true, showBalanceChanges: true }, 'WaitForLocalExecution']) as { result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } }; error?: { message?: string } };
+    if (submitJ.error) return c.json({ error: `submit failed: ${submitJ.error.message}` }, 500);
+    const status = submitJ.result?.effects?.status?.status;
+    if (status !== 'success') return c.json({ error: `tx status ${status}: ${submitJ.result?.effects?.status?.error ?? ''}` }, 500);
+    return c.json({
+      ok: true,
+      digest: submitJ.result?.digest ?? '',
+      ultronAddr,
+      recipient,
+      amountMist: amountMist.toString(),
+      amountUsd: Number(amountMist) / 1e9,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 // ── Sweep old sol@ultron → new IKA-derived sol@ultron ─────────────────
 // Drains all SOL + SPL balances from the legacy raw-keypair address
 // (old sol@ultron = base58(suiPubkey)) to a recipient — in practice

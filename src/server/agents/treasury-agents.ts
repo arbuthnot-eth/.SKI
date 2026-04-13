@@ -212,6 +212,23 @@ interface Env {
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+// Ultron's IKA-native Solana address (ed25519 DKG output).
+// Provisioned 2026-04-13 by rumbleUltron('ed25519'); DWalletCap
+// 0x518b96da469cd7e4d1ccb99bcf4767054535ad7d615b6827a79309ecd5e9a3a7
+// owned by ultron.sui (0xa84c…b3c3), dwallet
+// 0x1a5e6b22b81cd644e15314b451212d9cadb6cd1446c466754760cc5a65ac82a9.
+// The legacy address (base58 of the Sui keeper pubkey) is fully
+// drained — see Registeel Hyper Beam commit for the sweep.
+//
+// Every sol@ultron reference in this file uses this constant so
+// deposit targets, webhook matchers, and balance lookups resolve
+// to the real funds. Signing paths (Kamino deposits, etc.) still
+// call Ed25519Keypair.signTransaction and will fail at sig-verify
+// time until DO-hosted IKA signing lands (Registeel Iron Defense,
+// queued). That's an acceptable regression for now because the
+// old address has zero lamports either way.
+const ULTRON_SOL_ADDRESS = 'GfVzGHiSPyTnX6bawnahJnUPXeASF6qKPd224VQws1DW';
+
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function toBase58(bytes: Uint8Array): string {
   const digits = [0];
@@ -666,7 +683,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
             // For now, use ultron's own SOL address as recipient (user claims later)
             // TODO: resolve sol@holder via IKA dWallet / SUIAMI roster
-            const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+            const solAddr = ULTRON_SOL_ADDRESS;
 
             const mintAddress = (this.state as any).iusd_sol_mint as string | undefined;
             if (mintAddress) {
@@ -1078,11 +1095,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const suiAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
-      const pubBytes = keypair.getPublicKey().toRawBytes();
-      const solAddr = toBase58(pubBytes);
       return new Response(JSON.stringify({
         sui: suiAddr,
-        sol: solAddr,
+        sol: ULTRON_SOL_ADDRESS,
         btc: null, eth: null, // IKA dWallets after Rumble
       }), { headers: { 'content-type': 'application/json' } });
     }
@@ -1108,7 +1123,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!body.suiAddress || !body.amountUsd) throw new Error('Missing suiAddress or amountUsd');
 
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const solAddr = ULTRON_SOL_ADDRESS;
 
         // Validate route/action against the schema. Default both to
         // 0 so a plain {suiAddress, amountUsd} body still hits the
@@ -1262,7 +1277,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'No keeper key' }), { status: 500, headers: { 'content-type': 'application/json' } });
 
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-        const ultronSolAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const ultronSolAddr = ULTRON_SOL_ADDRESS;
 
         const txs = await request.json() as Array<{
           signature: string;
@@ -1436,7 +1451,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       try {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) return new Response(JSON.stringify({ error: 'no keeper' }), { status: 400 });
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const solAddr = ULTRON_SOL_ADDRESS;
         const intents = ((this.state as any).deposit_intents ?? []) as Array<Record<string, any>>;
         const pending = intents.filter(i => i.status === 'pending');
         const result: any = {
@@ -1549,7 +1564,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!solPrice) throw new Error('Sibyl could not determine SOL price');
 
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const solAddr = ULTRON_SOL_ADDRESS;
 
         // Sub-cent tag from address
         const addrBytes = new TextEncoder().encode(body.suiAddress);
@@ -1666,7 +1681,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
         const amountParam = parseFloat(url.searchParams.get('amount') || '0');
         const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const solAddr = ULTRON_SOL_ADDRESS;
         // Accept explicit amount via query param or try to auto-detect balance
         let depositAmt = amountParam;
         if (!depositAmt) {
@@ -2254,7 +2269,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
         // Default: swap ALL SOL minus 0.01 for rent
         let lamports = BigInt(body.lamports || '0');
         if (lamports <= 0n) {
-          const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+          const solAddr = ULTRON_SOL_ADDRESS;
           const solRpc = this.env.HELIUS_API_KEY
             ? `https://mainnet.helius-rpc.com/?api-key=${this.env.HELIUS_API_KEY}`
             : 'https://api.mainnet-beta.solana.com';
@@ -4609,7 +4624,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       if (!hasUsdc && !hasSui) {
         // Last resort: attest SOL collateral + mint iUSD as credit, tell the user what's needed
-        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const solAddr = ULTRON_SOL_ADDRESS;
         const suiUsd = Number(suiBal) / 1e9 * suiPrice;
         const usdcUsd = Number(usdcBal) / 1e6;
         const ikaUsd = Number(ikaBal) / 1e9 * 0.003;
@@ -4761,7 +4776,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     if (pending.length === 0 && pendingKamino.length === 0) return;
 
     const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-    const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+    const solAddr = ULTRON_SOL_ADDRESS;
 
     // Fetch recent Solana transactions to ultron's address
     const SOL_RPCS = [
@@ -5908,7 +5923,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private async _depositToKamino(solAmount: number): Promise<string> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
     const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-    const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+    const solAddr = ULTRON_SOL_ADDRESS;
 
     // 1. Get unsigned deposit tx from Kamino REST API
     const resp = await fetch(`${TreasuryAgents.KAMINO_API}/ktx/klend/deposit`, {
@@ -6011,7 +6026,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
   private async _depositUsdcToKamino(usdcAmount: number): Promise<string> {
     if (!this.env.SHADE_KEEPER_PRIVATE_KEY) throw new Error('No keeper key');
     const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
-    const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+    const solAddr = ULTRON_SOL_ADDRESS;
 
     // 1. Get unsigned deposit tx from Kamino REST API
     const resp = await fetch(`${TreasuryAgents.KAMINO_API}/ktx/klend/deposit`, {
@@ -7629,7 +7644,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Auto-deposit idle Solana USDC to Kamino for yield
       try {
-        const solAddr = toBase58(keypair.getPublicKey().toRawBytes());
+        const solAddr = ULTRON_SOL_ADDRESS;
         const usdcBal = await this._getSolanaUsdcBalance(solAddr);
         if (usdcBal > 5) { // keep $5 liquid
           const depositAmt = usdcBal - 5;

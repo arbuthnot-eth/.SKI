@@ -1540,6 +1540,62 @@ app.post('/api/cache/swap-sui-for-deep', async (c) => {
   }
 });
 
+// ── Solana RPC proxy — relays browser JSON-RPC calls to Helius ──────
+// Why: api.mainnet-beta.solana.com 403s on most browser origins and
+// publicnode is rate-limited. Sui.ski has a Helius developer plan
+// stashed in HELIUS_API_KEY, but we can't ship the key to the
+// browser. This endpoint proxies JSON-RPC POST bodies to Helius with
+// the key server-side so the client just talks to same-origin.
+//
+// Read-only scope: we don't accept methods that cost money (like
+// sendTransaction) through this proxy — those still route via our
+// own signer paths. Balance/account/tx lookups are what the browser
+// actually needs.
+const SOL_RPC_ALLOWED_METHODS = new Set([
+  'getBalance',
+  'getAccountInfo',
+  'getMultipleAccounts',
+  'getTokenAccountBalance',
+  'getTokenAccountsByOwner',
+  'getProgramAccounts',
+  'getSignaturesForAddress',
+  'getTransaction',
+  'getSignatureStatuses',
+  'getLatestBlockhash',
+  'getMinimumBalanceForRentExemption',
+  'getSlot',
+  'getEpochInfo',
+  'getHealth',
+  'getBlockHeight',
+  'getFeeForMessage',
+  'simulateTransaction',
+]);
+app.post('/api/sol-rpc', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'Helius key not configured' }, 500);
+    const body = await c.req.json() as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
+    if (!body || typeof body.method !== 'string') {
+      return c.json({ error: 'Invalid JSON-RPC body' }, 400);
+    }
+    if (!SOL_RPC_ALLOWED_METHODS.has(body.method)) {
+      return c.json({ error: `Method ${body.method} not allowed on proxy` }, 403);
+    }
+    const r = await fetch(`https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, method: body.method, params: body.params ?? [] }),
+    });
+    const j = await r.json();
+    // Mirror the upstream response verbatim so callers that parse
+    // raw JSON-RPC shapes don't need any special-casing.
+    return c.json(j as Record<string, unknown>, r.status as any, {
+      'cache-control': 'no-store',
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Probe: old sol@ultron balances ──────────────────────────────────
 // Derives the legacy Solana address from SHADE_KEEPER_PRIVATE_KEY
 // (raw ed25519 pubkey, base58-encoded) and reports SOL + SPL balances

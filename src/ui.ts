@@ -2938,9 +2938,13 @@ function getTotalSui(): number {
   return totalUsd / price;
 }
 
+// Same-origin proxy (server relays to Helius with HELIUS_API_KEY) first.
+// Public fallbacks kept as a lifeline if the proxy is down, but the
+// browser should basically always be hitting /api/sol-rpc in practice
+// since mainnet-beta 403s most origins and publicnode is rate-limited.
 const SOL_RPCS = [
+  '/api/sol-rpc',
   'https://solana-rpc.publicnode.com',
-  'https://api.mainnet-beta.solana.com',
 ];
 
 /** Fetch SOL balance for the IKA dWallet Solana address. Races multiple Solana RPCs. */

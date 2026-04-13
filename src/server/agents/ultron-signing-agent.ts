@@ -187,9 +187,18 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         headers: { 'content-type': 'application/json' },
       });
     }
+    // Increment C — request_presign on an Active dWallet
     if (url.pathname.endsWith('/request-presign') || url.searchParams.has('request-presign')) {
       const curve = (url.searchParams.get('curve') ?? 'secp256k1') as 'ed25519' | 'secp256k1';
       const result = await this._requestPresign(curve);
+      return new Response(JSON.stringify(result), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    // Increment D — poll the Presign object until state.variant === Completed
+    if (url.pathname.endsWith('/poll-presign') || url.searchParams.has('poll-presign')) {
+      const presignId = url.searchParams.get('id') ?? '';
+      const result = await this._pollPresignCompleted(presignId);
       return new Response(JSON.stringify(result), {
         headers: { 'content-type': 'application/json' },
       });
@@ -489,6 +498,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
   }
 
   /**
+<<<<<<< HEAD
    * Increment C of the signing flow: request a presign on ultron's
    * Active dWallet. The IKA network performs the MPC presign rounds
    * asynchronously after this PTB lands; the resulting Presign object
@@ -669,5 +679,93 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       return { ok: false, error, durationMs: Date.now() - t0 };
     }
+  }
+
+  /**
+   * Increment D step 1: poll a Presign object until its state reaches
+   * `Completed`. IKA's MPC network takes a few seconds to produce the
+   * presign material after the request PTB lands; we can't progress to
+   * the sign step until the presign is fully baked.
+   *
+   * We read via raw JSON-RPC `sui_getObject` (not GraphQL) — Mega Punch II
+   * proved that GraphQL reshapes byte-array fields in ways that break the
+   * downstream WASM pipeline. For byte-sensitive reads, JSON-RPC is the
+   * reliable transport even post-sunset (PublicNode/BlockVision keep
+   * serving JSON-RPC-compatible endpoints from their own nodes).
+   *
+   * Move enum variants come back from sui_getObject as `state.<VariantName>`
+   * on the content.fields payload — we look for `Completed` and also
+   * defensively handle a `{variant,fields}` shape in case the shape ever
+   * migrates.
+   */
+  private async _pollPresignCompleted(presignId: string): Promise<{
+    ok: boolean;
+    error?: string;
+    completed?: boolean;
+    state?: string;
+    durationMs: number;
+  }> {
+    const t0 = Date.now();
+    if (!presignId) {
+      return { ok: false, error: 'presignId required', durationMs: Date.now() - t0 };
+    }
+    const TIMEOUT_MS = 60_000;
+    const INTERVAL_MS = 2_000;
+    let lastState = 'Unknown';
+    while (Date.now() - t0 < TIMEOUT_MS) {
+      try {
+        const res = await fetch('https://sui-rpc.publicnode.com', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 1, method: 'sui_getObject',
+            params: [presignId, { showContent: true }],
+          }),
+        });
+        if (res.ok) {
+          const json = await res.json() as {
+            result?: { data?: { content?: { fields?: { state?: unknown } } } };
+          };
+          const stateRaw = json.result?.data?.content?.fields?.state;
+          if (stateRaw && typeof stateRaw === 'object') {
+            const stateObj = stateRaw as Record<string, unknown> & { variant?: string };
+            if (stateObj.variant) {
+              lastState = stateObj.variant;
+            } else {
+              const keys = Object.keys(stateObj);
+              const variantKey = keys.find((k) => k !== 'type' && k !== 'fields');
+              if (variantKey) lastState = variantKey;
+            }
+            if (lastState === 'Completed') {
+              return {
+                ok: true,
+                completed: true,
+                state: lastState,
+                durationMs: Date.now() - t0,
+              };
+            }
+            if (lastState === 'NetworkRejected') {
+              return {
+                ok: false,
+                error: 'presign NetworkRejected',
+                completed: false,
+                state: lastState,
+                durationMs: Date.now() - t0,
+              };
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`[poll-presign] fetch err: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await new Promise((r) => setTimeout(r, INTERVAL_MS));
+    }
+    return {
+      ok: false,
+      error: `presign did not reach Completed within ${TIMEOUT_MS}ms (last=${lastState})`,
+      completed: false,
+      state: lastState,
+      durationMs: Date.now() - t0,
+    };
   }
 }

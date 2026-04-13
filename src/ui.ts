@@ -14443,28 +14443,40 @@ function bindEvents() {
             const fileName = a.fileName || `file-${ai + 1}`;
             const mimeType = a.mimeType || 'application/octet-stream';
             const fileSize = Number(a.fileSize || 0);
+            // Glaceon Lv.30 #141 Frost Breath — human size label.
+            // "2.4 MB" / "847 KB" / "12 B". Preserves one decimal for
+            // MB so a 2.4 MB PDF doesn't display as "2 MB".
             const sizeLabel = fileSize >= 1024 * 1024
               ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
               : fileSize >= 1024
-                ? `${(fileSize / 1024).toFixed(0)} KB`
+                ? `${Math.round(fileSize / 1024)} KB`
                 : `${fileSize} B`;
             const isImg = mimeType.startsWith('image/');
             const isVid = mimeType.startsWith('video/') || mimeType === 'video/webm';
             const isAud = mimeType.startsWith('audio/');
+            const isPdf = mimeType.includes('pdf');
             const isMedia = isImg || isVid || isAud;
             const icon = isImg ? '\u{1F5BC}\u{FE0F}'
               : isVid ? '\u25B6\uFE0F'
               : isAud ? '\u{1F3B5}'
-              : mimeType.includes('pdf') ? '\u{1F4D1}'
+              : isPdf ? '\u{1F4D1}'
               : '\u{1F4CE}';
             const storageId = a.wire?.storageId || '';
             const kindAttr = isImg ? 'image' : isVid ? 'video' : isAud ? 'audio' : 'file';
             const mediaCls = isMedia ? ' ski-idle-attach-row--media' : '';
             const playHintCls = isMedia ? ' ski-idle-attach-row--playable' : '';
+            // Glaceon Lv.30 #141 Frost Breath — non-media files render
+            // as a download chip. Truncate >24 chars so long names
+            // don't break the bubble layout. The data-filename attr
+            // keeps the full name for the download anchor.
+            const chipCls = !isMedia ? ' ski-idle-attach-row--chip' : '';
+            const displayName = !isMedia && fileName.length > 24
+              ? `${fileName.slice(0, 21)}\u2026`
+              : fileName;
             const titleText = isMedia
               ? `Seal-encrypted ${kindAttr} \u2014 click to play`
-              : 'Seal-encrypted attachment \u2014 click to download';
-            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${titleText}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
+              : `Seal-encrypted ${isPdf ? 'PDF' : 'file'} \u2014 ${fileName} (${sizeLabel}) \u2014 click to download`;
+            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}${chipCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${esc(titleText)}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(displayName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
           }).join('');
           return `<div class="ski-idle-bubble ${baseCls} ski-idle-bubble--mixed" data-id="${esc(m.messageId)}">${nameTag}${_textLine}${_attachmentRows}</div>`;
         }).join('');
@@ -14832,17 +14844,28 @@ function bindEvents() {
               const _mime = _row.dataset.mime || 'application/octet-stream';
               const _kind = _row.dataset.kind || 'file';
               const _idx = Number(_idxStr) || 0;
+              const _cacheKey = `${_msgId}:${_idx}`;
               _row.classList.add('ski-idle-attach-row--loading');
               try {
-                const { getThunders } = await import('./client/thunder.js');
-                const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
-                const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
-                const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
-                const handle = handles[_idx];
-                if (!handle) throw new Error('Attachment handle not found');
-                const bytes = await handle.data();
-                const blob = new Blob([bytes], { type: _mime });
-                const url = URL.createObjectURL(blob);
+                // Glaceon Lv.30 #141 Frost Breath — reuse cached blob
+                // URL on repeat clicks so downloads don't re-decrypt
+                // or re-hit the Seal key-server threshold quorum.
+                let url: string;
+                const _cached = _attachBlobCache.get(_cacheKey);
+                if (_cached) {
+                  url = _cached.url;
+                } else {
+                  const { getThunders } = await import('./client/thunder.js');
+                  const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+                  const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
+                  const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+                  const handle = handles[_idx];
+                  if (!handle) throw new Error('Attachment handle not found');
+                  const bytes = await handle.data();
+                  const blob = new Blob([bytes as unknown as BlobPart], { type: _mime });
+                  url = URL.createObjectURL(blob);
+                  _attachBlobCache.set(_cacheKey, { url, mime: _mime, fileName: _fileName });
+                }
                 if (_kind === 'image') {
                   // Replace the icon cell with the decoded <img>.
                   const iconSlot = _row.querySelector('.ski-idle-bubble-attach-icon');
@@ -14868,14 +14891,16 @@ function bindEvents() {
                     try { await aud.play(); } catch { /* autoplay blocked, user can press play */ }
                   }
                 } else {
-                  // Generic download trigger
+                  // Generic download trigger. Blob URL is cached in
+                  // _attachBlobCache so re-clicks are instant and
+                  // don't re-decrypt; the URL is released on page
+                  // unload rather than per-click.
                   const a = document.createElement('a');
                   a.href = url;
                   a.download = _fileName;
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
-                  setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 60_000);
                 }
                 showToast(`\u{1F512} ${_fileName} decrypted`);
               } catch (err) {

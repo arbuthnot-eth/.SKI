@@ -4176,6 +4176,49 @@ body {
   height: 100%;
   object-fit: cover;
 }
+/* Glaceon Lv.30 #141 — downloadable chip for non-media attachments
+ * (PDF, txt, json, arbitrary bytes). Compact pill with icon + name
+ * + size. Click triggers a <a download> flow in ui.ts. */
+.ski-idle-attach-row--chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  padding: 6px 10px 6px 8px;
+  background: rgba(96, 165, 250, 0.08);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ski-idle-attach-row--chip:hover {
+  background: rgba(96, 165, 250, 0.18);
+  border-color: rgba(96, 165, 250, 0.6);
+}
+.ski-idle-attach-row--chip .ski-idle-bubble-attach-icon {
+  background: transparent;
+  border: none;
+  width: 20px;
+  height: 20px;
+  font-size: 0.92rem;
+}
+/* Glaceon Lv.30 #141 — inline auto-decrypted image attachment. */
+.ski-idle-attach-row--inline-image {
+  flex-direction: column;
+  align-items: center;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  cursor: default;
+}
+.ski-idle-bubble-attach-inline {
+  display: block;
+  max-width: 240px;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  cursor: zoom-in;
+  background: rgba(0, 0, 0, 0.35);
+}
 .ski-idle-bubble-attach-meta {
   display: flex;
   flex-direction: column;

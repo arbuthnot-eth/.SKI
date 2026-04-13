@@ -4725,6 +4725,14 @@ function _clearNsInput() {
 
 const _rosterQrCache = new Map<string, string>();
 
+// Glaceon Lv.30 #141 — attachment blob-URL cache. Keyed by
+// `${messageId}:${attachIdx}` so re-renders reuse the decoded Blob URL
+// without re-fetching or re-decrypting via the Seal handle. Images are
+// auto-loaded on bubble paint; files load on click. Callers should
+// revokeObjectURL when a bubble is discarded, but we also rely on the
+// browser reclaiming blobs when the page unloads.
+const _attachBlobCache = new Map<string, { url: string; mime: string; fileName: string }>();
+
 /** Populate #wk-roster-qr if it has a data-qr-addr (cache miss). Caches SVG in memory for sync inline on next render. */
 function _loadRosterQr() {
   const qrSlot = document.getElementById('wk-roster-qr');
@@ -9861,7 +9869,7 @@ function bindEvents() {
               <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
               <button class="ski-idle-thunder-at-iusd ski-idle-quick-btn ski-idle-quick-btn--iusd" id="ski-idle-thunder-at-iusd" type="button" title="Attach amount">$</button>
               <button class="ski-idle-quick-btn ski-idle-quick-btn--attach" id="ski-idle-thunder-attach" type="button" title="Attach files">\ud83d\udcce</button>
-              <input id="ski-idle-thunder-file-input" type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.json,.md" style="display:none">
+              <input id="ski-idle-thunder-file-input" type="file" multiple accept="*/*" style="display:none">
             </div>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypted thunder">
@@ -13092,21 +13100,30 @@ function bindEvents() {
         }
 
         let raw = _idleThunderInput?.value.trim() || '';
-        if (!raw) return;
+        // Glaceon Lv.30 #141 Hail — allow attachment-only sends. If
+        // the user has staged one or more attachments, skip the
+        // empty-text short-circuit so the send flow can run with
+        // just the files. Still requires either raw text OR pending
+        // files — totally empty send still returns.
+        const _hasStagedAttachments = _pendingThunderFiles.length > 0;
+        if (!raw && !_hasStagedAttachments) return;
         const ws = getState();
         if (!ws.address) return;
         try {
           // If an open-storm convo already targets a specific counterparty
           // and the user's text has no @tag, prepend the counterparty as the
           // implicit recipient. This lets users type bare messages inside an
-          // open storm without repeating @name on every line.
+          // open storm without repeating @name on every line. Also covers
+          // the attachment-only case where raw starts empty — we need a
+          // recipient tag for the parser even though the user didn't type
+          // text.
           const _openStormTarget = (() => {
             const convoOpen = _idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])');
             if (!convoOpen) return '';
             return (nsLabel || '').replace(/\.sui$/, '').toLowerCase();
           })();
           if (_openStormTarget && !/(?:^|[^a-z0-9_-])@[a-z0-9-]{3,63}/i.test(raw)) {
-            raw = `@${_openStormTarget} ${raw}`;
+            raw = raw ? `@${_openStormTarget} ${raw}` : `@${_openStormTarget}`;
           }
           const draft = _parseThunderCompose(raw);
           if (!draft || draft.error || draft.recipients.length === 0) {
@@ -14439,28 +14456,40 @@ function bindEvents() {
             const fileName = a.fileName || `file-${ai + 1}`;
             const mimeType = a.mimeType || 'application/octet-stream';
             const fileSize = Number(a.fileSize || 0);
+            // Glaceon Lv.30 #141 Frost Breath — human size label.
+            // "2.4 MB" / "847 KB" / "12 B". Preserves one decimal for
+            // MB so a 2.4 MB PDF doesn't display as "2 MB".
             const sizeLabel = fileSize >= 1024 * 1024
               ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
               : fileSize >= 1024
-                ? `${(fileSize / 1024).toFixed(0)} KB`
+                ? `${Math.round(fileSize / 1024)} KB`
                 : `${fileSize} B`;
             const isImg = mimeType.startsWith('image/');
             const isVid = mimeType.startsWith('video/') || mimeType === 'video/webm';
             const isAud = mimeType.startsWith('audio/');
+            const isPdf = mimeType.includes('pdf');
             const isMedia = isImg || isVid || isAud;
             const icon = isImg ? '\u{1F5BC}\u{FE0F}'
               : isVid ? '\u25B6\uFE0F'
               : isAud ? '\u{1F3B5}'
-              : mimeType.includes('pdf') ? '\u{1F4D1}'
+              : isPdf ? '\u{1F4D1}'
               : '\u{1F4CE}';
             const storageId = a.wire?.storageId || '';
             const kindAttr = isImg ? 'image' : isVid ? 'video' : isAud ? 'audio' : 'file';
             const mediaCls = isMedia ? ' ski-idle-attach-row--media' : '';
             const playHintCls = isMedia ? ' ski-idle-attach-row--playable' : '';
+            // Glaceon Lv.30 #141 Frost Breath — non-media files render
+            // as a download chip. Truncate >24 chars so long names
+            // don't break the bubble layout. The data-filename attr
+            // keeps the full name for the download anchor.
+            const chipCls = !isMedia ? ' ski-idle-attach-row--chip' : '';
+            const displayName = !isMedia && fileName.length > 24
+              ? `${fileName.slice(0, 21)}\u2026`
+              : fileName;
             const titleText = isMedia
               ? `Seal-encrypted ${kindAttr} \u2014 click to play`
-              : 'Seal-encrypted attachment \u2014 click to download';
-            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${titleText}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
+              : `Seal-encrypted ${isPdf ? 'PDF' : 'file'} \u2014 ${fileName} (${sizeLabel}) \u2014 click to download`;
+            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}${chipCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${esc(titleText)}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(displayName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
           }).join('');
           return `<div class="ski-idle-bubble ${baseCls} ski-idle-bubble--mixed" data-id="${esc(m.messageId)}">${nameTag}${_textLine}${_attachmentRows}</div>`;
         }).join('');
@@ -14485,6 +14514,72 @@ function bindEvents() {
         // up the freshly painted bubbles (the button is gated on
         // convo-visible + at-least-one-bubble).
         _renderThunderComposePreview?.();
+        // Glaceon Lv.30 #141 Icy Wind — auto-decrypt image attachments
+        // inline. Images paint as a 240px <img> below the bubble text
+        // without requiring a click. Cached blob URLs survive
+        // re-renders so scrolling doesn't re-fetch. Click the image to
+        // open full-size in a new tab.
+        (async () => {
+          try {
+            const imgRows = Array.from(convoEl.querySelectorAll<HTMLElement>(
+              '.ski-idle-attach-row[data-kind="image"]:not(.ski-idle-attach-row--loaded):not(.ski-idle-attach-row--loading)'
+            ));
+            if (imgRows.length === 0) return;
+            // Group rows by message so we fetch each Thunder's
+            // attachment handles at most once.
+            const byMsg = new Map<string, HTMLElement[]>();
+            for (const row of imgRows) {
+              const bubEl = row.closest<HTMLElement>('.ski-idle-bubble');
+              const msgId = bubEl?.dataset.id || '';
+              if (!msgId) continue;
+              const list = byMsg.get(msgId) || [];
+              list.push(row);
+              byMsg.set(msgId, list);
+            }
+            if (byMsg.size === 0) return;
+            const { getThunders } = await import('./client/thunder.js');
+            const fresh = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+            for (const [msgId, rows] of byMsg) {
+              const srcMsg = fresh.messages.find((mm: { messageId: string }) => mm.messageId === msgId);
+              const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+              for (const row of rows) {
+                const idx = Number(row.dataset.attachIdx || '0') || 0;
+                const fileName = row.dataset.filename || `image-${idx + 1}`;
+                const mime = row.dataset.mime || 'image/png';
+                const cacheKey = `${msgId}:${idx}`;
+                let entry = _attachBlobCache.get(cacheKey);
+                if (!entry) {
+                  const handle = handles[idx];
+                  if (!handle) continue;
+                  row.classList.add('ski-idle-attach-row--loading');
+                  try {
+                    const bytes = await handle.data();
+                    const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+                    entry = { url: URL.createObjectURL(blob), mime, fileName };
+                    _attachBlobCache.set(cacheKey, entry);
+                  } catch {
+                    row.classList.remove('ski-idle-attach-row--loading');
+                    continue;
+                  }
+                  row.classList.remove('ski-idle-attach-row--loading');
+                }
+                // Replace the row contents with an inline <img>. Click
+                // opens the blob URL full-size in a new tab.
+                row.innerHTML = `<img class="ski-idle-bubble-attach-inline" src="${entry.url}" alt="${esc(fileName)}" data-no-bubble-click="1" loading="lazy"><span class="ski-idle-attach-row-label">\u{1F512} ${esc(fileName)}</span>`;
+                row.classList.add('ski-idle-attach-row--loaded');
+                row.classList.add('ski-idle-attach-row--inline-image');
+                const imgEl = row.querySelector<HTMLImageElement>('.ski-idle-bubble-attach-inline');
+                if (imgEl) {
+                  imgEl.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try { window.open(entry!.url, '_blank', 'noopener'); } catch {}
+                  });
+                }
+              }
+            }
+          } catch { /* best-effort; click-to-reveal path still works */ }
+        })();
         // Peer-side settlement detection: for every transfer bubble
         // with a stored tx digest, look up the on-chain vault object
         // and mark the bubble as settled if it's been consumed by a
@@ -14762,17 +14857,28 @@ function bindEvents() {
               const _mime = _row.dataset.mime || 'application/octet-stream';
               const _kind = _row.dataset.kind || 'file';
               const _idx = Number(_idxStr) || 0;
+              const _cacheKey = `${_msgId}:${_idx}`;
               _row.classList.add('ski-idle-attach-row--loading');
               try {
-                const { getThunders } = await import('./client/thunder.js');
-                const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
-                const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
-                const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
-                const handle = handles[_idx];
-                if (!handle) throw new Error('Attachment handle not found');
-                const bytes = await handle.data();
-                const blob = new Blob([bytes], { type: _mime });
-                const url = URL.createObjectURL(blob);
+                // Glaceon Lv.30 #141 Frost Breath — reuse cached blob
+                // URL on repeat clicks so downloads don't re-decrypt
+                // or re-hit the Seal key-server threshold quorum.
+                let url: string;
+                const _cached = _attachBlobCache.get(_cacheKey);
+                if (_cached) {
+                  url = _cached.url;
+                } else {
+                  const { getThunders } = await import('./client/thunder.js');
+                  const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+                  const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
+                  const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+                  const handle = handles[_idx];
+                  if (!handle) throw new Error('Attachment handle not found');
+                  const bytes = await handle.data();
+                  const blob = new Blob([bytes as unknown as BlobPart], { type: _mime });
+                  url = URL.createObjectURL(blob);
+                  _attachBlobCache.set(_cacheKey, { url, mime: _mime, fileName: _fileName });
+                }
                 if (_kind === 'image') {
                   // Replace the icon cell with the decoded <img>.
                   const iconSlot = _row.querySelector('.ski-idle-bubble-attach-icon');
@@ -14798,14 +14904,16 @@ function bindEvents() {
                     try { await aud.play(); } catch { /* autoplay blocked, user can press play */ }
                   }
                 } else {
-                  // Generic download trigger
+                  // Generic download trigger. Blob URL is cached in
+                  // _attachBlobCache so re-clicks are instant and
+                  // don't re-decrypt; the URL is released on page
+                  // unload rather than per-click.
                   const a = document.createElement('a');
                   a.href = url;
                   a.download = _fileName;
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
-                  setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 60_000);
                 }
                 showToast(`\u{1F512} ${_fileName} decrypted`);
               } catch (err) {

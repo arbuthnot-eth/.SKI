@@ -3221,10 +3221,11 @@ body {
   right: 4px;
   z-index: 50;
   /* Two-tier layout: primary row alone on top, grid below.
-   * The grid is a 6-row × auto-column layout so chips flow column-wise
-   * (top-to-bottom, then wrap right). The primary lives outside the
-   * grid so it visually occupies its own row above the rest of the
-   * roster — making it clear which name is canonical. */
+   * The grid (.ski-idle-roster-grid) is a 5-row × auto-column layout
+   * so chips flow column-wise (top-to-bottom, then wrap right).
+   * The primary lives outside the grid in its own row.
+   * Wheel/touch scrolling is forwarded from the panel down into the
+   * grid so users can scroll horizontally from anywhere in the panel. */
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3232,15 +3233,8 @@ body {
   background: transparent;
   border-radius: 8px;
   border: none;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: #ffffff transparent;
+  overflow: hidden;
 }
-.ski-idle-roster-panel::-webkit-scrollbar { height: 5px; }
-.ski-idle-roster-panel::-webkit-scrollbar-track { background: transparent; }
-.ski-idle-roster-panel::-webkit-scrollbar-thumb { background: #ffffff; border-radius: 4px; }
-.ski-idle-roster-panel::-webkit-scrollbar-thumb:hover { background: #ffffff; }
 .ski-idle-roster-panel[hidden] { display: none; }
 .ski-idle-roster-primary-row {
   display: flex;
@@ -3254,9 +3248,17 @@ body {
   grid-auto-flow: column;
   grid-auto-columns: max-content;
   gap: 6px;
+  /* Horizontal scrolling lives here, not on the panel — wheel/touch
+   * handlers in _populateRoster forward deltas into this element. */
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff transparent;
 }
+.ski-idle-roster-grid::-webkit-scrollbar { height: 5px; }
+.ski-idle-roster-grid::-webkit-scrollbar-track { background: transparent; }
+.ski-idle-roster-grid::-webkit-scrollbar-thumb { background: #ffffff; border-radius: 4px; }
+.ski-idle-roster-grid::-webkit-scrollbar-thumb:hover { background: #ffffff; }
 .ski-idle-roster-item {
   display: inline-flex;
   align-items: center;

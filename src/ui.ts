@@ -10969,12 +10969,40 @@ function bindEvents() {
         // Bind horizontal wheel scroll (once)
         if (!_rosterWheelBound) {
           _rosterWheelBound = true;
+          // After Eevee Charm V the panel itself is a flex column —
+          // its primary row + grid stack vertically. The actual
+          // horizontal-scrolling element is the inner .ski-idle-roster-grid,
+          // not the outer panel. Look up the grid on each wheel event
+          // (re-render replaces the inner HTML each time the roster opens)
+          // and scroll IT instead. Vertical wheel deltas + horizontal wheel
+          // deltas both feed scrollLeft so trackpad and mouse wheel work.
           rosterPanel.addEventListener('wheel', (we) => {
-            if (rosterPanel.scrollWidth > rosterPanel.clientWidth) {
+            const grid = rosterPanel.querySelector('.ski-idle-roster-grid') as HTMLElement | null;
+            if (!grid) return;
+            if (grid.scrollWidth > grid.clientWidth) {
               we.preventDefault();
-              rosterPanel.scrollLeft += (we as WheelEvent).deltaY;
+              const wEv = we as WheelEvent;
+              const delta = Math.abs(wEv.deltaX) > Math.abs(wEv.deltaY) ? wEv.deltaX : wEv.deltaY;
+              grid.scrollLeft += delta;
             }
           }, { passive: false });
+          // Touch swipe → horizontal scroll on the grid. Mobile users can't
+          // use the wheel; this catches them. Tracks the X delta from
+          // touchstart and applies it to grid.scrollLeft each touchmove.
+          let _touchStartX = 0;
+          let _touchStartScroll = 0;
+          let _touchTargetGrid: HTMLElement | null = null;
+          rosterPanel.addEventListener('touchstart', (te) => {
+            _touchTargetGrid = rosterPanel.querySelector('.ski-idle-roster-grid');
+            if (!_touchTargetGrid) return;
+            _touchStartX = (te as TouchEvent).touches[0]?.clientX ?? 0;
+            _touchStartScroll = _touchTargetGrid.scrollLeft;
+          }, { passive: true });
+          rosterPanel.addEventListener('touchmove', (te) => {
+            if (!_touchTargetGrid) return;
+            const x = (te as TouchEvent).touches[0]?.clientX ?? 0;
+            _touchTargetGrid.scrollLeft = _touchStartScroll - (x - _touchStartX);
+          }, { passive: true });
         }
 
         // Click a name → lazy resolve as 'taken', set state directly, no network calls

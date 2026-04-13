@@ -674,7 +674,22 @@ export async function getCrossChainStatus(address: string): Promise<CrossChainSt
 
       const dw = await rpc.getObject({ id: capDwalletId, options: { showContent: true } });
       console.log('[ika:status] dw response:', JSON.stringify(dw).slice(0, 300));
-      const state = (dw as any)?.data?.content?.fields?.state?.fields;
+      // The state enum is {AwaitingKeyHolderSignature|Active|Requested|Rejected|...}
+      // and each variant has a nested `public_output`. JSON-RPC represents
+      // the enum outer shell as `state.type = "...::State<Variant>"` with the
+      // payload in `state.fields`. We must REJECT AwaitingKeyHolderSignature
+      // even though its fields look Active-shaped — the network has produced
+      // the decentralized output but the key-holder hasn't accepted the share
+      // yet, so the dWallet cannot actually sign. Treating it as "active" in
+      // the client silently no-ops the DKG acceptance step and leaves us
+      // stuck in limbo.
+      const stateOuter = (dw as any)?.data?.content?.fields?.state;
+      const stateTypeStr: string = stateOuter?.type ?? stateOuter?.variant ?? '';
+      if (stateTypeStr.includes('AwaitingKeyHolderSignature')) {
+        console.warn('[ika:status] dwallet', capDwalletId, 'is in AwaitingKeyHolderSignature — skipping, not yet usable');
+        continue;
+      }
+      const state = stateOuter?.fields;
       const publicOutput = state?.public_output;
       if (!publicOutput || !Array.isArray(publicOutput)) continue;
 

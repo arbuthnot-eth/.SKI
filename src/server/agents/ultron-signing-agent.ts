@@ -37,25 +37,40 @@ import {
   generate_secp_cg_keypair_from_seed,
 } from '@ika.xyz/ika-wasm/web';
 
-// Ultron's ed25519 dWallet from the Registeel Lock-On DKG. The DWalletCap
-// is 0x518b96da… owned by ultron, and this is the underlying dwallet
-// object that holds public_output + encrypted_user_secret_key_shares.
-const ULTRON_ED25519_DWALLET_ID = '0x1a5e6b22b81cd644e15314b451212d9cadb6cd1446c466754760cc5a65ac82a9';
-
-// Encrypted user-secret-key-share object created during ultron's DKG tx
-// 9dP8g9v3m7DG4XnGWcWEYyqqSNCAS2DnMWeEAz1Sdx5d. Identified via sui_getTransactionBlock's
-// objectChanges — one fresh EncryptedUserSecretKeyShare per DKG. Hardcoded for
-// the bootstrap accept-share call; a follow-up will resolve it dynamically via
-// IkaClient.getEncryptedUserSecretKeyShare or by listing the dwallet's share
-// table.
-const ULTRON_ED25519_ENCRYPTED_SHARE_ID = '0x960914d549e3511d552d15930ac03c9d6c073bf61fb9291b1bc8b2e3d6231252';
-
-// DKG tx digest that created ultron's ed25519 dWallet + encrypted share.
-// The DWalletDKGRequestEvent in this tx has the user_public_output bytes
-// we need to feed into acceptEncryptedUserShare — on-chain storage only
-// keeps the decentralized (network) output, so we fetch the user output
-// from the event log instead of recomputing it.
-const ULTRON_ED25519_DKG_DIGEST = '9dP8g9v3m7DG4XnGWcWEYyqqSNCAS2DnMWeEAz1Sdx5d';
+// Ultron's dWallets from the Registeel Lock-On DKG ceremonies. Both curves
+// are provisioned — ed25519 for SOL, secp256k1 for BTC/ETH. Hardcoded
+// because the DWalletCaps are static; any change would require a fresh DKG.
+//
+// Lookup recipe for refreshing these after a re-DKG:
+//   1. Query ultron's owned DWalletCap objects (type matches
+//      <ikaDwallet2pcMpcOriginalPackage>::coordinator_inner::DWalletCap)
+//   2. Each cap's `dwallet_id` field points at the dwallet object
+//   3. The dwallet's `encrypted_user_secret_key_shares.id` table holds
+//      a single dynamic field pointing at the encrypted share object
+//   4. `previousTransaction` on the dwallet object is the DKG tx digest
+//      that carries the DWalletDKGRequestEvent with user_public_output
+interface DWalletSpec {
+  dwalletId: string;
+  encryptedShareId: string;
+  dkgDigest: string;
+}
+const ULTRON_DWALLETS: Record<'ed25519' | 'secp256k1', DWalletSpec> = {
+  ed25519: {
+    dwalletId: '0x1a5e6b22b81cd644e15314b451212d9cadb6cd1446c466754760cc5a65ac82a9',
+    encryptedShareId: '0x960914d549e3511d552d15930ac03c9d6c073bf61fb9291b1bc8b2e3d6231252',
+    dkgDigest: '9dP8g9v3m7DG4XnGWcWEYyqqSNCAS2DnMWeEAz1Sdx5d',
+  },
+  secp256k1: {
+    dwalletId: '0xbb8bce5447722a4c6f5f64618164d8420551dfdbc7605afe279a85de1ebb6acb',
+    encryptedShareId: '0x9a6519576f74ca93b43000534249f00168b06e41bf8456fa46ce3fe52db6183d',
+    dkgDigest: '38NwvhPrP911FBJgQsVMmCE6jhufWCCzpxubwY8CTaDy',
+  },
+};
+// Legacy shims so existing call sites in this file keep working until
+// we sweep them all to use ULTRON_DWALLETS[curve].
+const ULTRON_ED25519_DWALLET_ID = ULTRON_DWALLETS.ed25519.dwalletId;
+const ULTRON_ED25519_ENCRYPTED_SHARE_ID = ULTRON_DWALLETS.ed25519.encryptedShareId;
+const ULTRON_ED25519_DKG_DIGEST = ULTRON_DWALLETS.ed25519.dkgDigest;
 
 // Public salt suffixes for deterministic seed derivation. MUST match the
 // values in src/server/index.ts /api/cache/rumble-ultron-seed exactly,
@@ -159,13 +174,15 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       });
     }
     if (url.pathname.endsWith('/read-dwallet') || url.searchParams.has('read-dwallet')) {
-      const result = await this._readUltronDWallet();
+      const curve = (url.searchParams.get('curve') ?? 'ed25519') as 'ed25519' | 'secp256k1';
+      const result = await this._readUltronDWallet(curve);
       return new Response(JSON.stringify(result), {
         headers: { 'content-type': 'application/json' },
       });
     }
     if (url.pathname.endsWith('/accept-share') || url.searchParams.has('accept-share')) {
-      const result = await this._acceptUltronShare();
+      const curve = (url.searchParams.get('curve') ?? 'ed25519') as 'ed25519' | 'secp256k1';
+      const result = await this._acceptUltronShare(curve);
       return new Response(JSON.stringify(result), {
         headers: { 'content-type': 'application/json' },
       });
@@ -182,7 +199,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
    * returns the dWallet in the Active state, every subsequent signing
    * step (presign, sign, poll) uses the same client surface.
    */
-  private async _readUltronDWallet(): Promise<{
+  private async _readUltronDWallet(curve: 'ed25519' | 'secp256k1' = 'ed25519'): Promise<{
     ok: boolean;
     error?: string;
     dwalletId?: string;
@@ -190,26 +207,20 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
     publicOutputLength?: number;
     encryptedUserShareCount?: number;
     curve?: number;
+    requestedCurve?: string;
     durationMs: number;
   }> {
     const t0 = Date.now();
     try {
       const { ika } = await getIkaClient();
-      // Use getDWallet (no polling) — getDWalletInParticularState relies
-      // on the SDK's internal state-variant detection which has a parsing
-      // quirk with JSON-RPC's move-enum serialization. The raw getObject
-      // path gives us everything we need: the dwallet loaded successfully
-      // and the state fields + curve + share count tell us whether it's
-      // Active without needing the SDK to tag the variant.
-      const dwallet = await ika.getDWallet(ULTRON_ED25519_DWALLET_ID);
+      const spec = ULTRON_DWALLETS[curve];
+      const dwallet = await ika.getDWallet(spec.dwalletId);
       const dw = dwallet as unknown as Record<string, unknown> & {
         state?: Record<string, unknown>;
         encrypted_user_secret_key_shares?: { size?: number | string };
         curve?: number;
       };
       const stateKeys = dw.state ? Object.keys(dw.state) : [];
-      // State.Active has exactly one field: public_output. Any other
-      // variant has different or additional fields.
       const activeInner = (dw.state as { Active?: { public_output?: number[] } } | undefined)?.Active;
       const publicOutput = activeInner?.public_output
         ?? (dw.state as { public_output?: number[] } | undefined)?.public_output;
@@ -219,11 +230,12 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       const state = publicOutputLength > 0 ? 'Active' : (stateKeys[0] ?? 'Unknown');
       return {
         ok: true,
-        dwalletId: ULTRON_ED25519_DWALLET_ID,
+        dwalletId: spec.dwalletId,
         state,
         publicOutputLength,
         encryptedUserShareCount,
         curve: dw.curve,
+        requestedCurve: curve,
         durationMs: Date.now() - t0,
       };
     } catch (err) {
@@ -299,12 +311,13 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
    * After this lands, requestPresign + requestSign can chain normally
    * on the Active dWallet — the signing flow is just a PTB composition.
    */
-  private async _acceptUltronShare(): Promise<{
+  private async _acceptUltronShare(curve: 'ed25519' | 'secp256k1' = 'ed25519'): Promise<{
     ok: boolean;
     error?: string;
     digest?: string;
     stateBefore?: string;
     stateAfter?: string;
+    curve?: string;
     durationMs: number;
   }> {
     const t0 = Date.now();
@@ -315,24 +328,30 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
 
       ensureWasmReady();
 
+      const spec = ULTRON_DWALLETS[curve];
+      const ikaCurve = curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
+
       // Ultron's Sui address — derived from the keeper keypair.
       const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
       const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
 
       // Reconstruct the same deterministic seed the browser used during DKG.
+      // Critical: the seed prefix ("ultron-dkg:ed25519:" or "ultron-dkg:secp256k1:")
+      // MUST match the browser path EXACTLY, otherwise the derived encryption
+      // key won't decrypt the share that was encrypted during DKG.
       const seed = await deriveUltronSeed(
         this.env.SHADE_KEEPER_PRIVATE_KEY,
         ultronAddress,
-        'ed25519',
+        curve,
       );
-      const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, Curve.ED25519);
+      const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, ikaCurve);
 
       const { ika, sui } = await getIkaClient();
 
       // Read the dWallet as whatever-state. It's in AwaitingKeyHolderSignature
       // right now; the SDK's typed getters cast it as ZeroTrustDWallet so we
       // can feed it into acceptEncryptedUserShare directly.
-      const dwallet = await ika.getDWallet(ULTRON_ED25519_DWALLET_ID);
+      const dwallet = await ika.getDWallet(spec.dwalletId);
       const dwAny = dwallet as unknown as Record<string, unknown> & {
         state?: Record<string, unknown>;
       };
@@ -343,14 +362,14 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       // the centralized DKG step, NOT the decentralized/network output
       // stored on-chain in the dWallet state. The user output was emitted
       // in the DKG tx's DWalletDKGRequestEvent as `event_data.user_public_output`
-      // — 232 bytes for ed25519. Pull it via GraphQL getTransaction with
-      // events included.
+      // — 232 bytes for ed25519, larger for secp256k1. Pull it via GraphQL
+      // getTransaction with events included.
       //
       // The SDK warns that `event.json` shape can differ between JSON-RPC
       // and GraphQL so we defensively check both nested (`event_data.*`)
       // and flat layouts. If neither works we bail loudly.
       const txResult = await sui.core.getTransaction({
-        digest: ULTRON_ED25519_DKG_DIGEST,
+        digest: spec.dkgDigest,
         include: { events: true },
       });
       const txInner = txResult.$kind === 'Transaction'
@@ -367,13 +386,14 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         if (!typeStr.includes('DWalletDKGRequestEvent')) return false;
         const json = (e.json ?? {}) as DkgEventJson;
         const dwalletId = json.event_data?.dwallet_id ?? json.dwallet_id;
-        return dwalletId === ULTRON_ED25519_DWALLET_ID;
+        return dwalletId === spec.dwalletId;
       });
       if (!dkgEvent) {
         return {
           ok: false,
-          error: `DWalletDKGRequestEvent not found in tx ${ULTRON_ED25519_DKG_DIGEST}`,
+          error: `DWalletDKGRequestEvent not found in tx ${spec.dkgDigest}`,
           stateBefore,
+          curve,
           durationMs: Date.now() - t0,
         };
       }
@@ -382,8 +402,9 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       if (!userPublicOutputRaw || (Array.isArray(userPublicOutputRaw) && userPublicOutputRaw.length === 0)) {
         return {
           ok: false,
-          error: `user_public_output not found in DKG event for tx ${ULTRON_ED25519_DKG_DIGEST}`,
+          error: `user_public_output not found in DKG event for tx ${spec.dkgDigest}`,
           stateBefore,
+          curve,
           durationMs: Date.now() - t0,
         };
       }
@@ -402,12 +423,12 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       await ikaTx.acceptEncryptedUserShare({
         dWallet: dwallet as never,
         userPublicOutput,
-        encryptedUserSecretKeyShareId: ULTRON_ED25519_ENCRYPTED_SHARE_ID,
+        encryptedUserSecretKeyShareId: spec.encryptedShareId,
       });
 
-      // Build, sign with ultron's Ed25519 keypair, submit via GraphQL.
-      // SuiGraphQLClient.core.executeTransaction has the same surface as
-      // the JSON-RPC core client so this is a drop-in from pre-Psybeam.
+      // Build, sign with ultron's Ed25519 Sui keypair (the sender on Sui
+      // is always ed25519 — curve here refers to the *dWallet*, not the
+      // Sui tx signer), submit via GraphQL.
       const txBytes = await tx.build({ client: sui as never });
       const { signature } = await keypair.signTransaction(txBytes);
       const execResult = await sui.core.executeTransaction({
@@ -423,7 +444,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       // a moment to catch up — read-after-write can race with tx finality
       // on the read replica regardless of transport.
       await new Promise((r) => setTimeout(r, 2000));
-      const after = await ika.getDWallet(ULTRON_ED25519_DWALLET_ID) as unknown as {
+      const after = await ika.getDWallet(spec.dwalletId) as unknown as {
         state?: Record<string, unknown>;
       };
       const stateAfterKeys = after.state ? Object.keys(after.state) : [];
@@ -434,6 +455,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         digest,
         stateBefore,
         stateAfter,
+        curve,
         durationMs: Date.now() - t0,
       };
     } catch (err) {

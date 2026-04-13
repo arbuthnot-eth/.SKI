@@ -1675,10 +1675,11 @@ app.get('/api/ultron/wasm-spike', async (c) => {
 // is proven and every subsequent signing step uses the same surface.
 app.get('/api/ultron/read-dwallet', async (c) => {
   try {
+    const curve = c.req.query('curve') || 'ed25519';
     const stub = c.env.UltronSigningAgent.get(
       c.env.UltronSigningAgent.idFromName('ultron-spike'),
     );
-    const res = await stub.fetch(new Request('https://ultron-signer/read-dwallet', {
+    const res = await stub.fetch(new Request(`https://ultron-signer/read-dwallet?curve=${encodeURIComponent(curve)}`, {
       method: 'GET',
       headers: { 'x-partykit-room': 'ultron' },
     }));
@@ -1810,10 +1811,11 @@ app.post('/api/cache/ultron-roster', async (c) => {
 
 app.post('/api/ultron/accept-share', async (c) => {
   try {
+    const curve = c.req.query('curve') || 'ed25519';
     const stub = c.env.UltronSigningAgent.get(
       c.env.UltronSigningAgent.idFromName('ultron-spike'),
     );
-    const res = await stub.fetch(new Request('https://ultron-signer/accept-share', {
+    const res = await stub.fetch(new Request(`https://ultron-signer/accept-share?curve=${encodeURIComponent(curve)}`, {
       method: 'POST',
       headers: { 'x-partykit-room': 'ultron' },
     }));

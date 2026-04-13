@@ -4725,6 +4725,14 @@ function _clearNsInput() {
 
 const _rosterQrCache = new Map<string, string>();
 
+// Glaceon Lv.30 #141 — attachment blob-URL cache. Keyed by
+// `${messageId}:${attachIdx}` so re-renders reuse the decoded Blob URL
+// without re-fetching or re-decrypting via the Seal handle. Images are
+// auto-loaded on bubble paint; files load on click. Callers should
+// revokeObjectURL when a bubble is discarded, but we also rely on the
+// browser reclaiming blobs when the page unloads.
+const _attachBlobCache = new Map<string, { url: string; mime: string; fileName: string }>();
+
 /** Populate #wk-roster-qr if it has a data-qr-addr (cache miss). Caches SVG in memory for sync inline on next render. */
 function _loadRosterQr() {
   const qrSlot = document.getElementById('wk-roster-qr');
@@ -14481,6 +14489,72 @@ function bindEvents() {
         // up the freshly painted bubbles (the button is gated on
         // convo-visible + at-least-one-bubble).
         _renderThunderComposePreview?.();
+        // Glaceon Lv.30 #141 Icy Wind — auto-decrypt image attachments
+        // inline. Images paint as a 240px <img> below the bubble text
+        // without requiring a click. Cached blob URLs survive
+        // re-renders so scrolling doesn't re-fetch. Click the image to
+        // open full-size in a new tab.
+        (async () => {
+          try {
+            const imgRows = Array.from(convoEl.querySelectorAll<HTMLElement>(
+              '.ski-idle-attach-row[data-kind="image"]:not(.ski-idle-attach-row--loaded):not(.ski-idle-attach-row--loading)'
+            ));
+            if (imgRows.length === 0) return;
+            // Group rows by message so we fetch each Thunder's
+            // attachment handles at most once.
+            const byMsg = new Map<string, HTMLElement[]>();
+            for (const row of imgRows) {
+              const bubEl = row.closest<HTMLElement>('.ski-idle-bubble');
+              const msgId = bubEl?.dataset.id || '';
+              if (!msgId) continue;
+              const list = byMsg.get(msgId) || [];
+              list.push(row);
+              byMsg.set(msgId, list);
+            }
+            if (byMsg.size === 0) return;
+            const { getThunders } = await import('./client/thunder.js');
+            const fresh = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+            for (const [msgId, rows] of byMsg) {
+              const srcMsg = fresh.messages.find((mm: { messageId: string }) => mm.messageId === msgId);
+              const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+              for (const row of rows) {
+                const idx = Number(row.dataset.attachIdx || '0') || 0;
+                const fileName = row.dataset.filename || `image-${idx + 1}`;
+                const mime = row.dataset.mime || 'image/png';
+                const cacheKey = `${msgId}:${idx}`;
+                let entry = _attachBlobCache.get(cacheKey);
+                if (!entry) {
+                  const handle = handles[idx];
+                  if (!handle) continue;
+                  row.classList.add('ski-idle-attach-row--loading');
+                  try {
+                    const bytes = await handle.data();
+                    const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+                    entry = { url: URL.createObjectURL(blob), mime, fileName };
+                    _attachBlobCache.set(cacheKey, entry);
+                  } catch {
+                    row.classList.remove('ski-idle-attach-row--loading');
+                    continue;
+                  }
+                  row.classList.remove('ski-idle-attach-row--loading');
+                }
+                // Replace the row contents with an inline <img>. Click
+                // opens the blob URL full-size in a new tab.
+                row.innerHTML = `<img class="ski-idle-bubble-attach-inline" src="${entry.url}" alt="${esc(fileName)}" data-no-bubble-click="1" loading="lazy"><span class="ski-idle-attach-row-label">\u{1F512} ${esc(fileName)}</span>`;
+                row.classList.add('ski-idle-attach-row--loaded');
+                row.classList.add('ski-idle-attach-row--inline-image');
+                const imgEl = row.querySelector<HTMLImageElement>('.ski-idle-bubble-attach-inline');
+                if (imgEl) {
+                  imgEl.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try { window.open(entry!.url, '_blank', 'noopener'); } catch {}
+                  });
+                }
+              }
+            }
+          } catch { /* best-effort; click-to-reveal path still works */ }
+        })();
         // Peer-side settlement detection: for every transfer bubble
         // with a stored tx digest, look up the on-chain vault object
         // and mark the bubble as settled if it's been consumed by a

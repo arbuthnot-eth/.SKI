@@ -4176,6 +4176,24 @@ body {
   height: 100%;
   object-fit: cover;
 }
+/* Glaceon Lv.30 #141 — inline auto-decrypted image attachment. */
+.ski-idle-attach-row--inline-image {
+  flex-direction: column;
+  align-items: center;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  cursor: default;
+}
+.ski-idle-bubble-attach-inline {
+  display: block;
+  max-width: 240px;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  cursor: zoom-in;
+  background: rgba(0, 0, 0, 0.35);
+}
 .ski-idle-bubble-attach-meta {
   display: flex;
   flex-direction: column;

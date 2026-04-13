@@ -3612,7 +3612,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 6px 8px 4px; /* progress bar is absolute-positioned, no top reserve needed */
+  /* Bottom padding gives the settled-transfer summary line breathing
+   * room below the last bubble so its tail isn't clipped by the
+   * container's overflow boundary. The summary uses negative margin-top
+   * to hug the previous bubble, but its own height was running off
+   * the bottom edge of the convo region. 16px ≈ summary line height. */
+  padding: 6px 8px 16px;
   z-index: 4;
   /* Transparent container — the dark backdrop only lives on the bubbles
      themselves so the video background shows through the gaps. */

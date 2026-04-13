@@ -359,58 +359,75 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
       const stateBefore = stateKeys[0] ?? 'Unknown';
 
       // `acceptEncryptedUserShare` wants the *user's* public output from
-      // the centralized DKG step, NOT the decentralized/network output
-      // stored on-chain in the dWallet state. The user output was emitted
-      // in the DKG tx's DWalletDKGRequestEvent as `event_data.user_public_output`
-      // — 232 bytes for ed25519, larger for secp256k1. Pull it via GraphQL
-      // getTransaction with events included.
+      // the centralized DKG step. The user output was emitted in the DKG
+      // tx's DWalletDKGRequestEvent as `event_data.user_public_output`
+      // (232 bytes for ed25519, 238 bytes for secp256k1).
       //
-      // The SDK warns that `event.json` shape can differ between JSON-RPC
-      // and GraphQL so we defensively check both nested (`event_data.*`)
-      // and flat layouts. If neither works we bail loudly.
-      const txResult = await sui.core.getTransaction({
-        digest: spec.dkgDigest,
-        include: { events: true },
+      // CRITICAL: the SDK explicitly warns that `event.json` shape can
+      // differ between JSON-RPC and GraphQL — fields that come through as
+      // `number[]` on JSON-RPC might be a base64 STRING via GraphQL, or
+      // sit at a different nesting level, or be re-encoded as BCS bytes.
+      // Mega Punch (ed25519) worked when this path was JSON-RPC; Psybeam
+      // swapped to GraphQL and the secp256k1 accept has been failing with
+      // a WASM match error ever since. To be safe, fetch the event via
+      // raw JSON-RPC (single URL is fine for this one call — it's a read
+      // that's never in the hot signing path), bypassing whatever shape
+      // drift GraphQL introduces.
+      const rpcRes = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock',
+          params: [spec.dkgDigest, { showEvents: true }],
+        }),
       });
-      const txInner = txResult.$kind === 'Transaction'
-        ? txResult.Transaction
-        : txResult.FailedTransaction;
-      const events = txInner?.events ?? [];
-      type DkgPayload = {
-        dwallet_id?: string;
-        user_public_output?: number[] | Uint8Array;
+      if (!rpcRes.ok) {
+        return {
+          ok: false,
+          error: `DKG tx lookup HTTP ${rpcRes.status}`,
+          stateBefore,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      type RawEvent = {
+        type?: string;
+        parsedJson?: { event_data?: { dwallet_id?: string; user_public_output?: number[] } };
       };
-      type DkgEventJson = DkgPayload & { event_data?: DkgPayload };
-      const dkgEvent = events.find((e) => {
-        const typeStr = e.eventType ?? '';
+      const rpcJson = await rpcRes.json() as { result?: { events?: RawEvent[] } };
+      const rawEvents = rpcJson.result?.events ?? [];
+      const dkgEvent = rawEvents.find((e) => {
+        const typeStr = e.type ?? '';
         if (!typeStr.includes('DWalletDKGRequestEvent')) return false;
-        const json = (e.json ?? {}) as DkgEventJson;
-        const dwalletId = json.event_data?.dwallet_id ?? json.dwallet_id;
-        return dwalletId === spec.dwalletId;
+        const ed = e.parsedJson?.event_data;
+        return ed?.dwallet_id === spec.dwalletId;
       });
       if (!dkgEvent) {
         return {
           ok: false,
-          error: `DWalletDKGRequestEvent not found in tx ${spec.dkgDigest}`,
+          error: `DWalletDKGRequestEvent not found in tx ${spec.dkgDigest} (JSON-RPC)`,
           stateBefore,
           curve,
           durationMs: Date.now() - t0,
         };
       }
-      const dkgJson = (dkgEvent.json ?? {}) as DkgEventJson;
-      const userPublicOutputRaw = dkgJson.event_data?.user_public_output ?? dkgJson.user_public_output;
-      if (!userPublicOutputRaw || (Array.isArray(userPublicOutputRaw) && userPublicOutputRaw.length === 0)) {
+      const userPublicOutputArr = dkgEvent.parsedJson?.event_data?.user_public_output;
+      if (!userPublicOutputArr || !Array.isArray(userPublicOutputArr) || userPublicOutputArr.length === 0) {
         return {
           ok: false,
-          error: `user_public_output not found in DKG event for tx ${spec.dkgDigest}`,
+          error: `user_public_output not found in DKG event (JSON-RPC) for tx ${spec.dkgDigest}`,
           stateBefore,
           curve,
           durationMs: Date.now() - t0,
         };
       }
-      const userPublicOutput = userPublicOutputRaw instanceof Uint8Array
-        ? userPublicOutputRaw
-        : new Uint8Array(userPublicOutputRaw);
+      const userPublicOutput = new Uint8Array(userPublicOutputArr);
+      // Debug log — confirms exactly what we're feeding to the WASM match.
+      // Remove once the secp flow is flipped to Active.
+      console.log(`[accept-share:${curve}] userPublicOutput bytes=${userPublicOutput.length} first10=[${Array.from(userPublicOutput.slice(0, 10)).join(',')}]`);
+      const networkOutput = (dwAny.state as { AwaitingKeyHolderSignature?: { public_output?: number[] } } | undefined)?.AwaitingKeyHolderSignature?.public_output;
+      const networkOutputLen = Array.isArray(networkOutput) ? networkOutput.length : 0;
+      console.log(`[accept-share:${curve}] networkOutput bytes=${networkOutputLen} first10=[${Array.isArray(networkOutput) ? networkOutput.slice(0, 10).join(',') : 'n/a'}]`);
 
       // Build the accept PTB via IkaTransaction.
       const tx = new Transaction();

@@ -5009,6 +5009,11 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 
 /** Sync NFT card to the input box value; fall back to most-thundered chip.
  *  Also manages conversation open/closed state on hard refresh. */
+// Cache of (addr → primary .sui bare) resolved via reverseLookupName.
+// Persisted across syncs so card re-renders don't re-hit the network.
+// `null` means "resolved, no primary" — we don't retry those.
+const _cardPrimaryCache = new Map<string, string | null>();
+
 function _syncNftCardToInput(forceShow = false) {
   const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
   let domain = '';
@@ -5021,10 +5026,44 @@ function _syncNftCardToInput(forceShow = false) {
   // Don't auto-show card on background syncs — only on explicit user interaction
   if (!domain && !forceShow) { _hideNftPopover(true); return; }
   if (domain) {
+    // ── Card reflects the primary .sui of the owner/target ──
+    // When the user types `umbra` we don't want the card to show
+    // umbra in isolation — we want it to show the canonical identity
+    // for whoever OWNS or TARGETS umbra. Resolve owner/target's
+    // primary .sui and swap it in as the card's domain. Falls back
+    // to the typed name if no primary exists or the resolve is in
+    // flight.
+    const primaryAddr = (nsTargetAddress || nsNftOwner || '').toLowerCase();
+    let cardDomain = domain;
+    if (primaryAddr) {
+      const cached = _cardPrimaryCache.get(primaryAddr);
+      if (cached === undefined) {
+        // First time seeing this address — render with the typed
+        // name now, fire an async resolve, then re-render with the
+        // primary once the resolve settles.
+        (async () => {
+          try {
+            const { reverseLookupName } = await import('./client/thunder-stack.js');
+            const primary = await reverseLookupName(primaryAddr);
+            _cardPrimaryCache.set(primaryAddr, primary || null);
+            // Only re-render if the user is still looking at the
+            // same input — they may have typed something else.
+            if (nsLabel.trim().replace(/\.sui$/, '').toLowerCase() === inputBare) {
+              _syncNftCardToInput(forceShow);
+            }
+          } catch {
+            _cardPrimaryCache.set(primaryAddr, null);
+          }
+        })();
+      } else if (cached) {
+        cardDomain = cached;
+      }
+    }
     // Try to find the chip, but show card even without one
     const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
-    const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
-    _showNftPopover(chip || document.getElementById('ski-nft-inline')!, domain);
+    const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${cardDomain}"]`)
+      || grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+    _showNftPopover(chip || document.getElementById('ski-nft-inline')!, cardDomain);
     _nftPopoverPinned = true;
   } else {
     _hideNftPopover(true);

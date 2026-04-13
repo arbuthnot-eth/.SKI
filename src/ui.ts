@@ -3642,6 +3642,11 @@ let nsTransferRecipient = ''; // value in the transfer-recipient input
 // Thunder counts disabled — pending v4 migration (#63). Always empty.
 let _thunderCounts: Record<string, number> = {};
 
+// Sableye — module handle for synchronous roster lookup. Populated
+// after warmSableye() resolves. Null until then → roster renders with
+// default blue squares and picks up black diamonds on next open.
+let _sableyeMod: { hasSableye: (n: string) => boolean } | null = null;
+
 /** Transfer tx digests known to be settled (claimed or recalled).
  *  Populated by the click handler + the background settlement poll.
  *  Persisted to localStorage so re-renders, reloads, and cross-session
@@ -11070,7 +11075,15 @@ function bindEvents() {
       let _rosterWheelBound = false;
 
       const _renderRosterChip = ({ name, expirationMs, primary }: _RosterEntry) => {
-        const shape = _shapeOnlySvg('blue-square', 14);
+        // Sableye Lv.50 — black diamond for privately interacted names.
+        // Synchronous lookup against the warmed cache; falls back to
+        // the default blue square if cache hasn't loaded yet (the next
+        // roster open will pick up the right glyph).
+        const _bare = name.replace(/\.sui$/, '').toLowerCase();
+        const _isPrivate = (() => {
+          try { return _sableyeMod?.hasSableye?.(_bare) === true; } catch { return false; }
+        })();
+        const shape = _shapeOnlySvg(_isPrivate ? 'black-diamond' : 'blue-square', 14);
         let expiryTag = '';
         let itemCls = '';
         if (primary) itemCls += ' ski-idle-roster-item--primary';
@@ -16574,8 +16587,9 @@ export function initUI() {
       // The ski:thunder-sent event fires from sendThunder; ui records
       // the counterparty immediately so the roster flips to black
       // diamond on next render.
-      import('./client/sableye.js').then(async ({ warmSableye, noteCounterparty, drainXchainLog }) => {
-        await warmSableye().catch(() => {});
+      import('./client/sableye.js').then(async ({ warmSableye, noteCounterparty, drainXchainLog, hasSableye }) => {
+        _sableyeMod = { hasSableye };
+        await warmSableye(ws.address).catch(() => {});
         window.addEventListener('ski:thunder-sent', (ev) => {
           const name = ((ev as CustomEvent).detail?.recipientName ?? '') as string;
           if (name) noteCounterparty(name, 'sui');

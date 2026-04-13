@@ -15,11 +15,10 @@ When a bug is reported, don't start by trying to fix it. Instead:
 2. Have subagents try to fix the bug and prove it with a passing test
 
 ## Transport
-- **NEVER use JSON-RPC** (sui_getObject, suix_getCoins, etc.) in new code — sunsets April 2026
-- Use `SuiGrpcClient` (gRPC) or `SuiGraphQLClient` (GraphQL) only
-- Exception: CF Workers/DOs can't use gRPC (no HTTP/2) — use GraphQL there
-- `raceJsonRpc` in treasury-agents.ts is legacy — migrate to GraphQL
-- Exception: `sui_executeTransactionBlock` for tx submission (GraphQL is read-only)
+- **Prefer gRPC/GraphQL in new code.** `SuiGrpcClient` (gRPC, HTTP/2 required) or `SuiGraphQLClient` (GraphQL).
+- **JSON-RPC is fine in existing races.** `raceJsonRpc` (treasury-agents), `FULLNODE_URL` list (shade-executor), JSON-RPC fallback in `client/ika.ts` — all resilience, all stay. Don't rip them out. The April 2026 sunset affects Mysten's endpoint; PublicNode/BlockVision/Ankr will continue to serve JSON-RPC-compatible APIs from their own backing nodes.
+- **Update 2026-04-13:** `SuiGraphQLClient.core.executeTransaction` works for tx submission — the "GraphQL is read-only" note is stale. New code doesn't need JSON-RPC for `executeTransactionBlock`.
+- CF Workers/DOs can't use gRPC (no HTTP/2 bidi streaming) — use GraphQL there. Browser can use either.
 
 ## Terminology
 - "cache" not "treasury/reserve/dao" for fund storage

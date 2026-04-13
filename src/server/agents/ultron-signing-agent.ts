@@ -187,6 +187,13 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         headers: { 'content-type': 'application/json' },
       });
     }
+    if (url.pathname.endsWith('/request-presign') || url.searchParams.has('request-presign')) {
+      const curve = (url.searchParams.get('curve') ?? 'secp256k1') as 'ed25519' | 'secp256k1';
+      const result = await this._requestPresign(curve);
+      return new Response(JSON.stringify(result), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
     return new Response(JSON.stringify({ error: 'Unknown route' }), {
       status: 404,
       headers: { 'content-type': 'application/json' },
@@ -472,6 +479,189 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         digest,
         stateBefore,
         stateAfter,
+        curve,
+        durationMs: Date.now() - t0,
+      };
+    } catch (err) {
+      const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      return { ok: false, error, durationMs: Date.now() - t0 };
+    }
+  }
+
+  /**
+   * Increment C of the signing flow: request a presign on ultron's
+   * Active dWallet. The IKA network performs the MPC presign rounds
+   * asynchronously after this PTB lands; the resulting Presign object
+   * starts in the Requested state and reaches Completed once the
+   * network's MPC pipeline produces the presign material.
+   *
+   * This method only submits the REQUEST. Increment D will:
+   *   1. Poll the Presign object until state === Completed
+   *   2. Build the sign PTB referencing the verified presign cap
+   *   3. Submit the sign tx
+   *   4. Parse the signature out of the resulting Sign session
+   *
+   * Splitting C from D keeps each step independently observable for
+   * debugging and lets us confirm presign cost / latency before
+   * committing to the full sign flow.
+   */
+  private async _requestPresign(curve: 'ed25519' | 'secp256k1' = 'secp256k1'): Promise<{
+    ok: boolean;
+    error?: string;
+    digest?: string;
+    presignCapId?: string;
+    presignObjectId?: string;
+    state?: string;
+    curve?: string;
+    durationMs: number;
+  }> {
+    const t0 = Date.now();
+    try {
+      if (!this.env.SHADE_KEEPER_PRIVATE_KEY) {
+        return { ok: false, error: 'SHADE_KEEPER_PRIVATE_KEY not configured', durationMs: Date.now() - t0 };
+      }
+
+      const spec = ULTRON_DWALLETS[curve];
+      const ikaCurve = curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
+
+      const keypair = Ed25519Keypair.fromSecretKey(this.env.SHADE_KEEPER_PRIVATE_KEY);
+      const ultronAddress = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+      // Reconstruct the same deterministic seed used for accept-share so
+      // the presign references the same encrypted user share keys.
+      const seed = await deriveUltronSeed(
+        this.env.SHADE_KEEPER_PRIVATE_KEY,
+        ultronAddress,
+        curve,
+      );
+      const userShareEncryptionKeys = await UserShareEncryptionKeys.fromRootSeedKey(seed, ikaCurve);
+
+      const { ika, sui } = await getIkaClient();
+      const dwallet = await ika.getDWallet(spec.dwalletId);
+      const dwAny = dwallet as unknown as Record<string, unknown> & {
+        state?: Record<string, unknown>;
+      };
+      const stateKeys = dwAny.state ? Object.keys(dwAny.state) : [];
+      const stateBefore = stateKeys[0] ?? 'Unknown';
+      if (stateBefore !== 'Active') {
+        return {
+          ok: false,
+          error: `dWallet not Active (current: ${stateBefore}). Run accept-share first.`,
+          state: stateBefore,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+
+      // Find ultron's IKA + SUI coins to pay for the presign request.
+      // The presign request charges a fee from the IKA coin and uses SUI
+      // for gas. Both must be owned by the tx sender (ultron).
+      const coinsRes = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
+          params: [ultronAddress, '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA'],
+        }),
+      });
+      const coinsJson = await coinsRes.json() as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+      const ikaCoins = coinsJson.result?.data ?? [];
+      if (ikaCoins.length === 0) {
+        return {
+          ok: false,
+          error: `ultron has no IKA coins to pay for presign (address ${ultronAddress})`,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      // Pick the largest IKA coin.
+      const ikaCoin = ikaCoins.sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)))[0];
+
+      // Build the presign PTB: requestPresign returns an UnverifiedPresignCap
+      // which we transfer to ultron so it persists past the tx for the
+      // sign step. SUI is split from gas inside the PTB the same way the
+      // DKG flow does it.
+      const tx = new Transaction();
+      tx.setSender(ultronAddress);
+      const ikaCoinArg = tx.objectRef({
+        objectId: ikaCoin.coinObjectId,
+        version: ikaCoin.version,
+        digest: ikaCoin.digest,
+      });
+      const suiCoinArg = tx.splitCoins(tx.gas, [tx.pure.u64(50_000_000)]); // 0.05 SUI
+
+      const ikaTx = new IkaTransaction({
+        ikaClient: ika,
+        transaction: tx,
+        userShareEncryptionKeys,
+      });
+      // Cast dwallet as never — the SDK's strict union type insists on a
+      // concrete variant tag we don't statically narrow here. Runtime check
+      // (stateBefore === 'Active' above) is the actual guarantee.
+      const unverifiedPresignCap = ikaTx.requestPresign({
+        dWallet: dwallet as never,
+        signatureAlgorithm: 'ECDSASecp256k1' as never,
+        ikaCoin: ikaCoinArg,
+        suiCoin: suiCoinArg[0],
+      });
+      // Persist the cap to ultron so Increment D can fetch it later.
+      tx.transferObjects([unverifiedPresignCap], tx.pure.address(ultronAddress));
+
+      const txBytes = await tx.build({ client: sui as never });
+      const { signature } = await keypair.signTransaction(txBytes);
+      const execResult = await sui.core.executeTransaction({
+        transaction: txBytes,
+        signatures: [signature],
+      });
+      const execInner = execResult.$kind === 'Transaction'
+        ? execResult.Transaction
+        : execResult.FailedTransaction;
+      const digest = execInner?.digest ?? '';
+      console.log(`[request-presign:${curve}] tx submitted, digest=${digest}`);
+
+      // Pull the tx via JSON-RPC to inspect objectChanges and find the
+      // newly-created Presign + UnverifiedPresignCap object IDs. Same
+      // event-shape concern as accept-share — JSON-RPC is reliable for
+      // structured Move object data.
+      await new Promise((r) => setTimeout(r, 2000));
+      const txDetailRes = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock',
+          params: [digest, { showObjectChanges: true, showEffects: true }],
+        }),
+      });
+      const txDetailJson = await txDetailRes.json() as {
+        result?: {
+          objectChanges?: Array<{ type: string; objectType?: string; objectId?: string; sender?: string; owner?: unknown }>;
+          effects?: { status?: { status?: string; error?: string } };
+        };
+      };
+      const status = txDetailJson.result?.effects?.status?.status;
+      if (status !== 'success') {
+        return {
+          ok: false,
+          error: `presign tx status: ${status} ${txDetailJson.result?.effects?.status?.error ?? ''}`,
+          digest,
+          curve,
+          durationMs: Date.now() - t0,
+        };
+      }
+      const changes = txDetailJson.result?.objectChanges ?? [];
+      const presignChange = changes.find((c) => c.objectType?.includes('::coordinator_inner::Presign'));
+      const capChange = changes.find((c) => c.objectType?.includes('::coordinator_inner::UnverifiedPresignCap')
+        || c.objectType?.includes('::coordinator_inner::VerifiedPresignCap'));
+      const presignObjectId = presignChange?.objectId;
+      const presignCapId = capChange?.objectId;
+      console.log(`[request-presign:${curve}] presign=${presignObjectId} cap=${presignCapId}`);
+
+      return {
+        ok: true,
+        digest,
+        presignCapId,
+        presignObjectId,
+        state: 'Requested',
         curve,
         durationMs: Date.now() - t0,
       };

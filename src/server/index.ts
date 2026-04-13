@@ -1646,6 +1646,29 @@ app.get('/api/ultron/read-dwallet', async (c) => {
   }
 });
 
+// Increment B of the signing flow: accept ultron's encrypted user share
+// to transition the dWallet from AwaitingKeyHolderSignature → Active.
+// Re-derives the deterministic seed from SHADE_KEEPER_PRIVATE_KEY,
+// reconstructs UserShareEncryptionKeys, builds a PTB calling
+// IkaTransaction.acceptEncryptedUserShare, signs with ultron's keypair,
+// and submits via JSON-RPC. Admin-gated: this is a one-time mutation.
+app.post('/api/ultron/accept-share', async (c) => {
+  try {
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const res = await stub.fetch(new Request('https://ultron-signer/accept-share', {
+      method: 'POST',
+      headers: { 'x-partykit-room': 'ultron' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 // ── Probe: old sol@ultron balances ──────────────────────────────────
 // Derives the legacy Solana address from SHADE_KEEPER_PRIVATE_KEY
 // (raw ed25519 pubkey, base58-encoded) and reports SOL + SPL balances

@@ -262,7 +262,47 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
     // at runtime despite the SignPersonalMessageFn type declaring an object
     // arg — the caller in ui.ts passes bytes directly. Match the real runtime
     // shape or the wallet signs garbage and Seal servers reject the cert.
-    const signed = await (opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>)(personalMsg);
+    //
+    // WaaP's Silk Protector microservice intermittently returns 400 on
+    // /get-policy and /v2/handle-request, surfacing as
+    //   "Backend error (400): Failed to generate signature due to unknown server error"
+    // Sometimes the rejection propagates back to us and our wallet.ts
+    // retry handles it; sometimes WaaP shows its own toast and our
+    // promise hangs until the timeout. Either way, a Seal session key
+    // mint is special enough to deserve its own call-site retry loop:
+    // 3 attempts with reinit between, then surface a clean error.
+    const signFn = opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>;
+    let signed: { signature: string } | undefined;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        signed = await signFn(personalMsg);
+        if (signed?.signature) break;
+        throw new Error('signPersonalMessage returned no signature');
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const isBackend400 = /backend error\s*\(400\)/i.test(msg)
+          || /failed to generate signature/i.test(msg)
+          || /unknown server error/i.test(msg)
+          || /timed out/i.test(msg);
+        console.warn(`[thunder] Seal session-key sign attempt ${attempt}/3 failed:`, msg);
+        if (attempt < 3 && isBackend400) {
+          // Reinit WaaP iframe between attempts — recovers from stuck
+          // postMessage channels and stale Silk Protector sessions.
+          try {
+            const { reinitWaaP } = await import('../waap.js');
+            await reinitWaaP();
+          } catch { /* best-effort */ }
+          // Small backoff so Silk has a chance to recover if it's a
+          // transient infra blip on their end.
+          await new Promise(r => setTimeout(r, 1500));
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!signed) throw lastErr ?? new Error('Seal session-key sign failed');
     await key.setPersonalMessageSignature(signed.signature);
 
     // Persist for restoration on next page load. The SDK's `export()` returns

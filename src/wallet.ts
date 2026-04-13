@@ -376,14 +376,18 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  // Wallets sometimes hang indefinitely on signPersonalMessage (WaaP in
-  // particular, when its iframe's message channel is in a bad state).
-  // Race each attempt against a 30s timeout; if WaaP times out we also
-  // tear down and re-register the iframe before a second attempt, which
-  // recovers from the "target origin mismatch" dead state without a
-  // full page refresh.
-  const timeoutMs = 30_000;
+  // Wallets sometimes hang indefinitely on signPersonalMessage. WaaP in
+  // particular has two distinct failure modes:
+  //   1. iframe message channel is in a bad state — the call hangs forever
+  //   2. WaaP iframe shows its own error toast (e.g. "Backend error 400")
+  //      but doesn't re-throw the rejection to our promise — also hangs
+  // Both manifest as "no response" from our caller's perspective. The
+  // timeout MUST be short enough that the retry path fires while the user
+  // is still attentive — 30s was too long. 5s is enough for a healthy
+  // WaaP backend to respond and short enough that a stuck-but-toasted
+  // failure recovers fast.
   const isWaaP = /waap|silk/i.test(wallet.name);
+  const timeoutMs = isWaaP ? 5_000 : 30_000;
   const doSign = () => withBackpackRetry(() => {
     if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
     if (!('sui:signPersonalMessage' in wallet.features)) {

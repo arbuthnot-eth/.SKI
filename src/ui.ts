@@ -3846,11 +3846,10 @@ async function _renderConversation(counterparty: string, force = false) {
       _thunderConvoTarget = '';
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
-      if (payloads.length > 0) {
-        // Fill input with the sender's name or address for easy reply
-        const first = payloads[0];
-        const senderBare = (first.sender || '').replace(/\.sui$/, '');
-        const replyTarget = senderBare || first.senderAddress;
+      if (messages.length > 0) {
+        // Fill input with the sender's address for easy reply
+        const first = messages[0];
+        const replyTarget = first.senderAddress;
         if (replyTarget) {
           nsLabel = replyTarget;
           const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -3858,7 +3857,7 @@ async function _renderConversation(counterparty: string, force = false) {
           skipNextFocusClear = true;
           fetchAndShowNsPrice(replyTarget);
         }
-        showToast(`\u26a1 ${payloads.length} thunder${payloads.length > 1 ? 's' : ''} quested`);
+        showToast(`\u26a1 ${messages.length} thunder${messages.length > 1 ? 's' : ''} quested`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Quest failed';

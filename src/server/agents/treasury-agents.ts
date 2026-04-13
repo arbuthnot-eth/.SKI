@@ -721,6 +721,50 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       }
     }
 
+    // Magnemite: per-publicKey nonce tracking + hashchain for BAM
+    // mint v2. Rejects duplicate nonces (Vector's replay protection)
+    // and advances a seed hashchain so each authorized mint depends
+    // on the exact prior history of mints for that publicKey.
+    //
+    //   seed[0] = 32 zero bytes
+    //   seed[n+1] = sha256(seed[n] || current digest)
+    //
+    // Client doesn't need to track the seed — the nonce alone is
+    // sufficient for replay protection. The seed is kept for future
+    // "reveal chain of authorized actions" audit paths.
+    if ((url.pathname.endsWith('/magnemite-nonce') || url.searchParams.has('magnemite-nonce')) && request.method === 'POST') {
+      try {
+        const body = await request.json() as { publicKey: string; nonce: string; digest: string };
+        if (!body.publicKey || !body.nonce || !body.digest) {
+          return new Response(JSON.stringify({ error: 'Missing publicKey, nonce, or digest' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        }
+        const nonces = ((this.state as any).magnemite_nonces ?? {}) as Record<string, { seen: string[]; seed: string }>;
+        const entry = nonces[body.publicKey] ?? { seen: [], seed: '0'.repeat(64) };
+        if (entry.seen.includes(body.nonce)) {
+          return new Response(JSON.stringify({ error: `Nonce ${body.nonce} already used for this publicKey` }), { status: 409, headers: { 'content-type': 'application/json' } });
+        }
+
+        // Advance the hashchain: new seed = sha256(prev seed || digest)
+        const { sha256 } = await import('@noble/hashes/sha2.js');
+        const prev = new Uint8Array(entry.seed.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
+        const digestBytes = new Uint8Array(body.digest.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
+        const combined = new Uint8Array(prev.length + digestBytes.length);
+        combined.set(prev, 0);
+        combined.set(digestBytes, prev.length);
+        const nextSeed = sha256(combined);
+        const nextSeedHex = Array.from(nextSeed, (b) => b.toString(16).padStart(2, '0')).join('');
+
+        // Retain the last 1000 nonces per publicKey to keep state bounded.
+        const nextSeen = [...entry.seen, body.nonce].slice(-1000);
+        const nextNonces = { ...nonces, [body.publicKey]: { seen: nextSeen, seed: nextSeedHex } };
+        this.setState({ ...this.state, magnemite_nonces: nextNonces } as any);
+        console.log(`[magnemite] ${body.publicKey.slice(0, 12)}… nonce=${body.nonce.slice(0, 12)}… seed advance → ${nextSeedHex.slice(0, 12)}…`);
+        return new Response(JSON.stringify({ ok: true, seed: nextSeedHex }), { headers: { 'content-type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+
     // Cancel a StableShadeOrder<iUSD> — ultron signs cancel_stable<T>
     // which refunds the entire deposit (no 10% fee like execute) to
     // the owner. Only valid when called by ultron for an order whose

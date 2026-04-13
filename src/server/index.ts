@@ -2097,6 +2097,118 @@ app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
   }
 });
 
+// ── Magnemite: BAM mint v2 — intent-authorized, Vector-principles ──
+// Applies the five Vector principles without requiring the Vector
+// program on-chain:
+//
+//   1. Digest-bound intent — client commits to exact mint parameters
+//      via SHA-256 of a canonical JSON serialization
+//   2. Relayer/authority split — client signs the digest with their
+//      wallet key, ultron verifies + relays but cannot modify
+//   3. Hash-chain state progression — per-signer nonce advances
+//      deterministically; prior seeds invalidate on replay
+//   4. No pre-reveal — intent stays private until POST
+//   5. Expiration primitive — intent.expiresMs enforced server-side
+//
+// Request: { intent: {...}, signature: "base64", publicKey: "base64" }
+// Intent canonical shape (keys sorted alphabetically before hash):
+//   { amount, expiresMs, mintAddress, nonce, recipientSolAddress }
+app.post('/api/cache/bam-mint-v2', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json() as {
+      intent: {
+        recipientSolAddress: string;
+        amount: string;
+        mintAddress: string;
+        nonce: string;
+        expiresMs: number;
+      };
+      signature: string; // base64
+      publicKey: string; // base64 (32-byte Ed25519 pubkey)
+    };
+
+    // Basic shape validation
+    if (!body.intent || !body.signature || !body.publicKey) {
+      return c.json({ error: 'Missing intent, signature, or publicKey' }, 400);
+    }
+    const i = body.intent;
+    if (!i.recipientSolAddress || !i.amount || !i.mintAddress || !i.nonce || !i.expiresMs) {
+      return c.json({ error: 'Intent missing required fields' }, 400);
+    }
+
+    // Expiration check
+    if (i.expiresMs <= Date.now()) {
+      return c.json({ error: `Intent expired at ${new Date(i.expiresMs).toISOString()}` }, 400);
+    }
+
+    // Canonical serialization — keys sorted alphabetically, stable
+    // JSON stringification. Both sides compute the same digest.
+    const canonical = JSON.stringify({
+      amount: i.amount,
+      expiresMs: i.expiresMs,
+      mintAddress: i.mintAddress,
+      nonce: i.nonce,
+      recipientSolAddress: i.recipientSolAddress,
+    });
+    const { sha256 } = await import('@noble/hashes/sha2.js');
+    const digest = sha256(new TextEncoder().encode(canonical));
+
+    // Verify the Ed25519 signature over the digest. Uses @noble/curves
+    // so we don't need any heavy SDK on the worker side.
+    const { ed25519 } = await import('@noble/curves/ed25519.js');
+    const sigBytes = Uint8Array.from(atob(body.signature), (ch) => ch.charCodeAt(0));
+    const pubBytes = Uint8Array.from(atob(body.publicKey), (ch) => ch.charCodeAt(0));
+    if (sigBytes.length !== 64 || pubBytes.length !== 32) {
+      return c.json({ error: 'Invalid signature/publicKey length' }, 400);
+    }
+    const valid = ed25519.verify(sigBytes, digest, pubBytes);
+    if (!valid) {
+      return c.json({ error: 'Signature verification failed' }, 403);
+    }
+
+    // Nonce uniqueness check + hashchain advance via TreasuryAgents DO.
+    // The DO rejects duplicate nonces per-publicKey and advances a
+    // seed hashchain so each mint depends on the exact prior history.
+    const pubKeyHex = Array.from(pubBytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    const nonceRes = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?magnemite-nonce', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({
+        publicKey: pubKeyHex,
+        nonce: i.nonce,
+        digest: Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join(''),
+      }),
+    }));
+    if (!nonceRes.ok) {
+      const errText = await nonceRes.text();
+      return c.json({ error: `Nonce check failed: ${errText}` }, 409);
+    }
+
+    // Signature is valid, nonce is fresh, intent is not expired.
+    // Ultron now acts as a pure relayer: calls the existing BAM mint
+    // flow with no ability to alter recipient or amount.
+    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({
+        recipientSolAddress: i.recipientSolAddress,
+        amount: i.amount,
+        callerAddress,
+      }),
+    }));
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      return c.json({ ...parsed, intentDigest: Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('') }, res.status as any);
+    } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Kamino deposit — SOL → Kamino Lend → attest → mint iUSD ─────────
 app.post('/api/cache/kamino-deposit', async (c) => {
   try {

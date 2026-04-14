@@ -439,10 +439,17 @@ window.addEventListener('ski:request-suiami', async (e) => {
     // Write SUIAMI attestation on-chain (Roster v3). Always writes — even
     // if the user hasn't rumbled cross-chain addresses yet — so their
     // IdentityRecord (name + Sui address) exists on-chain. If cross-chain
-    // addresses are present, they're uploaded to Walrus first and the blob
-    // ID is included in the record.
+    // addresses are present, they're Seal-encrypted (policy-gated on
+    // `suiami::seal_roster::seal_approve_roster_reader`) and uploaded to
+    // Walrus. The decrypt path requires the reader to be a SUIAMI
+    // member themselves — mutual-membership model.
+    //
+    // Bronzong Lv.20 (#157) — Seal upload replaces the AES+localStorage
+    // path shipped in Claydol (#156). The Seal-encrypted ciphertext
+    // carries everything needed for threshold decrypt; nothing needs
+    // to live in localStorage.
     try {
-      const { uploadRosterBlob } = await import('./client/roster.js');
+      const { encryptSquidsToWalrus } = await import('./client/suiami-seal.js');
       const { maybeAppendRoster } = await import('./suins.js');
       const appSt = getAppState();
       const blobData: Record<string, string> = {};
@@ -450,14 +457,27 @@ window.addEventListener('ski:request-suiami', async (e) => {
       if (appSt.ethAddress) blobData.eth = appSt.ethAddress;
       if (appSt.solAddress) blobData.sol = appSt.solAddress;
       let blobId = '';
+      let sealNonce: number[] = [];
       if (Object.keys(blobData).length > 0) {
-        try { blobId = await uploadRosterBlob(blobData); } catch (walErr) {
-          console.warn('[suiami] Walrus blob upload failed, proceeding without cross-chain:', walErr);
+        try {
+          const { blobId: bId, sealId } = await encryptSquidsToWalrus(blobData, name);
+          blobId = bId;
+          sealNonce = Array.from(sealId);
+        } catch (walErr) {
+          console.warn('[suiami] Seal/Walrus upload failed, writing identity without cross-chain:', walErr);
         }
       }
       const { Transaction } = await import('@mysten/sui/transactions');
+      const { normalizeSuiAddress } = await import('@mysten/sui/utils');
       const tx = new Transaction();
-      maybeAppendRoster(tx, ws.address, name, undefined, blobId);
+      // Tx sender MUST be set explicitly. WaaP and other wallets that
+      // pre-build with their own SDK fail with "Failed to build
+      // transaction: Missing transaction sender" when sender is unset
+      // even though signAndExecuteTransaction will eventually attach
+      // the signing account. Always normalize for WaaP addresses that
+      // may not be zero-padded.
+      tx.setSender(normalizeSuiAddress(ws.address));
+      maybeAppendRoster(tx, ws.address, name, undefined, blobId, sealNonce);
       const { digest } = await signAndExecuteTransaction(tx);
       console.log('[suiami] roster attestation written:', digest);
       showToast(`\u2713 SUIAMI on-chain for ${name}.sui`);
@@ -538,6 +558,601 @@ window.addEventListener('ski:rumble', async (e) => {
     showToast(err instanceof Error ? err.message : 'Rumble failed');
   }
 });
+
+// ─── Admin: Rumble Ultron ─────────────────────────────────────────────
+// Expose window.rumbleUltron('ed25519' | 'secp256k1' | 'both') so an
+// admin can provision ultron's IKA dWallets from the devtools console
+// without shipping visible UI. The connected wallet pays the IKA + SUI
+// and signs the DKG tx; the resulting DWalletCap transfers to ultron.
+//
+// Note: this provisions the cap but does NOT do user-share re-encryption
+// — ultron owns the cap but cannot yet sign autonomously without the
+// browser that ran DKG. Autonomous signing is a follow-up.
+const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519') => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  const { rumble } = await loadIka();
+  const { Curve } = await import('@ika.xyz/sdk');
+  const curveSet = curves === 'both'
+    ? [Curve.SECP256K1, Curve.ED25519]
+    : curves === 'secp256k1'
+      ? [Curve.SECP256K1]
+      : [Curve.ED25519];
+
+  // Fetch the deterministic encryption seed from the admin-gated server
+  // endpoint. The seed is derived from SHADE_KEEPER_PRIVATE_KEY so a
+  // keeper runtime can reconstruct the same encryption keys and sign
+  // autonomously on ultron's behalf later — no seed storage needed.
+  // Only one curve at a time for now (the endpoint + flow is per-curve).
+  const primaryCurve = curves === 'secp256k1' ? 'secp256k1' : 'ed25519';
+  console.log(`[rumble-ultron] fetching deterministic seed (${primaryCurve})…`);
+  let encryptionSeed: Uint8Array | undefined;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `rumble-ultron:${ULTRON_ADDRESS}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    const seedRes = await fetch('/api/cache/rumble-ultron-seed', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        curve: primaryCurve,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
+    });
+    const seedJson = await seedRes.json() as { seedHex?: string; error?: string };
+    if (!seedRes.ok || !seedJson.seedHex) {
+      throw new Error(seedJson.error || `HTTP ${seedRes.status}`);
+    }
+    encryptionSeed = new Uint8Array(seedJson.seedHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
+    console.log('[rumble-ultron] seed fetched, length:', encryptionSeed.length);
+  } catch (err) {
+    console.error('[rumble-ultron] seed fetch failed:', err);
+    showToast(`Seed fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+
+  showToast(`Rumble Ultron \u2014 provisioning ${curves} \u2192 ${ULTRON_ADDRESS.slice(0, 10)}\u2026`);
+  try {
+    const result = await rumble(
+      ws.address,
+      (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
+      (stage: string) => console.log(`[rumble-ultron] ${stage}`),
+      ULTRON_ADDRESS,
+      { curves: curveSet, encryptionSeed },
+    );
+    console.log('[rumble-ultron] result:', result);
+    const chains: string[] = [];
+    if (result.btcAddress) chains.push('BTC');
+    if (result.ethAddress) chains.push('ETH');
+    if (result.solAddress) chains.push('SOL');
+    if (chains.length) {
+      showToast(`Ultron rumbled \u2014 ${chains.join(' + ')} cap \u2192 ultron`);
+    } else {
+      showToast(`Ultron rumble failed \u2014 ${result.error || 'check console'}`);
+    }
+    return result;
+  } catch (err) {
+    console.error('[rumble-ultron] error:', err);
+    showToast(err instanceof Error ? err.message : 'Rumble Ultron failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+// Expose on multiple globals so it's reachable from `rumbleUltron()`
+// bare, `window.rumbleUltron()`, and `globalThis.rumbleUltron()`.
+(window as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
+(globalThis as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
+console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
+
+// ── Post-trade configure: browser-console repair tool ──
+//
+// If the trade follow-up configure ever fails (rejection, lag, any
+// reason), the user still owns the new name but its target_address is
+// still pointing wherever the seller last set it. Run this helper from
+// the browser console: `configureNameRecords('great')` — it will find
+// the SuinsRegistration NFT for great.sui in the connected wallet,
+// pull the user's existing SUIAMI Roster squid config (if any), build
+// the post-trade configure PTB, and sign it. One-shot, idempotent —
+// calling it twice just re-writes the same records.
+const _configureNameRecords = async (nameOrDomain: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  const bare = (nameOrDomain || '').replace(/\.sui$/i, '').toLowerCase();
+  if (!bare) {
+    console.error('[configureNameRecords] empty name');
+    return { error: 'empty name' };
+  }
+  const fullDomain = `${bare}.sui`;
+  try {
+    const { buildPostTradeConfigureTx, fetchExistingSquidConfig, fetchOwnedDomains } = await import('./suins.js');
+    const owned = await fetchOwnedDomains(ws.address);
+    const match = owned.find(d => d.name === fullDomain && d.kind === 'nft');
+    if (!match) {
+      console.error(`[configureNameRecords] you don't own ${fullDomain}`);
+      showToast(`${fullDomain} not in wallet`);
+      return { error: 'not owned' };
+    }
+    showToast(`\u{1F527} Configuring ${fullDomain} records\u2026`);
+    const existingCfg = await fetchExistingSquidConfig(ws.address);
+    const cfgBytes = await buildPostTradeConfigureTx({
+      sender: ws.address,
+      nftId: match.objectId,
+      domain: fullDomain,
+      walrusBlobId: existingCfg?.walrusBlobId,
+      sealNonce: existingCfg?.sealNonce,
+      writeRoster: true,
+    });
+    const { digest } = await signAndExecuteTransaction(cfgBytes);
+    const hasSquids = !!(existingCfg?.walrusBlobId);
+    const summary = hasSquids
+      ? `\u2713 ${fullDomain} records set \u2014 SUIAMI squids linked`
+      : `\u2713 ${fullDomain} points at your wallet`;
+    showToast(summary);
+    console.log(`[configureNameRecords] ${fullDomain} configured — digest ${digest}`);
+    return { ok: true, digest, domain: fullDomain, nftId: match.objectId, hasSquids };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[configureNameRecords] failed:', err);
+    if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+      showToast(`Configure failed: ${msg.slice(0, 100)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { configureNameRecords: typeof _configureNameRecords }).configureNameRecords = _configureNameRecords;
+(globalThis as unknown as { configureNameRecords: typeof _configureNameRecords }).configureNameRecords = _configureNameRecords;
+console.log('[ski] configureNameRecords hook installed — call configureNameRecords("<bare-name>") to set target + SUIAMI roster for an owned name');
+
+// ── Claydol Lv.10 Confusion — SUIAMI roster audit (#156) ──
+//
+// Browser-console diagnostic. Reads the connected wallet's current
+// SUIAMI Roster entry via the address-keyed dynamic field, prints the
+// full state with a clear "cross-chain resolvable: yes | NO" summary,
+// and returns the structured record for programmatic use.
+const _suiamiAudit = async () => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[suiamiAudit] not connected');
+    return { error: 'not connected' };
+  }
+  try {
+    const { readRosterByAddress } = await import('./suins.js');
+    const record = await readRosterByAddress(ws.address);
+    if (!record) {
+      console.log(`[suiamiAudit] no roster entry for ${ws.address}`);
+      console.log('  → run upgradeSuiami() to write one');
+      return { ok: false, reason: 'no-entry', address: ws.address };
+    }
+    const hasWalrus = !!record.walrus_blob_id;
+    const hasNonce = !!(record.seal_nonce?.length);
+    const hasKey = (() => {
+      try { return !!localStorage.getItem(`ski:roster-key:${ws.address}`); }
+      catch { return false; }
+    })();
+    const resolvable = hasWalrus && hasNonce;
+    console.log(`[suiamiAudit] roster entry for ${ws.address}:`);
+    console.log(`  name:                 ${record.name}`);
+    console.log(`  sui_address:          ${record.sui_address}`);
+    console.log(`  walrus_blob_id:       ${record.walrus_blob_id || '(empty — needs upgrade)'}`);
+    console.log(`  seal_nonce:           ${record.seal_nonce?.length ?? 0} bytes`);
+    console.log(`  chains on-chain:      ${Object.keys(record.chains).join(', ') || '(none)'}`);
+    console.log(`  verified:             ${record.verified}`);
+    console.log(`  dwallet_caps:         ${record.dwallet_caps.length}`);
+    console.log(`  updated_ms:           ${record.updated_ms}`);
+    console.log(`  local AES key:        ${hasKey ? 'present' : 'MISSING — decrypt unavailable'}`);
+    console.log(`  cross-chain resolvable: ${resolvable ? 'yes' : 'NO — run upgradeSuiami()'}`);
+    return { ok: true, record, resolvable, hasKey };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[suiamiAudit] query failed:', err);
+    return { error: msg };
+  }
+};
+(window as unknown as { suiamiAudit: typeof _suiamiAudit }).suiamiAudit = _suiamiAudit;
+(globalThis as unknown as { suiamiAudit: typeof _suiamiAudit }).suiamiAudit = _suiamiAudit;
+console.log('[ski] suiamiAudit hook installed — call suiamiAudit() to check current roster state');
+
+// ── Bronzong — Seal-gated SUIAMI upgrade (#157) ──
+//
+// Retroactive SUIAMI upgrade using Seal threshold encryption instead
+// of plain AES. Bound to the on-chain access policy
+// `suiami::seal_roster::seal_approve_roster_reader`, which enforces:
+//
+//   (1) caller has their own SUIAMI Roster entry
+//   (2) caller's entry has a non-empty walrus_blob_id
+//
+// Mutual-membership model: to read anyone else's squids, you must
+// have written your own. No key distribution ceremony, no keyring,
+// no AES key in localStorage — Seal key servers hold decrypt shares
+// under the policy, and the client just asks them.
+//
+// Sequence:
+//   1. Pull btc/eth/sol from app state (rumbled squids).
+//   2. `encryptSquidsToWalrus(squids, primaryBare)` — Seal encrypt
+//      scoped to the suiami package, upload the encryptedObject
+//      ciphertext to Walrus, return blobId + 40-byte seal identity.
+//   3. Derive the same blob for any additional names (or reuse the
+//      primary's blob — all of the user's owned names reference the
+//      same encrypted payload since the content is identical per
+//      identity).
+//   4. Build one PTB via buildFullSuiamiWriteTx that chains
+//      setTargetAddress(nft, sender) + set_identity for each name.
+//      seal_nonce field stores the seal identity bytes so readers
+//      can reconstruct them without round-tripping the Walrus blob.
+//   5. Sign and execute.
+//
+// Idempotent: calling twice re-uploads and re-writes. Walrus dedupes
+// identical ciphertexts so the second upload is a no-op.
+const _upgradeSuiami = async (extraNames: string[] = []) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  try {
+    const appSt = getAppState();
+    const squids: Record<string, string> = {};
+    if (appSt.btcAddress) squids.btc = appSt.btcAddress;
+    if (appSt.ethAddress) squids.eth = appSt.ethAddress;
+    if (appSt.solAddress) squids.sol = appSt.solAddress;
+    if (Object.keys(squids).length === 0) {
+      console.error('[upgradeSuiami] no squids in app state — run rumbleUltron() or finish DKG first');
+      showToast('No squids to upgrade \u2014 rumble first');
+      return { error: 'no-squids' };
+    }
+
+    const primaryBare = (appSt.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+    const nameSet = new Set<string>();
+    if (primaryBare) nameSet.add(primaryBare);
+    for (const n of extraNames) {
+      const bare = (n || '').replace(/\.sui$/i, '').toLowerCase();
+      if (bare) nameSet.add(bare);
+    }
+    const names = [...nameSet];
+    if (names.length === 0) {
+      console.error('[upgradeSuiami] no names to write — wallet has no primary and no extras provided');
+      return { error: 'no-names' };
+    }
+
+    showToast('\u{1F300} Seal-encrypting squids to Walrus\u2026');
+    const { encryptSquidsToWalrus } = await import('./client/suiami-seal.js');
+    // Anchor the Seal identity to the primary name. All owned names
+    // get their roster entries linked to the same blob; the 40-byte
+    // seal id written on-chain is primary-scoped so `decryptSquidsForName`
+    // can reconstruct it deterministically without an extra lookup.
+    const anchorName = primaryBare || names[0];
+    const { blobId, sealId } = await encryptSquidsToWalrus(squids, anchorName);
+    console.log(`[upgradeSuiami] walrus blob: ${blobId}`);
+    console.log(`[upgradeSuiami] seal id (40B): ${Array.from(sealId).map(b => b.toString(16).padStart(2, '0')).join('')}`);
+
+    const { fetchOwnedDomains, buildFullSuiamiWriteTx } = await import('./suins.js');
+    const owned = await fetchOwnedDomains(ws.address);
+    const entries = names.map(bare => {
+      const full = `${bare}.sui`;
+      const match = owned.find(d => d.name === full && d.kind === 'nft');
+      return { domain: full, nftId: match?.objectId };
+    });
+    const missingNftIds = entries.filter(e => !e.nftId).map(e => e.domain);
+    if (missingNftIds.length > 0) {
+      console.warn(`[upgradeSuiami] no NFT id found for: ${missingNftIds.join(', ')} — writing roster entries without setTargetAddress`);
+    }
+
+    showToast(`\u{1F300} Writing SUIAMI for ${names.length} name${names.length > 1 ? 's' : ''}\u2026`);
+    const bytes = await buildFullSuiamiWriteTx({
+      sender: ws.address,
+      entries,
+      walrusBlobId: blobId,
+      // seal_nonce field now carries the 40-byte Seal identity that
+      // decrypt callers need. Field name kept for Move ABI stability
+      // but semantically it's a Seal id, not an AES IV.
+      sealNonce: Array.from(sealId),
+      setTargetForNfts: true,
+    });
+    const { digest } = await signAndExecuteTransaction(bytes);
+    const summary = `\u2713 SUIAMI upgraded \u2014 ${names.length} name${names.length > 1 ? 's' : ''} Seal-gated on the roster policy`;
+    showToast(summary);
+    console.log(`[upgradeSuiami] digest: ${digest}`);
+    console.log(`[upgradeSuiami] names: ${names.join(', ')}`);
+    console.log(`[upgradeSuiami] anchor: ${anchorName}`);
+    console.log(`[upgradeSuiami] run suiamiAudit() to verify, or fetchSquidsForName("<name>") to test decrypt`);
+    return { ok: true, digest, names, walrusBlobId: blobId, anchorName };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[upgradeSuiami] failed:', err);
+    if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+      showToast(`Upgrade failed: ${msg.slice(0, 100)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { upgradeSuiami: typeof _upgradeSuiami }).upgradeSuiami = _upgradeSuiami;
+(globalThis as unknown as { upgradeSuiami: typeof _upgradeSuiami }).upgradeSuiami = _upgradeSuiami;
+console.log('[ski] upgradeSuiami hook installed — call upgradeSuiami(["great"]) to Seal-encrypt squids + write primary + extras roster entries');
+
+// ── Bronzong Lv.30 Gyro Ball — cross-SUIAMI decrypt (#157) ──
+//
+// Fetch and decrypt the cross-chain squid addresses for any name in
+// the SUIAMI Roster. Requires the CALLER to be a SUIAMI member with
+// their own encrypted roster entry (enforced by the on-chain
+// `seal_approve_roster_reader` policy during Seal's fetchKeys call).
+//
+// Prompts for one Seal SessionKey personal-message signature on the
+// first call per 30-minute window. Cached across hard refreshes in
+// localStorage.ski:suiami-seal-sk:v1:<addr>.
+const _fetchSquidsForName = async (nameOrDomain: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[fetchSquids] not connected');
+    return { error: 'not connected' };
+  }
+  const bare = (nameOrDomain || '').replace(/\.sui$/i, '').toLowerCase();
+  if (!bare) {
+    console.error('[fetchSquids] empty name');
+    return { error: 'empty-name' };
+  }
+  try {
+    const { readRoster } = await import('./suins.js');
+    const rosterChains = await readRoster(`${bare}.sui`);
+    if (!rosterChains) {
+      console.error(`[fetchSquids] ${bare}.sui has no SUIAMI roster entry`);
+      showToast(`${bare}.sui \u2014 not in SUIAMI roster`);
+      return { error: 'not-in-roster' };
+    }
+    // readRoster's simple shape doesn't return walrus_blob_id. Use
+    // the richer byName GraphQL query for the blob metadata.
+    const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const nh = keccak_256(new TextEncoder().encode(bare));
+    const nhB64 = btoa(String.fromCharCode(...nh));
+    const gqlRes = await fetch('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d") { dynamicField(name: { type: "vector<u8>", bcs: "${nhB64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gqlJson = await gqlRes.json() as any;
+    const record = gqlJson?.data?.object?.dynamicField?.value?.json;
+    const walrusBlobId: string = record?.walrus_blob_id ?? '';
+    if (!walrusBlobId) {
+      console.error(`[fetchSquids] ${bare}.sui has no walrus_blob_id on-chain`);
+      showToast(`${bare}.sui \u2014 no encrypted squids on-chain`);
+      return { error: 'no-blob' };
+    }
+    showToast(`\u{1F513} Decrypting ${bare}.sui squids\u2026`);
+    const { decryptSquidsForName } = await import('./client/suiami-seal.js');
+    const squids = await decryptSquidsForName({
+      name: bare,
+      blobId: walrusBlobId,
+      address: ws.address,
+      signPersonalMessage: async (msg: Uint8Array) => {
+        const { signPersonalMessage } = await import('./wallet.js');
+        return await signPersonalMessage(msg);
+      },
+    });
+    console.log(`[fetchSquids] ${bare}.sui decrypted:`, squids);
+    showToast(`\u2713 ${bare}.sui squids: ${Object.keys(squids).join(', ')}`);
+    return { ok: true, name: bare, squids };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[fetchSquids] failed:', err);
+    if (/NoAccess|NotRegistered|NoEncryptedData/i.test(msg)) {
+      showToast(`${bare}.sui \u2014 decrypt denied (caller needs own SUIAMI)`);
+    } else if (!msg.toLowerCase().includes('reject')) {
+      showToast(`Decrypt failed: ${msg.slice(0, 100)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
+(globalThis as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
+console.log('[ski] fetchSquidsForName hook installed — call fetchSquidsForName("<name>") to decrypt cross-chain squids for any SUIAMI-registered name (requires own SUIAMI entry)');
+
+// Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
+// Pass the recipient address explicitly (typically the new sol@ultron
+// from window.rumbleUltron). Admin-gated via the same signed-message
+// pattern as the seed endpoint.
+const _sweepSolUltron = async (recipient: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  if (!recipient || recipient.length < 32) {
+    return { error: 'pass the new sol@ultron address as recipient' };
+  }
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `sweep-sol-ultron:${recipient}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    console.log(`[sweep-sol-ultron] submitting sweep → ${recipient.slice(0, 8)}\u2026`);
+    const res = await fetch('/api/cache/sweep-sol-ultron', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        recipient,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
+    });
+    const json = await res.json() as { error?: string; swept?: unknown[]; solSweep?: unknown; oldSolAddress?: string };
+    if (!res.ok || json.error) {
+      console.error('[sweep-sol-ultron] failed:', json);
+      showToast(`Sweep failed: ${json.error || `HTTP ${res.status}`}`);
+      return json;
+    }
+    console.log('[sweep-sol-ultron] result:', json);
+    const splCount = json.swept?.length ?? 0;
+    showToast(`Swept ${splCount} SPL + ${json.solSweep ? 'SOL' : 'no SOL'} \u2192 ${recipient.slice(0, 8)}\u2026`);
+    return json;
+  } catch (err) {
+    console.error('[sweep-sol-ultron] error:', err);
+    showToast(err instanceof Error ? err.message : 'Sweep failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
+(globalThis as unknown as { sweepSolUltron: typeof _sweepSolUltron }).sweepSolUltron = _sweepSolUltron;
+console.log('[ski] sweepSolUltron hook installed — call sweepSolUltron("<new-sol-address>")');
+
+// Ultron writes its own SUIAMI Roster entry with all four IKA-native
+// chain addresses. Admin-gated via signed personal message from an
+// allowlisted Sui address; ultron signs the actual roster tx server-side
+// with its own keypair, so no browser session needs to be online past
+// the one admin signature.
+const _ultronRoster = async () => {
+  try {
+    console.log('[ultron-roster] submitting (no-auth, self-referential)...');
+    const res = await fetch('/api/cache/ultron-roster', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const json = await res.json() as {
+      ok?: boolean; error?: string; digest?: string;
+      ultronSuiAddr?: string;
+      chains?: { sui: string; btc: string; eth: string; sol: string };
+      debug?: Record<string, unknown>;
+    };
+    if (!res.ok || json.error) {
+      console.error('[ultron-roster] failed:', json.error);
+      if (json.debug) {
+        console.error('[ultron-roster] debug:');
+        for (const [k, v] of Object.entries(json.debug)) {
+          console.error(`  ${k}:`, v);
+        }
+      }
+      showToast(`Ultron roster failed: ${json.error || `HTTP ${res.status}`}`);
+      return json;
+    }
+    console.log('[ultron-roster] result:', json);
+    showToast(`Ultron roster written \u2014 ${json.digest?.slice(0, 8)}\u2026`);
+    return json;
+  } catch (err) {
+    console.error('[ultron-roster] error:', err);
+    showToast(err instanceof Error ? err.message : 'Ultron roster failed');
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { ultronRoster: typeof _ultronRoster }).ultronRoster = _ultronRoster;
+(globalThis as unknown as { ultronRoster: typeof _ultronRoster }).ultronRoster = _ultronRoster;
+console.log('[ski] ultronRoster hook installed — call ultronRoster()');
+
+// Nuke every cached Seal session key + reset the circuit breaker so the
+// next Thunder interaction prompts a fresh wallet sign. Use when the
+// wallet backend starts rejecting mint sigs unexpectedly (possibly due
+// to a stale Silk session or a poisoned localStorage entry written by a
+// prior SDK version).
+const _clearSealCache = () => {
+  try {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ski:seal-sk:')) stale.push(k);
+    }
+    for (const k of stale) localStorage.removeItem(k);
+    console.log(`[clearSealCache] purged ${stale.length} Seal session key entries`);
+    // Force a page reload so module-level state (circuit breaker flags,
+    // in-memory promise cache) also resets cleanly.
+    console.log('[clearSealCache] reloading in 1s...');
+    setTimeout(() => location.reload(), 1000);
+    return { purged: stale.length };
+  } catch (err) {
+    console.error('[clearSealCache] error:', err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { clearSealCache: typeof _clearSealCache }).clearSealCache = _clearSealCache;
+console.log('[ski] clearSealCache hook installed — call clearSealCache() to reset Seal key state');
+
+// clearSealRejection — when the user cancels a Seal sign prompt, we set
+// a 5-min cooldown so subsequent storm opens don't re-prompt them in a
+// loop. This hook lets them clear the cooldown and try again without
+// reloading. Useful when the user cancels by accident or wants to retry
+// after switching contexts.
+const _clearSealRejection = async () => {
+  try {
+    const { clearSealRejection } = await import('./client/thunder.js');
+    clearSealRejection();
+    console.log('[clearSealRejection] cooldown cleared, next storm open will re-prompt');
+  } catch (err) {
+    console.error('[clearSealRejection] error:', err);
+  }
+};
+(window as unknown as { clearSealRejection: typeof _clearSealRejection }).clearSealRejection = _clearSealRejection;
+console.log('[ski] clearSealRejection hook installed — call clearSealRejection() after cancelling Seal sign');
+
+// Minimal smoke test for the wallet's signPersonalMessage path. Takes
+// a plain ASCII string, hands it straight to wallet.ts with nothing
+// else in the loop — no Seal SDK, no IKA SDK, no canonicalization, no
+// vector-intent wrapping. Isolates whether the wallet backend itself
+// is accepting sign requests, independent of any SKI-specific wrapping.
+//
+// Usage: testWalletSign("hello world")
+// Returns { bytes, signature } on success, { error } on failure.
+const _testWalletSign = async (message: string = 'sui.ski smoke test') => {
+  try {
+    const { signPersonalMessage, getState } = await import('./wallet.js');
+    const ws = getState();
+    console.log('[testWalletSign] address:', ws.address, 'walletName:', ws.walletName);
+    console.log('[testWalletSign] message:', JSON.stringify(message));
+    const msgBytes = new TextEncoder().encode(message);
+    console.log('[testWalletSign] msgBytes length:', msgBytes.length);
+    const res = await signPersonalMessage(msgBytes);
+    console.log('[testWalletSign] ok, signature length:', res.signature?.length);
+    console.log('[testWalletSign] bytes:', res.bytes);
+    console.log('[testWalletSign] signature:', res.signature);
+    return res;
+  } catch (err) {
+    console.error('[testWalletSign] failed:', err);
+    return { error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) };
+  }
+};
+(window as unknown as { testWalletSign: typeof _testWalletSign }).testWalletSign = _testWalletSign;
+console.log('[ski] testWalletSign hook installed — call testWalletSign() to test raw wallet signing');
+
+// Nuclear WaaP reset: nukes every WaaP/Silk/walletconnect key in
+// localStorage + sessionStorage, removes any injected iframes, clears
+// the dappkit "which wallet" marker, drops in-memory registration
+// state, then reloads the page for a totally fresh connect flow.
+//
+// Use when WaaP stops opening (iframe stuck, INVALID_DEVICE_SESSION,
+// signing hits Silk 400s repeatedly) and you've already tried
+// disconnect/reconnect through the normal UI.
+const _purgeWaaP = async () => {
+  try {
+    const { purgeWaaPState } = await import('./waap.js');
+    await purgeWaaPState();
+    console.log('[purgeWaaP] state purged, reloading in 1s...');
+    setTimeout(() => location.reload(), 1000);
+    return { ok: true };
+  } catch (err) {
+    console.error('[purgeWaaP] failed:', err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+};
+(window as unknown as { purgeWaaP: typeof _purgeWaaP }).purgeWaaP = _purgeWaaP;
+console.log('[ski] purgeWaaP hook installed — call purgeWaaP() if WaaP iframe is stuck');
+
+// Auto-trigger if the URL query contains ?purge-waap so a stuck user
+// can just visit https://sui.ski/?purge-waap without knowing the
+// console command.
+try {
+  if (typeof location !== 'undefined' && location.search.includes('purge-waap')) {
+    console.log('[purgeWaaP] URL flag detected, running purge...');
+    _purgeWaaP();
+  }
+} catch { /* non-browser */ }
 
 // ─── Auto Pre-Rumble on name registration ──────────────────────────────
 // When a new name is registered, fire pre-rumble in the background so the
@@ -620,6 +1235,26 @@ initUI();
 // Start WaaP loading immediately — don't wait for window.load.
 // The preflight fetch inside registerWaaP is non-blocking and the SDK init
 // is fast, so this shaves seconds off the time the modal shows stale state.
+//
+// zkLogin loads in parallel — it's a lightweight Wallet Standard provider
+// that registers alongside WaaP, Backpack, etc.  Configure network based on
+// hostname so devnet/testnet points at testnet GraphQL and mainnet at mainnet.
+import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
+  try {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    const isDevnet =
+      /dotski-devnet\.[a-z0-9-]+\.workers\.dev$/i.test(host) ||
+      /^devnet\./i.test(host) ||
+      host === 'localhost' ||
+      host === '127.0.0.1';
+    configureZkLogin(isDevnet
+      ? { graphqlUrl: 'https://graphql.testnet.sui.io/graphql', network: 'testnet' }
+      : { graphqlUrl: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+  } catch { /* hostname unavailable */ }
+  registerZkLogin();
+}).catch((err) => {
+  console.warn('[.SKI] zkLogin lazy-load failed:', err);
+});
 import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
   registerWaaP();
   // Console helpers on window.ski:

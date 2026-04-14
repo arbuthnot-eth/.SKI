@@ -43,8 +43,8 @@ import {
   getActiveSponsoredList,
   resolveNameToAddress,
 } from './sponsor.js';
-import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
-import { connectShadeExecutor, scheduleShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
+import { fetchOwnedDomains, buildSubnameTx, buildRegisterSplashNsTx, buildConsolidateToUsdcTx, buildSendTx, buildSelfSwapTx, buildSwapTx, buildTransferNftTx, fetchDomainPriceUsd, checkDomainStatus, buildSetDefaultNsTx, buildSetTargetAddressTx, buildSubnameTxBytes, lookupNftOwner, buildCreateShadeOrderTx, buildCreateStableShadeOrderTx, buildCreateStableShadeOrderAutoTx, buildExecuteShadeOrderTx, buildCancelShadeOrderTx, buildCancelRefundShadeOrderTx, buildCancelStableShadeOrderTx, buildCancelRefundStableShadeOrderTx, buildKioskPurchaseTx, buildTradeportPurchaseTx, buildSwapAndPurchaseTx, buildIusdBurnAndPurchaseTx, findShadeOrder, addShadeOrder, removeShadeOrder, removeShadeOrderByDomain, pruneShadeOrders, findCreatedShadeOrderId, findCreatedStableShadeOrderRef, extractShadeOrderIdFromEffects, getShadeOrders, fetchOnChainShadeOrders, resolveSuiNSName, fetchTradeportListing, type OwnedDomain, type DomainStatusResult, type ShadeOrderInfo, type TradeportListing } from './suins.js';
+import { connectShadeExecutor, scheduleShadeExecution, scheduleStableShadeExecution, cancelShadeExecution, resetFailedShadeOrders, reapCancelledShadeOrder, disconnectShadeExecutor, pokeIouSweeper, type ShadeExecutorState, type ShadeExecutorOrder } from './client/shade.js';
 import { buildSuiamiMessage, createSuiamiProof, type SuiamiProof } from './suiami.js';
 import { ethToTron } from './client/chains.js';
 import SKI_SVG_TEXT from '../public/assets/ski.svg';
@@ -247,6 +247,16 @@ export interface AppState {
   ethAddress: string;
   solAddress: string;
   solBalance: number;
+  /** iUSD SPL balance on Solana for the user's dWallet-derived Solana address. */
+  solIusdBalance: number;
+  /** Native BTC balance for the user's dWallet-derived BTC address. */
+  btcBalance: number;
+  /** Native ETH balance for the user's dWallet-derived ETH address. */
+  ethBalance: number;
+  /** USDC (ERC-20 mainnet) balance for the user's dWallet-derived ETH address. */
+  ethUsdc: number;
+  /** USDT-TRC20 balance for the user's dWallet-derived TRON address. */
+  tronUsdt: number;
   skiMenuOpen: boolean;
   copied: boolean;
   splashSponsor: boolean;
@@ -263,6 +273,11 @@ const app: AppState = {
   ethAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).eth || '') : ''; } catch { return ''; } })(),
   solAddress: (() => { try { const a = getState().address || localStorage.getItem('ski:last-address') || ''; if (!a) return ''; const c = localStorage.getItem(`ski:ika-addrs:${a}`); return c ? (JSON.parse(c).sol || '') : ''; } catch { return ''; } })(),
   solBalance: 0,
+  solIusdBalance: 0,
+  btcBalance: 0,
+  ethBalance: 0,
+  ethUsdc: 0,
+  tronUsdt: 0,
   skiMenuOpen: (() => { try { return localStorage.getItem('ski:lift') === '1'; } catch { return false; } })(),
   copied: false,
   splashSponsor: false,
@@ -826,8 +841,8 @@ async function getQrSvg(url: string, color?: string): Promise<string> {
 
 /** Generate a QR SVG for a Sui address with a center logo. Uses 'H' error correction to tolerate the overlay.
  *  mode='sui' → blue QR + Sui drop; mode='usd' → green QR + $ sign; mode='bw' → white QR + diamond */
-async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' = 'sui'): Promise<string> {
-  const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : '#60a5fa';
+async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 'sol' | 'eth' | 'tron' = 'sui'): Promise<string> {
+  const dark = mode === 'btc' ? '#f7931a' : mode === 'sol' ? '#9945FF' : mode === 'usd' ? '#4ade80' : mode === 'bw' ? '#ffffff' : mode === 'eth' ? '#627eea' : mode === 'tron' ? '#FF0013' : '#60a5fa';
   // Solana QR uses purple modules (#9945FF) with the gradient logo in center
   const key = `ski:qr:addr:${mode}:${addr}`;
   try { const cached = localStorage.getItem(key); if (cached) return cached; } catch {}
@@ -855,12 +870,26 @@ async function _getAddrQrSvg(addr: string, mode: 'sui' | 'usd' | 'bw' | 'btc' | 
       const ox = cx - br;
       const oy = cy - br;
       logoSvg = `<defs><linearGradient id="qr-sol-g" x1="0.59" y1="0.18" x2="0.29" y2="0.74" gradientUnits="objectBoundingBox"><stop stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="#0B1022"/><g transform="translate(${ox},${oy}) scale(${s / 48})"><path d="M32.437 21.745a.47.47 0 00-.577-.245H11.909c-.364 0-.546.45-.289.714l3.943 4.041a.47.47 0 00.577.245H36.091c.364 0 .546-.451.289-.714l-3.943-4.041z" fill="url(#qr-sol-g)"/><path d="M15.563 29.268a.47.47 0 01.576-.244h19.952c.364 0 .546.449.289.711l-3.943 4.022a.47.47 0 01-.576.243H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/><path d="M15.563 14.244A.47.47 0 0116.139 14h19.952c.364 0 .546.449.289.711l-3.943 4.021a.47.47 0 01-.576.244H11.909c-.364 0-.546-.449-.289-.711l3.943-4.021z" fill="url(#qr-sol-g)"/></g>`;
+    } else if (mode === 'eth') {
+      const fill = '#627eea';
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${br * 1.5}" font-weight="700" fill="white">\u039E</text>`;
+    } else if (mode === 'tron') {
+      // Actual TRON triangle logo paths (viewBox ~512). Scale to fit br*2 diameter.
+      const fill = '#FF0013';
+      const s = (br * 2 * 0.62) / 512;
+      const ox = cx - (512 * s) / 2;
+      const oy = cy - (512 * s) / 2;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="${fill}"/><g transform="translate(${ox},${oy}) scale(${s})" fill="white"><path d="M378.8 0H4.5L167.1 340.7 505 121.1 378.8 0zM182.7 261.8L71.1 44.4h270.5L182.7 261.8zM204.1 294.5L454.4 147l-112.7 344.4L204.1 294.5z"/></g>`;
     } else if (mode === 'bw') {
       const d = br * 0.75;
       logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><polygon points="${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}" fill="#1a1a2e" stroke="white" stroke-width="${d * 0.2}"/>`;
     } else {
-      // SUI mode — Sui drop
-      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${cx - br * 0.62},${cy - br * 0.72}) scale(${(br * 2 * 0.65) / 300})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
+      // SUI mode — Sui drop centered on the disc (path viewBox 300x384).
+      const pathW = 300, pathH = 384;
+      const scale = (br * 2 * 0.62) / pathH;
+      const ox = cx - (pathW * scale) / 2;
+      const oy = cy - (pathH * scale) / 2;
+      logoSvg = `<circle cx="${cx}" cy="${cy}" r="${br + 1}" fill="white"/><circle cx="${cx}" cy="${cy}" r="${br}" fill="#4da2ff"/><g transform="translate(${ox},${oy}) scale(${scale})" fill="white"><path fill-rule="evenodd" clip-rule="evenodd" d="${SUI_DROP_PATH}"/></g>`;
     }
     svg = svg.replace('</svg>', `${logoSvg}</svg>`);
   }
@@ -2805,10 +2834,10 @@ function _renderNetworkSelect() {
 
 // Token price cache — maps symbol → { price, fetchedAt }
 // CoinGecko IDs for known Sui tokens
-const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana' };
+const _COINGECKO_IDS: Record<string, string> = { NS: 'suins-token', WAL: 'walrus-2', DEEP: 'deep', XAUM: 'matrixdock-gold', IKA: 'ika', SOL: 'solana', BTC: 'bitcoin', ETH: 'ethereum' };
 // Conservative default prices so dust filtering works before live prices arrive.
 // These are intentionally LOW — better to undervalue and filter dust than overvalue and show it.
-const _DEFAULT_TOKEN_PRICES: Record<string, number> = { NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82 };
+const _DEFAULT_TOKEN_PRICES: Record<string, number> = { SUI: 0.9, NS: 0.018, WAL: 0.069, DEEP: 0.026, XAUM: 4492, IKA: 0.003, SOL: 82, BTC: 100000, ETH: 3500 };
 let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() => {
   try {
     const raw = localStorage.getItem('ski:token-prices');
@@ -2827,6 +2856,10 @@ let tokenPriceCache: Record<string, { price: number; fetchedAt: number }> = (() 
 
 function getTokenPrice(symbol: string): number | null { return tokenPriceCache[symbol]?.price ?? _DEFAULT_TOKEN_PRICES[symbol] ?? null; }
 function getNsTokenPrice(): number | null { return getTokenPrice('NS'); }
+/** SUI/USD with a sane fallback chain: live cache → static default → 0.
+ *  Used anywhere a card or aggregator would otherwise zero out SUI
+ *  value on a fresh render before suiPriceCache finishes seeding. */
+function getSuiPriceWithFallback(): number { return suiPriceCache?.price || _DEFAULT_TOKEN_PRICES.SUI || 0; }
 
 /** Fetch prices for all non-SUI, non-stable tokens via CoinGecko + DexScreener fallback. */
 async function fetchTokenPrices(): Promise<void> {
@@ -2931,17 +2964,22 @@ function getTotalSui(): number {
   return totalUsd / price;
 }
 
+// Same-origin proxy (server relays to Helius with HELIUS_API_KEY) first.
+// Public fallbacks kept as a lifeline if the proxy is down, but the
+// browser should basically always be hitting /api/sol-rpc in practice
+// since mainnet-beta 403s most origins and publicnode is rate-limited.
+const SOL_RPCS = [
+  '/api/sol-rpc',
+  'https://solana-rpc.publicnode.com',
+];
+
 /** Fetch SOL balance for the IKA dWallet Solana address. Races multiple Solana RPCs. */
 async function _fetchSolBalance(): Promise<void> {
   if (!app.solAddress) return;
-  const endpoints = [
-    'https://solana-rpc.publicnode.com',
-    'https://api.mainnet-beta.solana.com',
-  ];
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [app.solAddress] });
   try {
     const result = await Promise.any(
-      endpoints.map(url =>
+      SOL_RPCS.map(url =>
         fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
           .then(r => r.json())
           .then((data: any) => {
@@ -2952,6 +2990,101 @@ async function _fetchSolBalance(): Promise<void> {
       ),
     );
     app.solBalance = result / 1e9;
+  } catch { /* non-blocking */ }
+}
+
+// Cached iUSD SPL mint address from the treasury. Fetched once per page
+// load; if the mint doesn't exist yet the endpoint returns null and we
+// skip the SPL balance fetch for the rest of the session.
+let _iusdSolMintCache: string | null | undefined;
+async function _getIusdSolMint(): Promise<string | null> {
+  if (_iusdSolMintCache !== undefined) return _iusdSolMintCache;
+  try {
+    const res = await fetch('/api/cache/iusd-sol-mint');
+    if (!res.ok) { _iusdSolMintCache = null; return null; }
+    const data = await res.json() as { mintAddress?: string | null };
+    _iusdSolMintCache = data.mintAddress || null;
+    return _iusdSolMintCache;
+  } catch {
+    _iusdSolMintCache = null;
+    return null;
+  }
+}
+
+/**
+ * Fetch iUSD SPL balance for the user's Solana dWallet address.
+ * Uses SPL Token's `getTokenAccountsByOwner` (JSON-parsed) so we don't
+ * need the @solana/web3.js bundle client-side. Races the same RPC pool
+ * as `_fetchSolBalance`. iUSD SPL is 9 decimals (parity with Sui iUSD).
+ */
+async function _fetchSolIusdBalance(): Promise<void> {
+  if (!app.solAddress) return;
+  const mint = await _getIusdSolMint();
+  if (!mint) return;
+  const body = JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner',
+    params: [app.solAddress, { mint }, { encoding: 'jsonParsed' }],
+  });
+  try {
+    const result = await Promise.any(
+      SOL_RPCS.map(url =>
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+          .then(r => r.json())
+          .then((data: any) => {
+            const nodes = data?.result?.value;
+            if (!Array.isArray(nodes)) throw new Error('no value');
+            return nodes as Array<{ account?: { data?: { parsed?: { info?: { tokenAmount?: { uiAmount?: number } } } } } }>;
+          })
+      ),
+    );
+    let total = 0;
+    for (const n of result) {
+      const ui = n?.account?.data?.parsed?.info?.tokenAmount?.uiAmount;
+      if (typeof ui === 'number' && Number.isFinite(ui)) total += ui;
+    }
+    app.solIusdBalance = total;
+  } catch { /* non-blocking */ }
+}
+
+/** Fetch native BTC balance from mempool.space via /api/balance/btc proxy. */
+async function _fetchBtcBalance(): Promise<void> {
+  if (!app.btcAddress) return;
+  try {
+    const r = await fetch(`/api/balance/btc/${encodeURIComponent(app.btcAddress)}`);
+    if (!r.ok) return;
+    const j = await r.json() as { sats?: number };
+    if (typeof j.sats === 'number') app.btcBalance = j.sats / 1e8;
+  } catch { /* non-blocking */ }
+}
+
+/** Fetch ETH native + USDC ERC-20 balance via Alchemy proxy. */
+async function _fetchEthBalance(): Promise<void> {
+  if (!app.ethAddress) return;
+  try {
+    const r = await fetch(`/api/balance/eth/${encodeURIComponent(app.ethAddress)}`);
+    if (!r.ok) return;
+    const j = await r.json() as { wei?: string; usdcRaw?: string };
+    if (j.wei) {
+      try { app.ethBalance = Number(BigInt(j.wei)) / 1e18; } catch {}
+    }
+    if (j.usdcRaw) {
+      try { app.ethUsdc = Number(BigInt(j.usdcRaw)) / 1e6; } catch {}
+    }
+  } catch { /* non-blocking */ }
+}
+
+/** Fetch USDT-TRC20 balance via TronGrid proxy. TRX itself is rarely held. */
+async function _fetchTronBalance(): Promise<void> {
+  if (!app.ethAddress) return; // TRON addr derived from ETH
+  const tronAddr = ethToTron(app.ethAddress);
+  if (!tronAddr) return;
+  try {
+    const r = await fetch(`/api/balance/tron/${encodeURIComponent(tronAddr)}`);
+    if (!r.ok) return;
+    const j = await r.json() as { sun?: number; usdtRaw?: string };
+    if (j.usdtRaw) {
+      try { app.tronUsdt = Number(BigInt(j.usdtRaw)) / 1e6; } catch {}
+    }
   } catch { /* non-blocking */ }
 }
 
@@ -2966,13 +3099,17 @@ export async function refreshPortfolio(force = false) {
   const fetchedFor = ws.address; // capture before any await
 
   try {
-    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance in parallel
+    // gRPC for all balances + SUI price + token prices + SuiNS + SOL balance + iUSD SPL in parallel
     const [allBalResult, suinsName, suiPrice] = await Promise.all([
       grpcClient.core.listBalances({ owner: fetchedFor }).catch(() => null),
       lookupSuiNS(fetchedFor),
       fetchSuiPrice(),
       fetchTokenPrices(),
       _fetchSolBalance(),
+      _fetchSolIusdBalance(),
+      _fetchBtcBalance(),
+      _fetchEthBalance(),
+      _fetchTronBalance(),
     ]);
 
     // Wallet switched while fetch was in-flight — discard stale result
@@ -3020,13 +3157,43 @@ export async function refreshPortfolio(force = false) {
       const tp = getTokenPrice(c.symbol);
       if (tp != null && tp > 0) tokensUsd += c.balance * tp;
     }
-    // Include Solana balance in total
+    // Include Solana balance in total — native SOL + iUSD SPL ($1 peg)
     const solPrice = getTokenPrice('SOL');
     const solUsd = (solPrice && app.solBalance > 0) ? app.solBalance * solPrice : 0;
+    const solIusdUsd = app.solIusdBalance > 0 ? app.solIusdBalance : 0;
+    // Cross-chain: BTC + ETH native + ERC-20 USDC + USDT-TRC20 (each $1 peg).
+    const btcPrice = getTokenPrice('BTC');
+    const ethPrice = getTokenPrice('ETH');
+    const btcUsd = (btcPrice && app.btcBalance > 0) ? app.btcBalance * btcPrice : 0;
+    const ethUsd = (ethPrice && app.ethBalance > 0) ? app.ethBalance * ethPrice : 0;
+    const ethUsdcUsd = app.ethUsdc > 0 ? app.ethUsdc : 0;
+    const tronUsdtUsd = app.tronUsdt > 0 ? app.tronUsdt : 0;
+    const crossChainUsd = btcUsd + ethUsd + ethUsdcUsd + tronUsdtUsd;
+    // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
+    // objects. These auto-execute into SuiNS registrations for the
+    // holder within the grace period, or refund on cancel. Counting
+    // them in the total keeps the user's visible "net worth" honest
+    // across the shade lifecycle.
+    let shadePendingUsd = 0;
+    try {
+      if (_shadeDoState && _shadeDoState.orders?.length) {
+        const px = suiPrice ?? 0;
+        for (const o of _shadeDoState.orders) {
+          if (o.status !== 'pending') continue;
+          const raw = Number(BigInt(o.depositMist || '0'));
+          if (o.isStable) {
+            shadePendingUsd += raw / 1e9; // iUSD 1:1
+          } else if (px > 0) {
+            shadePendingUsd += (raw / 1e9) * px;
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
     if (suiUsd != null) {
-      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd;
+      app.usd = suiUsd + app.stableUsd + tokensUsd + solUsd + solIusdUsd + crossChainUsd + shadePendingUsd;
     } else if (app.usd == null) {
-      app.usd = app.stableUsd + tokensUsd + solUsd > 0 ? app.stableUsd + tokensUsd + solUsd : null;
+      const nonNullTotal = app.stableUsd + tokensUsd + solUsd + solIusdUsd + crossChainUsd + shadePendingUsd;
+      app.usd = nonNullTotal > 0 ? nonNullTotal : null;
     }
 
     // Keep active detail balance in sync if it's showing the connected wallet
@@ -3133,11 +3300,19 @@ function _renderProfileEl(el: HTMLElement) {
   const labelClass = hasSuins ? 'wk-widget-title' : 'wk-widget-title is-address';
 
   // Wallet icon + optional social badge (badge is a sibling, not inside the clipped icon span)
+  // The WaaP badge displays the locally-stored social provider (X / Google /
+  // Discord / GitHub). When the badge SVG isn't ready yet — fresh session,
+  // cleared cache, or the user hasn't reconnected since we started caching
+  // providers — we render `?` as a placeholder that opens the provider
+  // picker on click. Track that "WaaP is connected but provider unknown"
+  // state so we can suppress the .sui.ski link until it's set.
   let iconHtml = '';
+  let waapProviderReady = true;
   if (ws.walletIcon) {
     const social = socialIconSvg(ws.walletName);
     const isWaap = /waap/i.test(ws.walletName || '');
     const badgeSvg = isWaap ? _waapProviderBadgeSvg(ws.address) : '';
+    if (isWaap && !badgeSvg) waapProviderReady = false;
     const badge = isWaap
       ? `<span class="ski-waap-x ski-waap-x--picker" data-provider-picker title="Change login method">${badgeSvg || '?'}</span>`
       : social ? `<span class="ski-waap-x">𝕏</span>` : '';
@@ -3146,7 +3321,13 @@ function _renderProfileEl(el: HTMLElement) {
 
   // IKA status populated from on-chain query, not localStorage
 
-  const skiUrl = hasSuins ? `https://${esc(label)}.sui.ski` : '';
+  // Only emit the .sui.ski link when BOTH the user has a SuiNS name AND
+  // the identity is fully set up (WaaP provider known, or non-WaaP wallet).
+  // If the WaaP badge is `?` the widget renders as a button — still in the
+  // grid as a clickable choice (opens the provider picker via the badge),
+  // but does NOT navigate to name.sui.ski before the social login is set.
+  const profileReady = hasSuins && waapProviderReady;
+  const skiUrl = profileReady ? `https://${esc(label)}.sui.ski` : '';
   // Squid 🦑 is always rendered so the layout doesn't jump. Dimmed + greyscale
   // when the user has no IKA wallet yet — a visible-but-muted hint to Rumble.
   const squidDim = app.ikaWalletId ? '' : ';opacity:0.35;filter:grayscale(1)';
@@ -3158,7 +3339,7 @@ function _renderProfileEl(el: HTMLElement) {
           </span>
         </span>`;
 
-  el.innerHTML = hasSuins
+  el.innerHTML = profileReady
     ? `<div class="wk-widget">
       <a class="wk-widget-btn connected" href="${skiUrl}" target="_blank" rel="noopener" title="${esc(label)}.sui.ski">
         ${innerHtml}
@@ -3408,20 +3589,19 @@ let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
 let nsLabel = (() => {
   try {
-    // Prefer user's primary SuiNS name — if they have one, it's
-    // what they'll want to see first.
-    const ws = getState();
-    if (ws.address) {
-      const cached = localStorage.getItem(`ski:suins:${ws.address}`);
-      if (cached) return cached.replace(/\.sui$/, '');
-    }
-    // Fall back to saved label — but only if it was a taken/owned
-    // name the user was actively viewing. Never restore an
-    // 'available' name (half-typed shopping).
+    // The card and input are driven *purely* by the user's last
+    // searched/typed label. No auto-populate from the wallet's
+    // primary — the card follows intent, not identity. If the
+    // user was looking at `great.sui` and reloads, they land back
+    // on great. If they had nothing typed, the card stays blank
+    // until they type or click something.
+    //
+    // Previously this fell back to the connected wallet's primary
+    // from `ski:suins:${address}`, which turned every fresh session
+    // into a self-card and clobbered any trade-in-progress on
+    // refresh. Removed the fallback entirely.
     const saved = localStorage.getItem('ski:ns-label') || '';
-    const savedAvail = sessionStorage.getItem('ski:ns-resolve');
-    const wasAvailable = savedAvail ? JSON.parse(savedAvail)?.avail === 'available' : false;
-    if (saved && !wasAvailable) return saved;
+    if (saved) return saved;
     // No primary + no saved label → empty. The target row below
     // will surface the connected wallet's hex address as the
     // default display, so the user sees their own identity
@@ -3462,8 +3642,8 @@ let nsTransferRecipient = ''; // value in the transfer-recipient input
 let _thunderCounts: Record<string, number> = {};
 
 // Sableye — module handle for synchronous roster lookup. Populated
-// after warmSableye() resolves. Null until then → roster renders
-// default blue squares and picks up diamonds on next open.
+// after warmSableye() resolves. Null until then → roster renders with
+// default blue squares and picks up black diamonds on next open.
 let _sableyeMod: { hasSableye: (n: string) => boolean } | null = null;
 
 /** Transfer tx digests known to be settled (claimed or recalled).
@@ -3649,7 +3829,7 @@ async function _renderConversation(counterparty: string, force = false) {
       if (inp) inp.value = sender;
       skipNextFocusClear = true;
       fetchAndShowNsPrice(sender);
-      _updateSendBtnMode();
+      document.getElementById('wk-send-btn')?.dispatchEvent(new CustomEvent('ns-status-change'));
     });
   });
 
@@ -3674,7 +3854,7 @@ async function _renderConversation(counterparty: string, force = false) {
       skipNextFocusClear = true;
       _addThunderContact(name);
       fetchAndShowNsPrice(name);
-      _updateSendBtnMode();
+      document.getElementById('wk-send-btn')?.dispatchEvent(new CustomEvent('ns-status-change'));
     });
   });
 
@@ -3749,11 +3929,10 @@ async function _renderConversation(counterparty: string, force = false) {
       _thunderConvoTarget = '';
       _renderConversation(cardDomain, true);
       _syncNftCardToInput();
-      if (payloads.length > 0) {
-        // Fill input with the sender's name or address for easy reply
-        const first = payloads[0];
-        const senderBare = (first.sender || '').replace(/\.sui$/, '');
-        const replyTarget = senderBare || first.senderAddress;
+      if (messages.length > 0) {
+        // Fill input with the sender's address for easy reply
+        const first = messages[0];
+        const replyTarget = first.senderAddress;
         if (replyTarget) {
           nsLabel = replyTarget;
           const inp = document.getElementById('wk-ns-label-input') as HTMLInputElement | null;
@@ -3761,7 +3940,7 @@ async function _renderConversation(counterparty: string, force = false) {
           skipNextFocusClear = true;
           fetchAndShowNsPrice(replyTarget);
         }
-        showToast(`\u26a1 ${payloads.length} thunder${payloads.length > 1 ? 's' : ''} quested`);
+        showToast(`\u26a1 ${messages.length} thunder${messages.length > 1 ? 's' : ''} quested`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Quest failed';
@@ -4001,7 +4180,7 @@ function _toggleRoster() {
     coinChipsOpen = false;
     _persistCoinChipsOpen();
     document.getElementById('wk-coins-collapse')?.classList.toggle('wk-qr-collapse--hidden', true);
-    _updateSendBtnMode();
+    document.getElementById('wk-send-btn')?.dispatchEvent(new CustomEvent('ns-status-change'));
   }
 }
 let nsSectionOpen = (() => {
@@ -4449,9 +4628,17 @@ function _nsOwnedListHtml(): string {
   const hasFilter = filterQ.length > 0 && !nsSubnameParent;
 
   // Build chip data with match info
+  // The user's primary .sui name (app.suinsName) is rendered ALONE in
+  // its own row above the grid — gold-styled, isolated, and never
+  // intermixed with the rest of the chips. Everything else (shades +
+  // owned + wishlist) shifts down to row 2+ in the grid below.
+  const primaryBare = app.suinsName ? app.suinsName.replace(/\.sui$/, '').toLowerCase() : '';
   type ChipEntry = { html: string; matches: boolean };
-  const chipEntries: ChipEntry[] = sorted.map(d => {
+  let primaryChipHtml = '';
+  const chipEntries: ChipEntry[] = [];
+  for (const d of sorted) {
     const bare = d.name.replace(/\.sui$/, '');
+    const isPrimary = primaryBare && bare.toLowerCase() === primaryBare;
     const matches = !hasFilter || bare.toLowerCase().includes(filterQ);
     // Pick shape: kiosk → blue-square, cap → black-diamond, nft → blue-square
     const shape: SkiDotVariant = d.kind === 'cap' ? 'black-diamond' : 'blue-square';
@@ -4475,12 +4662,15 @@ function _nsOwnedListHtml(): string {
       thunderHtml = `<span class="wk-ns-thunder-badge${pulseCls}" data-thunder-count="${_tcOn}" data-domain="${esc(bare)}" title="${_tcTotal} thunder${_tcTotal > 1 ? 's' : ''}${_tcOn > 0 ? ` (${_tcOn} pending)` : ''}">\u26c8\ufe0f${_tcTotal > 1 ? _tcTotal : ''}</span>`;
     }
     const kioskCls = d.inKiosk ? ' wk-ns-owned-chip--kiosk' : '';
+    const primaryCls = isPrimary ? ' wk-ns-owned-chip--primary' : '';
     const dimCls = hasFilter && !matches && _tcTotal <= 0 ? ' wk-ns-owned-chip--dim' : '';
-    return {
-      html: `<button class="wk-ns-owned-chip${kioskCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}${thunderHtml}</button>`,
-      matches,
-    };
-  });
+    const html = `<button class="wk-ns-owned-chip${kioskCls}${primaryCls}${dimCls}" data-domain="${esc(bare)}" type="button" title="${esc(d.name)}">${shapeSvg}${esc(bare)}${badge}${expiryHtml}${thunderHtml}</button>`;
+    if (isPrimary) {
+      primaryChipHtml = html;
+    } else {
+      chipEntries.push({ html, matches });
+    }
+  }
 
   // Shade order chips (red-hexagon) — sorted by executeAfterMs ascending
   // Always shown first and never dimmed by filter
@@ -4572,7 +4762,18 @@ function _nsOwnedListHtml(): string {
       : `<div id="wk-roster-qr" data-qr-addr="${esc(qrAddr)}"${actionAttr}${colorAttr}></div>`;
   }
 
-  return `<div class="wk-ns-owned-inner">${header}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
+  // Primary row sits between the header and the grid. When there's a
+  // primary it's the only thing in this row, gold-styled. When there's
+  // no primary the row simply doesn't render and the grid follows the
+  // header directly. The grid contains everything else (shades + non-
+  // primary owned + wishlist), so the visual stack is:
+  //   [Header: title | stats | tally]
+  //   [Primary chip, alone, gold]
+  //   [Grid: shades first, then everything else, column-wrap]
+  const primaryRowHtml = primaryChipHtml
+    ? `<div class="wk-ns-owned-primary-row">${primaryChipHtml}</div>`
+    : '';
+  return `<div class="wk-ns-owned-inner">${header}${primaryRowHtml}<div class="wk-ns-owned-grid">${chips.join('')}</div></div>`;
 }
 
 /** Clear the NS input and reset price/status when opening the roster. */
@@ -4606,6 +4807,14 @@ function _clearNsInput() {
 }
 
 const _rosterQrCache = new Map<string, string>();
+
+// Glaceon Lv.30 #141 — attachment blob-URL cache. Keyed by
+// `${messageId}:${attachIdx}` so re-renders reuse the decoded Blob URL
+// without re-fetching or re-decrypting via the Seal handle. Images are
+// auto-loaded on bubble paint; files load on click. Callers should
+// revokeObjectURL when a bubble is discarded, but we also rely on the
+// browser reclaiming blobs when the page unloads.
+const _attachBlobCache = new Map<string, { url: string; mime: string; fileName: string }>();
 
 /** Populate #wk-roster-qr if it has a data-qr-addr (cache miss). Caches SVG in memory for sync inline on next render. */
 function _loadRosterQr() {
@@ -4730,7 +4939,7 @@ async function _fetchCardBalance(addr: string): Promise<{ suiUsd: number; stable
     });
     const data = await res.json() as { data?: { address?: { balances?: { nodes?: Array<{ coinType: { repr: string }; totalBalance: string }> } } } };
     const nodes = data?.data?.address?.balances?.nodes ?? [];
-    const suiPrice = suiPriceCache?.price ?? 0;
+    const suiPrice = getSuiPriceWithFallback();
     let suiBal = 0;
     let stableUsd = 0;
     for (const n of nodes) {
@@ -4890,6 +5099,11 @@ function _showNftPopover(chip: HTMLElement, domainBare: string) {
 
 /** Sync NFT card to the input box value; fall back to most-thundered chip.
  *  Also manages conversation open/closed state on hard refresh. */
+// Cache of (addr → primary .sui bare) resolved via reverseLookupName.
+// Persisted across syncs so card re-renders don't re-hit the network.
+// `null` means "resolved, no primary" — we don't retry those.
+const _cardPrimaryCache = new Map<string, string | null>();
+
 function _syncNftCardToInput(forceShow = false) {
   const inputBare = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
   let domain = '';
@@ -4902,10 +5116,44 @@ function _syncNftCardToInput(forceShow = false) {
   // Don't auto-show card on background syncs — only on explicit user interaction
   if (!domain && !forceShow) { _hideNftPopover(true); return; }
   if (domain) {
+    // ── Card reflects the primary .sui of the owner/target ──
+    // When the user types `umbra` we don't want the card to show
+    // umbra in isolation — we want it to show the canonical identity
+    // for whoever OWNS or TARGETS umbra. Resolve owner/target's
+    // primary .sui and swap it in as the card's domain. Falls back
+    // to the typed name if no primary exists or the resolve is in
+    // flight.
+    const primaryAddr = (nsTargetAddress || nsNftOwner || '').toLowerCase();
+    let cardDomain = domain;
+    if (primaryAddr) {
+      const cached = _cardPrimaryCache.get(primaryAddr);
+      if (cached === undefined) {
+        // First time seeing this address — render with the typed
+        // name now, fire an async resolve, then re-render with the
+        // primary once the resolve settles.
+        (async () => {
+          try {
+            const { reverseLookupName } = await import('./client/thunder-stack.js');
+            const primary = await reverseLookupName(primaryAddr);
+            _cardPrimaryCache.set(primaryAddr, primary || null);
+            // Only re-render if the user is still looking at the
+            // same input — they may have typed something else.
+            if (nsLabel.trim().replace(/\.sui$/, '').toLowerCase() === inputBare) {
+              _syncNftCardToInput(forceShow);
+            }
+          } catch {
+            _cardPrimaryCache.set(primaryAddr, null);
+          }
+        })();
+      } else if (cached) {
+        cardDomain = cached;
+      }
+    }
     // Try to find the chip, but show card even without one
     const grid = document.querySelector('.wk-ns-owned-grid') as HTMLElement | null;
-    const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
-    _showNftPopover(chip || document.getElementById('ski-nft-inline')!, domain);
+    const chip = grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${cardDomain}"]`)
+      || grid?.querySelector<HTMLElement>(`.wk-ns-owned-chip[data-domain="${domain}"]`);
+    _showNftPopover(chip || document.getElementById('ski-nft-inline')!, cardDomain);
     _nftPopoverPinned = true;
   } else {
     _hideNftPopover(true);
@@ -5802,6 +6050,7 @@ function menuCopyAddress(e: Event) {
 function _treasuryPanelHtml(): string {
   const solPrice = getTokenPrice('SOL') ?? 82;
   const solUsd = app.solBalance > 0 ? (app.solBalance * solPrice).toFixed(2) : '0.00';
+  const solIusd = app.solIusdBalance > 0 ? app.solIusdBalance.toFixed(2) : '0.00';
   const totalRevenue = app.usd != null ? (app.usd * 0.05).toFixed(2) : '0.00'; // 5% of portfolio as proxy
 
   return `
@@ -5865,6 +6114,10 @@ function _treasuryPanelHtml(): string {
         <div class="wk-treasury-row">
           <span class="wk-treasury-key">SOL Balance</span>
           <span class="wk-treasury-val">${app.solBalance > 0 ? app.solBalance.toFixed(4) : '—'} SOL ($${solUsd})</span>
+        </div>
+        <div class="wk-treasury-row">
+          <span class="wk-treasury-key">iUSD (Solana)</span>
+          <span class="wk-treasury-val">${app.solIusdBalance > 0 ? app.solIusdBalance.toFixed(2) : '—'} iUSD ($${solIusd})</span>
         </div>
         <div class="wk-treasury-row">
           <span class="wk-treasury-key">Chains</span>
@@ -5997,6 +6250,10 @@ function renderSkiMenu() {
           try { localStorage.setItem(`ski:has-ika:${ws.address}`, app.ikaWalletId); } catch {}
           try { localStorage.setItem(`ski:ika-addrs:${ws.address}`, JSON.stringify({ btc: app.btcAddress, eth: app.ethAddress, sol: app.solAddress })); } catch {}
         }
+        // Cross-chain addresses just became available — trigger a fresh
+        // portfolio refresh so the BTC/ETH/TRON balance fetchers run.
+        // First refreshPortfolio on wallet connect had empty addresses.
+        refreshPortfolio(true).catch(() => {});
         render();
       }
     }).catch(() => { _dwalletCheckInFlight = false; });
@@ -6153,6 +6410,39 @@ function renderSkiMenu() {
     const stableBal = app.stableUsd < 1 ? app.stableUsd.toFixed(4) : app.stableUsd.toFixed(2);
     _coinChipsCache.push({ icon: stableIcon, val: app.stableUsd, html: _usdMode ? _fmtUsdChipHtml(app.stableUsd) : _fmtCoinHtml(app.stableUsd, 'wk-coin-frac--usd'), key: 'usd', colorCls: 'wk-coin-item--usd', tooltip: `${stableBal} USDC` });
   }
+
+  // Pending shade deposits — iUSD locked in StableShadeOrder<iUSD>
+  // objects waiting to execute. Surfaces in the dropdown so the
+  // user sees the $ attributed to their pending registrations,
+  // even though it isn't liquid.
+  try {
+    const _pendingShade = _coinChipsCache.some(c => c.key === 'shade');
+    if (!_pendingShade && _shadeDoState && _shadeDoState.orders?.length) {
+      const _suiPx = getSuiPriceWithFallback();
+      let _shadeUsd = 0;
+      for (const o of _shadeDoState.orders) {
+        if (o.status !== 'pending') continue;
+        const raw = Number(BigInt(o.depositMist || '0'));
+        if (o.isStable) {
+          _shadeUsd += raw / 1e9; // iUSD 1:1
+        } else {
+          _shadeUsd += (raw / 1e9) * _suiPx;
+        }
+      }
+      if (_shadeUsd >= 0.01) {
+        const _shadeTip = `${_shadeUsd.toFixed(2)} pending in shades`;
+        _coinChipsCache.push({
+          icon: stableIcon,
+          val: _shadeUsd,
+          html: _usdMode ? _fmtUsdChipHtml(_shadeUsd) : _fmtCoinHtml(_shadeUsd, 'wk-coin-frac--usd'),
+          key: 'shade',
+          colorCls: 'wk-coin-item--usd wk-coin-item--shade-pending',
+          tooltip: _shadeTip,
+        });
+      }
+    }
+  } catch { /* best-effort */ }
+
   _coinChipsCache.sort((a, b) => b.val - a.val);
   // Auto-select: if 'USD' (balView default), match the first stablecoin chip; otherwise highest value
   if (selectedCoinSymbol === 'USD' && _coinChipsCache.length) {
@@ -8456,55 +8746,49 @@ function renderSkiMenu() {
    *  deposit and the ShadeExecutorAgent alarm handles the
    *  rest). */
   async function _shadeCreate(address: string, label: string, btn?: HTMLButtonElement | null, executeAfterMs?: number) {
-    const price = suiPriceCache?.price;
-    if (!price || price <= 0) { showToast('SUI price unavailable \u2014 try again'); return; }
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
     const effectiveMs = executeAfterMs ?? nsGraceEndMs;
     try {
+      // Three-path Shade builder via Porygon-Z Barrier auto-dispatcher:
+      //   1. iUSD on Sui ≥ deposit → user signs, user owns.
+      //   2. iUSD short but SUI present → swap SUI → iUSD in-PTB, user
+      //      still signs and owns the resulting order.
+      //   3. Neither iUSD nor SUI → throw with an Agility hint pointing
+      //      the user at the cross-chain bridge (Solana → Sui iUSD).
+      // ALL THREE paths produce a brando-owned order. The legacy
+      // ultron-funded /api/cache/shade-proxy fallback is gone — it
+      // created ultron-owned orders that the user couldn't cancel and
+      // didn't show up in /api/shade/orders/:address for brando. Agility
+      // (#140) is the long-term answer for users with zero Sui-side
+      // liquidity.
       let txBytes: Uint8Array;
-      let orderInfo: Omit<ShadeOrderInfo, 'objectId'>;
+      let orderInfo: Omit<ShadeOrderInfo, 'objectId'> & { coinType?: string };
       try {
-        const result = await buildCreateShadeOrderTx(address, label, effectiveMs, price);
+        // Pre-compute the deposit target in iUSD mist (9 decimals + 10%
+        // slippage buffer). The auto dispatcher uses this as the swap
+        // target when routing through SUI; it ignores it when iUSD is
+        // already sufficient (case 1) since the legacy builder
+        // recomputes its own.
+        const priceUsd = await fetchDomainPriceUsd(label);
+        const targetStableMist = BigInt(Math.ceil(priceUsd * 1.10 * 1e9));
+        const result = await buildCreateStableShadeOrderAutoTx(
+          address, label, effectiveMs, targetStableMist,
+        );
         txBytes = result.txBytes;
         orderInfo = result.orderInfo;
       } catch (buildErr) {
         const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
-        if (msg.includes('Insufficient') || msg.includes('insufficient') || msg.includes('GasBalanceTooLow')) {
-          // User can't afford the SUI deposit — proxy via ultron
-          showToast(`\u26a1 Ultron fronting shade deposit for ${label}.sui\u2026`);
-          const proxyRes = await fetch('/api/cache/shade-proxy', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ label, targetAddress: address, graceEndMs: effectiveMs || undefined }),
-          });
-          const proxyJson = await proxyRes.json() as { digest?: string; orderId?: string; depositMist?: string; depositUsd?: number; error?: string };
-          if (proxyJson.error) throw new Error(proxyJson.error);
-          const proxyOrder: ShadeOrderInfo = {
-            objectId: proxyJson.orderId || `proxy:${proxyJson.digest}`,
-            domain: label,
-            owner: address,
-            depositMist: BigInt(proxyJson.depositMist || '0'),
-            executeAfterMs: effectiveMs,
-            targetAddress: address,
-            salt: '',
-          };
-          addShadeOrder(address, proxyOrder);
-          nsShadeOrder = proxyOrder;
-          nsShadeOrders.push({ ...proxyOrder });
-          _patchNsStatus();
-          _patchNsPrice();
-          _patchNsRoute();
-          _patchNsOwnedList();
-          showToast(`${label}.sui shaded via cache \u2713 (ultron deposit: $${(proxyJson.depositUsd ?? 0).toFixed(2)})`);
-          if (btn) { btn.disabled = false; btn.textContent = 'Shade'; }
-          return;
+        if (/no\s+iusd\s+or\s+sui/i.test(msg) || /fund.*agility/i.test(msg)) {
+          showToast(`\u26a1 Need iUSD or SUI on Sui side to shade ${label}.sui. Bridge from Solana via Agility.`);
+        } else {
+          showToast(`Shade failed: ${msg.length > 80 ? msg.slice(0, 80) + '\u2026' : msg}`);
         }
-        throw buildErr;
+        if (btn) { btn.disabled = false; btn.textContent = 'Shade'; }
+        return;
       }
       if (btn) btn.textContent = '\u270f';
-      const { digest, effects } = await signAndExecuteTransaction(txBytes);
-      let orderId = extractShadeOrderIdFromEffects(effects);
-      const placeholderId = orderId ?? `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+      const { digest } = await signAndExecuteTransaction(txBytes);
+      const placeholderId = `pending:${digest || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
       const fullOrder: ShadeOrderInfo = { ...orderInfo, objectId: placeholderId };
       addShadeOrder(address, fullOrder);
       nsShadeOrder = fullOrder;
@@ -8516,31 +8800,31 @@ function renderSkiMenu() {
       showToast(`${label}.sui shaded \u2713`);
       setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       const resolveAndSchedule = async () => {
-        if (!orderId && digest) {
-          orderId = await findCreatedShadeOrderId(digest);
-          if (orderId && orderId !== placeholderId) {
-            removeShadeOrder(address, placeholderId);
-            fullOrder.objectId = orderId;
-            addShadeOrder(address, fullOrder);
-            if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
-            const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
-            if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
-            else nsShadeOrders.push({ ...fullOrder });
-            _patchNsOwnedList();
-            try { cancelShadeExecution(placeholderId); } catch {}
-          }
+        // StableShadeOrder<T> — must resolve via findCreatedStableShadeOrderRef
+        // because scheduleStableShadeExecution needs initialSharedVersion.
+        if (!digest) return;
+        const ref = await findCreatedStableShadeOrderRef(digest);
+        if (!ref) {
+          console.warn('[Shade] failed to resolve StableShadeOrder ref from', digest);
+          return;
         }
-        const resolvedId = orderId ?? placeholderId;
-        // Connect WS for state updates (best-effort — don't block scheduling)
+        removeShadeOrder(address, placeholderId);
+        fullOrder.objectId = ref.objectId;
+        addShadeOrder(address, fullOrder);
+        if (nsShadeOrder?.objectId === placeholderId) nsShadeOrder = fullOrder;
+        const idx = nsShadeOrders.findIndex(o => o.objectId === placeholderId);
+        if (idx >= 0) nsShadeOrders[idx] = { ...fullOrder };
+        _patchNsOwnedList();
+        // Connect WS for completion notifications (best-effort)
         try {
           connectShadeExecutor(address, (state: ShadeExecutorState) => {
             _shadeDoState = state;
-            const doOrder = state.orders.find(o => o.objectId === resolvedId);
+            const doOrder = state.orders.find(o => o.objectId === ref.objectId);
             if (doOrder?.status === 'completed') {
               nsShadeOrder = null;
               _stopShadeCountdown();
-              removeShadeOrder(address, resolvedId);
-              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== resolvedId);
+              removeShadeOrder(address, ref.objectId);
+              nsShadeOrders = nsShadeOrders.filter(o => o.objectId !== ref.objectId);
               nsAvail = 'owned';
               _patchNsStatus();
               _patchNsPrice();
@@ -8549,24 +8833,24 @@ function renderSkiMenu() {
               showToast(`${fullOrder.domain}.sui auto-registered \u2713 ${doOrder.digest ? doOrder.digest.slice(0, 8) + '\u2026' : ''}`);
             }
           });
-        } catch { /* WS optional — scheduling uses HTTP fallback */ }
-        // Schedule with DO (tries WS RPC, falls back to HTTP POST)
+        } catch { /* WS optional */ }
         try {
-          const schedResult = await scheduleShadeExecution({
-            objectId: resolvedId,
+          const schedResult = await scheduleStableShadeExecution({
+            objectId: ref.objectId,
             domain: fullOrder.domain,
             executeAfterMs: fullOrder.executeAfterMs,
             targetAddress: fullOrder.targetAddress,
             salt: fullOrder.salt,
             ownerAddress: address,
             depositMist: String(fullOrder.depositMist),
-            preferredRoute: 'sui-ns',
+            initialSharedVersion: ref.initialSharedVersion,
+            coinType: ref.coinType || orderInfo.coinType,
           });
           if (!schedResult.success) {
-            console.warn('[Shade] DO scheduling failed:', schedResult.error);
+            console.warn('[Shade] DO scheduleStable failed:', schedResult.error);
           }
         } catch (schedErr) {
-          console.warn('[Shade] DO scheduling error:', schedErr);
+          console.warn('[Shade] DO scheduleStable error:', schedErr);
         }
       };
       resolveAndSchedule();
@@ -8601,33 +8885,74 @@ function renderSkiMenu() {
       const isWaapWallet = /waap/i.test(getState().walletName || '');
       const allOnChain = await fetchOnChainShadeOrders(address);
       const ordersToCxl = allOnChain.length > 0 ? allOnChain : [{ objectId: existingOrder.objectId, depositMist: String(existingOrder.depositMist) }];
-      let totalRefund = 0;
+      // Tally refunds per coin type so the toast can show the right
+      // currency unit + decimals. Stable orders are iUSD or USDC, NOT SUI.
+      const IUSD_TYPE_STR = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+      const refundsByCoin = new Map<string, { amount: number; label: string }>();
+      const addrLc = address.toLowerCase();
       let cancelled = 0;
       let lastDigest = '';
       let firstErr = '';
       for (const o of ordersToCxl) {
         try {
-          const tx = isWaapWallet
-            ? await buildCancelRefundShadeOrderTx(address, o.objectId)
-            : await buildCancelShadeOrderTx(address, o.objectId);
+          const isStable = (o as { stable?: boolean }).stable === true;
+          const coinType = (o as { coinType?: string }).coinType;
+          const orderOwner = String((o as { owner?: string }).owner ?? '').toLowerCase();
+          // Decimals per known stable type. iUSD = 9, USDC on Sui = 6.
+          // Default to 9 for unknown stables (matches iUSD assumption
+          // used elsewhere in the codebase).
+          const isUsdc = coinType?.toLowerCase().includes('::usdc::usdc');
+          const decimals = isStable ? (isUsdc ? 6 : 9) : 9;
+          const unitLabel = isStable ? (isUsdc ? 'USDC' : 'iUSD') : 'SUI';
+          // Ultron-owned legacy proxy orders: brando can't sign cancel
+          // (Move asserts ctx.sender == order.owner), so route through
+          // the server endpoint where ultron signs + forwards the iUSD
+          // back to brando. For brando-owned new orders, the standard
+          // user-signed path applies.
+          const isUltronOwned = orderOwner && orderOwner !== addrLc && isStable;
           if (btn) btn.textContent = `\u270f ${ordersToCxl.indexOf(o) + 1}/${ordersToCxl.length}`;
-          const result = await signAndExecuteTransaction(tx);
-          if (isWaapWallet) {
-            const cleanup = await reapCancelledShadeOrder(address, o.objectId);
-            if (!cleanup.success) {
-              const msg = (cleanup.error || 'Failed to delete cancelled shade object').toLowerCase();
-              if (!msg.includes('not found') && !msg.includes('already')) {
-                throw new Error(cleanup.error || 'Failed to delete cancelled shade object');
+          if (isUltronOwned) {
+            // Server-side ultron cancel + forward path
+            const res = await fetch('/api/cache/shade-cancel-stable', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ objectId: o.objectId, forwardToAddress: address }),
+            });
+            const j = await res.json() as { digest?: string; forwardDigest?: string; error?: string };
+            if (j.error) throw new Error(j.error);
+            if (j.forwardDigest) lastDigest = j.forwardDigest;
+            else if (j.digest) lastDigest = j.digest;
+          } else {
+            const tx = isStable
+              ? (isWaapWallet
+                  ? await buildCancelRefundStableShadeOrderTx(address, o.objectId, coinType)
+                  : await buildCancelStableShadeOrderTx(address, o.objectId, coinType))
+              : (isWaapWallet
+                  ? await buildCancelRefundShadeOrderTx(address, o.objectId)
+                  : await buildCancelShadeOrderTx(address, o.objectId));
+            const result = await signAndExecuteTransaction(tx);
+            if (isWaapWallet) {
+              const cleanup = await reapCancelledShadeOrder(address, o.objectId);
+              if (!cleanup.success) {
+                const msg = (cleanup.error || 'Failed to delete cancelled shade object').toLowerCase();
+                if (!msg.includes('not found') && !msg.includes('already')) {
+                  throw new Error(cleanup.error || 'Failed to delete cancelled shade object');
+                }
               }
+              if (cleanup.digest) lastDigest = cleanup.digest;
+            } else if (result.digest) {
+              lastDigest = result.digest;
             }
-            if (cleanup.digest) lastDigest = cleanup.digest;
-          } else if (result.digest) {
-            lastDigest = result.digest;
           }
           _shadeCancelledIds.add(o.objectId); _persistShadeCancelled();
           removeShadeOrder(address, o.objectId);
           try { cancelShadeExecution(o.objectId); } catch { /* best-effort */ }
-          totalRefund += Number(o.depositMist) / 1e9;
+          // Tally refund in the right coin's units
+          const key = coinType ?? IUSD_TYPE_STR;
+          const prev = refundsByCoin.get(key) ?? { amount: 0, label: unitLabel };
+          prev.amount += Number(o.depositMist) / Math.pow(10, decimals);
+          prev.label = unitLabel;
+          refundsByCoin.set(key, prev);
           cancelled++;
         } catch (err) {
           const raw = err instanceof Error ? err.message : String(err);
@@ -8644,7 +8969,10 @@ function renderSkiMenu() {
         _patchNsStatus();
         _patchNsPrice();
         _patchNsRoute();
-        showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${totalRefund.toFixed(2)} SUI refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
+        const refundParts = Array.from(refundsByCoin.values())
+          .map(r => `${r.amount.toFixed(2)} ${r.label}`)
+          .join(' + ');
+        showToast(`${cancelled} shade order${cancelled > 1 ? 's' : ''} cancelled \u2014 ${refundParts || '0'} refunded ${lastDigest ? lastDigest.slice(0, 8) + '\u2026' : ''}`);
         setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_SHORT_MS);
       } else if (firstErr) {
         showToast(firstErr);
@@ -8875,10 +9203,49 @@ function renderSkiMenu() {
     const domain = label.endsWith('.sui') ? label : `${label}.sui`;
     if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
 
+    // Mirror signing state onto the idle overlay MINT button so users
+    // see feedback while the wallet popup is awaiting their signature.
+    // Hover reveals a Cancel affordance that resets UI state (the wallet
+    // popup itself must still be dismissed by the user — WaaP/Phantom
+    // don't honor AbortController).
+    const idleBtn = document.getElementById('ski-idle-action') as HTMLButtonElement | null;
+    let signingCancelled = false;
+    let signingTimeout: number | null = null;
+    const resetSigning = () => {
+      if (!idleBtn || idleBtn.dataset.signing !== '1') return;
+      delete idleBtn.dataset.signing;
+      idleBtn.className = idleBtn.dataset.signingPrevClass || 'ski-idle-ns-action ski-idle-ns-action--mint';
+      idleBtn.textContent = idleBtn.dataset.signingPrevText || 'MINT';
+      delete idleBtn.dataset.signingPrevClass;
+      delete idleBtn.dataset.signingPrevText;
+      if (signingTimeout != null) { window.clearTimeout(signingTimeout); signingTimeout = null; }
+      idleBtn.removeEventListener('click', onCancelClick, true);
+    };
+    const onCancelClick = (ev: Event) => {
+      if (!idleBtn || idleBtn.dataset.signing !== '1') return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      signingCancelled = true;
+      resetSigning();
+      showToast('Mint cancelled — dismiss the wallet popup if still open');
+    };
+    if (idleBtn) {
+      idleBtn.dataset.signingPrevText = idleBtn.textContent || 'MINT';
+      idleBtn.dataset.signingPrevClass = idleBtn.className;
+      idleBtn.dataset.signing = '1';
+      idleBtn.className = 'ski-idle-ns-action ski-idle-ns-action--signing';
+      idleBtn.innerHTML = '<span class="ski-signing-text">Signing\u2026</span><span class="ski-signing-cancel">Cancel</span>';
+      idleBtn.disabled = false;
+      idleBtn.title = 'Signing — hover to cancel';
+      idleBtn.addEventListener('click', onCancelClick, true);
+      signingTimeout = window.setTimeout(() => { resetSigning(); }, 30000);
+    }
+
     try {
       // Force fresh price — stale localStorage price causes insufficient coin splits
       const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
       const result = await buildRegisterSplashNsTx(ws2.address, domain, freshPrice, !app.suinsName, selectedCoinSymbol ?? undefined);
+      if (signingCancelled) throw new Error('cancelled');
       if (btn) btn.textContent = '\u270f';
       let digest: string;
       if (result.sponsorAddress) {
@@ -8889,6 +9256,7 @@ function renderSkiMenu() {
         const { digest: d } = await signAndExecuteTransaction(result.txBytes);
         digest = d;
       }
+      if (signingCancelled) throw new Error('cancelled');
       // Update NS row: blue square status + show tx digest
       nsAvail = 'owned';
       nsTargetAddress = ws2.address;
@@ -8907,12 +9275,13 @@ function renderSkiMenu() {
       refreshPortfolio(true);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
-      if (!raw.toLowerCase().includes('reject')) {
+      if (!raw.toLowerCase().includes('reject') && raw !== 'cancelled') {
         const { display, full } = parseNsError(raw);
         showCopyableToast(display, full);
       }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '\u2192'; }
+      resetSigning();
     }
   });
 
@@ -8938,6 +9307,15 @@ function renderSkiMenu() {
   if (!nsShadeOrdersPruned && ws.address) {
     nsShadeOrdersPruned = true;
     pruneShadeOrders(ws.address).catch(() => {});
+    // Aggressive recall: poke the server-side iou-sweeper so any
+    // expired Thunder IOU / ShieldedVault outbound from this wallet
+    // (or anyone) comes home immediately instead of waiting up to
+    // 10 min for the cron. Fire-and-forget — logs result on success.
+    pokeIouSweeper().then((r) => {
+      if (r.recalled && r.recalled > 0) {
+        showToast(`Recalled ${r.recalled} expired Thunder escrow${r.recalled > 1 ? 's' : ''}`);
+      }
+    }).catch(() => {});
     nsShadeOrder = findShadeOrder(ws.address, nsLabel.trim());
 
     // Auto-schedule recovery — ensure all pending orders are registered with the DO
@@ -9362,11 +9740,15 @@ function render() {
     if (!getState().address) { openModal(); return; }
     const href = skiHref();
     if (app.suinsName) {
+      // Connected with a SuiNS name → open profile in new tab
       window.open(href, '_blank', 'noopener,noreferrer');
-    } else if (window.location.hostname === 'sui.ski') {
-      window.location.reload();
     } else {
-      window.open(href, '_blank', 'noopener,noreferrer');
+      // Connected without a SuiNS name → open the modal so they
+      // can register one. Previously this branch did a hard
+      // location.reload() which restarted the idle video and
+      // every other reactive component, creating visible jitter.
+      // The modal is the right surface for this state.
+      openModal();
     }
   });
 }
@@ -9536,10 +9918,21 @@ function bindEvents() {
   // Idle screensaver — show SKI pixel art over menu
   let _idleTimer: ReturnType<typeof setTimeout> | null = null;
   const IDLE_MS = 15_000; // 15 seconds
+  // Snorlax #144 — every _showIdleOverlay() call re-attaches window
+  // listeners that close over that mount's `_cardCurrentName` and
+  // other local state. Without a generation guard, old listeners
+  // from prior mounts survive the remount and fire on later events
+  // (balance poll, ownership-changed, etc.) with stale captured
+  // names — clobbering the current card back to a previously-typed
+  // name. Listeners now capture `_myGen` at mount time and early-
+  // return unless `_idleOverlayGen` still matches.
+  let _idleOverlayGen = 0;
 
   const _showIdleOverlay = () => {
       if (!app.skiMenuOpen && !getState().address && !localStorage.getItem('ski:last-address')) return;
       if (_idleOverlay) { _idleOverlay.remove(); document.getElementById('ski-idle-card')?.remove(); _idleOverlay = null; document.querySelector<HTMLElement>('.ski-header')?.style.removeProperty('--ski-header-w'); document.getElementById('wk-dd-ns-section')?.classList.remove('wk-dd-ns-section--elevated'); }
+      const _myGen = ++_idleOverlayGen;
+      const _isStaleIdleMount = () => _idleOverlayGen !== _myGen;
       // Ensure menu is open
       if (!app.skiMenuOpen && getState().address) {
         app.skiMenuOpen = true;
@@ -9581,24 +9974,26 @@ function bindEvents() {
       // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
       const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
-      // Auto-populate: clear invalid/short labels, default to primary or highest-signal owned name
+      // Input populates from the last-searched label only — the card
+      // and input follow user intent, never auto-fill from the
+      // wallet's primary. Blank is the correct default state.
+      //
+      // Invalid/too-short persisted values are cleared so stale
+      // single-char junk doesn't resurrect across sessions.
       let _idleInputVal = nsLabel.trim();
       if (_idleInputVal && (_idleInputVal.length < 3 || !isValidNsLabel(_idleInputVal))) {
         _idleInputVal = '';
         nsLabel = '';
         try { localStorage.removeItem('ski:ns-label'); } catch {}
       }
-      if (!_idleInputVal && app.suinsName) {
-        _idleInputVal = app.suinsName.replace(/\.sui$/, '');
-      }
-      if (!_idleInputVal && nsOwnedDomains.length > 0) {
-        const topName = [...nsOwnedDomains]
-          .map(d => {
-            const b = d.name.replace(/\.sui$/, '').toLowerCase();
-            return { bare: b, score: (_thunderCounts[b] ?? 0) };
-          })
-          .sort((a, b) => b.score - a.score)[0];
-        if (topName && topName.score > 0) _idleInputVal = topName.bare;
+      if (!_idleInputVal) {
+        try {
+          const saved = localStorage.getItem('ski:ns-label') || '';
+          if (saved && isValidNsLabel(saved)) {
+            _idleInputVal = saved;
+            nsLabel = saved;
+          }
+        } catch {}
       }
 
       _idleOverlay.innerHTML = `
@@ -9639,11 +10034,11 @@ function bindEvents() {
           <div class="ski-idle-ns-sweep" id="ski-idle-ns-sweep" hidden><button class="ski-idle-ns-sweep-btn" id="ski-idle-ns-sweep-btn" type="button" title="Swap NS to iUSD in your wallet"><span class="ski-idle-ns-sweep-icon">\u{1F9F9}</span><span class="ski-idle-ns-sweep-label">Cache $<span id="ski-idle-ns-sweep-amt">0</span> NS</span></button></div>
           <div class="ski-idle-thunder-quick-amts" id="ski-idle-thunder-quick-amts">
             <div class="ski-idle-thunder-quick-amts-top">
+              <button class="ski-idle-thunder-quick-amt" data-amt="0.01" type="button" title="Send $0.01">$0.01</button>
               <button class="ski-idle-thunder-quick-amt" data-amt="1" type="button" title="Send $1">$1</button>
               <button class="ski-idle-thunder-quick-amt" data-amt="7.5" type="button" title="Send $7.50">$7.50</button>
             </div>
             <div class="ski-idle-thunder-quick-amts-bottom">
-              <button class="ski-idle-thunder-quick-amt" data-amt="0.01" type="button" title="Send $0.01">$0.01</button>
               <button class="ski-idle-thunder-quick-amt ski-idle-thunder-quick-amt--recall" id="ski-idle-recall-btn" type="button" title="Recall all unclaimed vaults">\u21A9</button>
             </div>
           </div>
@@ -9653,7 +10048,7 @@ function bindEvents() {
               <button class="ski-idle-quick-btn ski-idle-quick-btn--squid" type="button" title="Squids" data-action="rumble">\ud83e\udd91</button>
               <button class="ski-idle-thunder-at-iusd ski-idle-quick-btn ski-idle-quick-btn--iusd" id="ski-idle-thunder-at-iusd" type="button" title="Attach amount">$</button>
               <button class="ski-idle-quick-btn ski-idle-quick-btn--attach" id="ski-idle-thunder-attach" type="button" title="Attach files">\ud83d\udcce</button>
-              <input id="ski-idle-thunder-file-input" type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.json,.md" style="display:none">
+              <input id="ski-idle-thunder-file-input" type="file" multiple accept="*/*" style="display:none">
             </div>
             <div class="ski-idle-thunder-input-wrap">
               <input class="ski-idle-thunder-input" id="ski-idle-thunder" type="text" placeholder="" spellcheck="false" autocomplete="off" title="Send an encrypted thunder">
@@ -9714,25 +10109,33 @@ function bindEvents() {
       };
 
       // NS cache banner: show whenever the user holds non-dust NS.
-      // Label reads "Cache $X.XX NS" where $X.XX is the live USD
-      // value of their NS holdings (nsBalance × nsPriceUsd). Tapping
-      // the banner runs ski.sweepNsToCache() which atomically swaps
-      // NS → iUSD and sends the iUSD right back to the user's own
-      // wallet (not ultron's cache — the user is the cache).
+      // Label reads "Cache $X NS" where $X is the live USD market
+      // value of the wallet's NS **token** holdings — what a sweep
+      // through the DeepBook NS/USDC pool would actually return.
+      //
+      // Prior bug: multiplied nsBalance by `nsPriceUsd`, which is the
+      // DOMAIN REGISTRATION price of whatever name the user is
+      // currently viewing. Two unrelated units — e.g. 6.6 NS tokens ×
+      // $10 "superteam.sui" registration = $66 phantom. Dollars shown
+      // would change just by searching a different name.
+      //
+      // Correct source: getTokenPrice('NS') — the NS token's market
+      // price, same function that feeds the portfolio's tokensUsd
+      // aggregate at ui.ts:3158.
       const _updateNsSweepBanner = () => {
         const banner = _idleOverlay?.querySelector('#ski-idle-ns-sweep') as HTMLElement | null;
         const amtEl = _idleOverlay?.querySelector('#ski-idle-ns-sweep-amt') as HTMLElement | null;
         if (!banner || !amtEl) return;
         const ns = app.nsBalance ?? 0;
-        // Dust floor: 0.01 NS. Below that, no banner.
-        if (ns < 0.01) {
+        const nsTokenUsd = getTokenPrice('NS') ?? 0;
+        const usd = ns * nsTokenUsd;
+        // USD dust floor: < $1 of NS isn't worth a sweep tx's gas.
+        // Hides the banner entirely for dust holdings.
+        if (usd < 1) {
           banner.setAttribute('hidden', '');
           return;
         }
-        const nsPrice = nsPriceUsd ?? 0;
-        const usd = ns * nsPrice;
-        // Sub-dollar → show two decimals ("0.05"), ≥ $1 → no decimals.
-        amtEl.textContent = usd >= 1 ? Math.round(usd).toLocaleString() : usd.toFixed(2);
+        amtEl.textContent = Math.round(usd).toLocaleString();
         banner.removeAttribute('hidden');
       };
 
@@ -10245,7 +10648,10 @@ function bindEvents() {
       let _activeStormCounterpartyAddr = '';
       const _CARD_BAL_TTL = 60_000; // 1 min in-memory cache
       const _CARD_BAL_PERSIST_TTL = 30 * 60 * 1000; // 30 min localStorage cache
-      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v1:${label.toLowerCase()}`;
+      // v2 bump: v1 entries baked with the SUI-price=0 bug need to be
+      // invalidated so recalled funds reappear without waiting for the
+      // 30-min persist TTL.
+      const _CARD_BAL_KEY = (label: string) => `ski:card-bal:v2:${label.toLowerCase()}`;
       const _loadCardBalPersisted = (label: string): { usd: number; addr: string } | null => {
         try {
           const raw = localStorage.getItem(_CARD_BAL_KEY(label));
@@ -10314,7 +10720,7 @@ function bindEvents() {
           const _balLabel = _bal >= 1 ? Math.round(_bal).toLocaleString() : _bal.toFixed(2);
           const balHtml = `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_balLabel}</span></span> `;
           const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
-          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+          const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
           const _recallBtn = `<button class="ski-idle-card-recall" id="ski-idle-recall-vaults" type="button" title="Recall all unclaimed vaults">\u21A9</button>`;
           card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${_recallBtn}`;
           return;
@@ -10349,7 +10755,7 @@ function bindEvents() {
         const _cb = Math.max(0, cachedBal);
         const _cbLabel = cachedBal < 0 ? '\u2026' : (_cb >= 1 ? Math.round(_cb).toLocaleString() : _cb.toFixed(2));
         const cachedBalHtml = `<span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_cbLabel}</span>`;
-        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="16" height="16" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.5"/></svg></button>`;
+        const _atBtn2 = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
         card.innerHTML = `${_atBtn2}<span class="ski-idle-card-name" title="Populate input">${esc(name)}</span><span class="ski-idle-card-bal" id="ski-idle-card-bal">${cachedBalHtml}</span>${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}`;
 
         // Skip the fetch only when in-memory cache is still fresh. A
@@ -10374,7 +10780,7 @@ function bindEvents() {
             });
             const gql2 = await r2.json() as any;
             let totalUsd = 0;
-            const price = suiPriceCache?.price ?? 0.87;
+            const price = getSuiPriceWithFallback();
             const SUI_CT = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
             const USDC_CT = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
             const IUSD_CT = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
@@ -10390,8 +10796,9 @@ function bindEvents() {
               else if (ct === DEEP_CT) totalUsd += (Number(raw) / 1e6) * 0.03;
             }
             const ws = getState();
-            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase() && app.solBalance > 0) {
-              totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
+            if (ws.address && addr?.toLowerCase() === ws.address.toLowerCase()) {
+              if (app.solBalance > 0) totalUsd += app.solBalance * (getTokenPrice('SOL') ?? 83);
+              if (app.solIusdBalance > 0) totalUsd += app.solIusdBalance; // iUSD is $1 peg
             }
             // Cache the balance (memory + persisted)
             _cardBalCache = { addr, usd: totalUsd, ts: Date.now() };
@@ -10729,12 +11136,13 @@ function bindEvents() {
       let _rosterWheelBound = false;
 
       const _renderRosterChip = ({ name, expirationMs, primary }: _RosterEntry) => {
-        // Sableye Lv.50 — black diamond for names in the private
-        // interaction set. Synchronous lookup against the warmed
-        // cache; falls back to blue square if cache not yet loaded.
-        const _bareChip = name.replace(/\.sui$/, '').toLowerCase();
+        // Sableye Lv.50 — black diamond for privately interacted names.
+        // Synchronous lookup against the warmed cache; falls back to
+        // the default blue square if cache hasn't loaded yet (the next
+        // roster open will pick up the right glyph).
+        const _bare = name.replace(/\.sui$/, '').toLowerCase();
         const _isPrivate = (() => {
-          try { return _sableyeMod?.hasSableye?.(_bareChip) === true; } catch { return false; }
+          try { return _sableyeMod?.hasSableye?.(_bare) === true; } catch { return false; }
         })();
         const shape = _shapeOnlySvg(_isPrivate ? 'black-diamond' : 'blue-square', 14);
         let expiryTag = '';
@@ -10757,22 +11165,89 @@ function bindEvents() {
         return `<button class="ski-idle-roster-item${itemCls}" data-name="${esc(name)}" type="button">${shape} ${esc(name)}${expiryTag}</button>`;
       };
 
+      // Render a shade order chip for the idle roster — red-hexagon variant
+      // with countdown to grace expiry. Mirrors the SKI menu roster's shade
+      // chip but uses the idle roster's chip CSS so it slots into the grid
+      // cleanly. Always rendered first so users see in-flight shades at a
+      // glance without opening the SKI menu.
+      const _renderIdleShadeChip = (shade: ShadeOrderInfo) => {
+        const bare = shade.domain || '???';
+        const shape = _shapeOnlySvg('red-hexagon', 14);
+        let countdownTag = '';
+        if (shade.executeAfterMs > 0) {
+          const msLeft = shade.executeAfterMs - Date.now();
+          if (msLeft > 0) {
+            const h = Math.floor(msLeft / 3_600_000);
+            const m = Math.floor((msLeft % 3_600_000) / 60_000);
+            const s = Math.floor((msLeft % 60_000) / 1000);
+            const txt = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            countdownTag = `<span class="ski-idle-roster-expiry ski-idle-roster-expiry--urgent">${txt}</span>`;
+          } else {
+            countdownTag = `<span class="ski-idle-roster-expiry ski-idle-roster-expiry--urgent">ready</span>`;
+          }
+        }
+        return `<button class="ski-idle-roster-item ski-idle-roster-item--shade" data-name="${esc(bare)}" data-shade="1" type="button">${shape} ${esc(bare)}${countdownTag}</button>`;
+      };
+
       const _populateRoster = (rosterPanel: HTMLElement, names: _RosterEntry[], targetAddr: string) => {
-        if (names.length === 0) {
+        if (names.length === 0 && nsShadeOrders.length === 0) {
           rosterPanel.innerHTML = '<div class="ski-idle-roster-empty">No names found</div>';
         } else {
-          rosterPanel.innerHTML = names.map(n => _renderRosterChip(n)).join('');
+          // Split: primary into its own top row, others into the grid below.
+          // Shade orders go in the grid at the very front so they're visible
+          // without opening the SKI menu. Sort shades by executeAfterMs asc
+          // (most urgent first).
+          const primaryEntry = names.find(n => n.primary);
+          const otherEntries = names.filter(n => !n.primary);
+          const sortedShades = [...nsShadeOrders].sort(
+            (a, b) => (a.executeAfterMs || Infinity) - (b.executeAfterMs || Infinity),
+          );
+          const shadeChipsHtml = sortedShades.map(_renderIdleShadeChip).join('');
+          const otherChipsHtml = otherEntries.map(n => _renderRosterChip(n)).join('');
+          const primaryRowHtml = primaryEntry
+            ? `<div class="ski-idle-roster-primary-row">${_renderRosterChip(primaryEntry)}</div>`
+            : '';
+          const gridHtml = `<div class="ski-idle-roster-grid">${shadeChipsHtml}${otherChipsHtml}</div>`;
+          rosterPanel.innerHTML = primaryRowHtml + gridHtml;
         }
 
         // Bind horizontal wheel scroll (once)
         if (!_rosterWheelBound) {
           _rosterWheelBound = true;
+          // After Eevee Charm V the panel itself is a flex column —
+          // its primary row + grid stack vertically. The actual
+          // horizontal-scrolling element is the inner .ski-idle-roster-grid,
+          // not the outer panel. Look up the grid on each wheel event
+          // (re-render replaces the inner HTML each time the roster opens)
+          // and scroll IT instead. Vertical wheel deltas + horizontal wheel
+          // deltas both feed scrollLeft so trackpad and mouse wheel work.
           rosterPanel.addEventListener('wheel', (we) => {
-            if (rosterPanel.scrollWidth > rosterPanel.clientWidth) {
+            const grid = rosterPanel.querySelector('.ski-idle-roster-grid') as HTMLElement | null;
+            if (!grid) return;
+            if (grid.scrollWidth > grid.clientWidth) {
               we.preventDefault();
-              rosterPanel.scrollLeft += (we as WheelEvent).deltaY;
+              const wEv = we as WheelEvent;
+              const delta = Math.abs(wEv.deltaX) > Math.abs(wEv.deltaY) ? wEv.deltaX : wEv.deltaY;
+              grid.scrollLeft += delta;
             }
           }, { passive: false });
+          // Touch swipe → horizontal scroll on the grid. Mobile users can't
+          // use the wheel; this catches them. Tracks the X delta from
+          // touchstart and applies it to grid.scrollLeft each touchmove.
+          let _touchStartX = 0;
+          let _touchStartScroll = 0;
+          let _touchTargetGrid: HTMLElement | null = null;
+          rosterPanel.addEventListener('touchstart', (te) => {
+            _touchTargetGrid = rosterPanel.querySelector('.ski-idle-roster-grid');
+            if (!_touchTargetGrid) return;
+            _touchStartX = (te as TouchEvent).touches[0]?.clientX ?? 0;
+            _touchStartScroll = _touchTargetGrid.scrollLeft;
+          }, { passive: true });
+          rosterPanel.addEventListener('touchmove', (te) => {
+            if (!_touchTargetGrid) return;
+            const x = (te as TouchEvent).touches[0]?.clientX ?? 0;
+            _touchTargetGrid.scrollLeft = _touchStartScroll - (x - _touchStartX);
+          }, { passive: true });
         }
 
         // Click a name → lazy resolve as 'taken', set state directly, no network calls
@@ -11051,14 +11526,183 @@ function bindEvents() {
           if (!name) return;
           window.dispatchEvent(new CustomEvent('ski:request-suiami', { detail: { name } }));
         } else if (btnText === 'TRADE') {
-          // Marketplace purchase via /api/infer — server reads real on-chain balances
+          // TRADE on a listed name = direct marketplace purchase using SUI.
+          // Tradeport/kiosk listings mean the NFT is owned and kiosk-wrapped;
+          // /api/infer's resolver sometimes returns `nameStatus: available`
+          // for these (it can't see through the wrap), which used to make
+          // us fall through to the NS registration path and abort with
+          // "Rumble Balance" errors. Short-circuit that: if we resolved
+          // a listing while rendering, buy it directly — no infer, no NS.
           e.stopPropagation();
           const ws = getState();
           if (!ws.address) { showToast('Connect wallet first'); return; }
           _idleActionBtn!.disabled = true;
           _idleActionBtn!.textContent = '\u2026';
+
+          if (nsTradeportListing || nsKioskListing) {
+            try {
+              const domain = `${label}.sui`;
+              const priceMistStr = (nsKioskListing ?? nsTradeportListing)!.priceMist;
+              const priceSui = Number(BigInt(priceMistStr)) / 1e9;
+              // Refresh SUI price so the displayed USD matches the
+              // card and nothing gets computed against a stale cache.
+              const freshSuiP = (await fetchSuiPrice()) ?? suiPriceCache?.price ?? 0;
+              if (!freshSuiP || freshSuiP <= 0) {
+                showToast('SUI price unavailable — try again in a moment');
+                return;
+              }
+              // Match the card affordability math at ~10200: source
+              // includes the 3% Tradeport fee so the toast aligns
+              // with "Trade $X" displayed on the button title.
+              const fee = nsTradeportListing ? priceSui * 0.03 : 0;
+              const totalSui = priceSui + fee;
+              const priceUsd = totalSui * freshSuiP;
+              showToast(`\u{1F6CD}\u{FE0F} Buying ${domain} for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)})\u2026`);
+              const purchase = nsKioskListing
+                ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: priceMistStr }
+                : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: priceMistStr };
+
+              // Pre-compute how much iUSD to burn via Volcarodon PSM.
+              // PSM is 1:1 minus fee, capped by the reserve's USDC
+              // balance. Query live state so the PTB can't abort on
+              // EInsufficientReserve.
+              const IUSD_TYPE_UI = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+              const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+              const PSM_RESERVE_ID = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+              const addrN = (await import('@mysten/sui/utils')).normalizeSuiAddress(ws.address);
+              const rpcBody = (id: number, method: string, params: any[]) =>
+                JSON.stringify({ jsonrpc: '2.0', id, method, params });
+              const [suiRes, usdcRes, iusdRes, reserveRes] = await Promise.all([
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(1, 'suix_getBalance', [addrN, '0x2::sui::SUI']) }),
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(2, 'suix_getBalance', [addrN, USDC_TYPE]) }),
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(3, 'suix_getBalance', [addrN, IUSD_TYPE_UI]) }),
+                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(4, 'sui_getObject', [PSM_RESERVE_ID, { showContent: true }]) }),
+              ]);
+              const suiBal = BigInt(((await suiRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
+              const usdcBal = BigInt(((await usdcRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
+              const iusdBal = BigInt(((await iusdRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
+              const reserveFields = ((await reserveRes.json()) as { result?: { data?: { content?: { fields?: { s_balance?: string; fee_bps?: string } } } } }).result?.data?.content?.fields;
+              const reserveUsdc = BigInt(reserveFields?.s_balance ?? '0');
+              const psmFeeBps = BigInt(reserveFields?.fee_bps ?? '50');
+
+              // Compute SUI shortfall, then USDC needed to swap to cover it.
+              const priceMistBig = BigInt(priceMistStr);
+              const gasBuf = 100_000_000n; // 0.1 SUI
+              const suiAccum = suiBal > gasBuf ? suiBal - gasBuf : 0n;
+              const suiShortfall = suiAccum < priceMistBig ? (priceMistBig - suiAccum) : 0n;
+              const suiShortfallWithBuf = suiShortfall + (suiShortfall * 200n / 10000n); // 2% slippage
+              const usdcNeededForSwap = BigInt(Math.ceil((Number(suiShortfallWithBuf) / 1e9) * freshSuiP * 1e6));
+
+              // Extra USDC we need to source from iUSD PSM burn.
+              let iusdBurnMist = 0n;
+              if (usdcBal < usdcNeededForSwap) {
+                const usdcShortfall = usdcNeededForSwap - usdcBal;
+                if (usdcShortfall > reserveUsdc) {
+                  showToast(`PSM reserve too small: need $${(Number(usdcShortfall) / 1e6).toFixed(2)} more USDC, reserve has $${(Number(reserveUsdc) / 1e6).toFixed(2)}`);
+                  return;
+                }
+                // iUSD needed to produce `usdcShortfall` USDC net of fee.
+                // gross_usdc = usdcShortfall × 10000 / (10000 - fee_bps)
+                // iusd_mist = gross_usdc × 1000  (USDC 6dp → iUSD 9dp)
+                const grossUsdc = (usdcShortfall * 10000n) / (10000n - psmFeeBps) + 1n;
+                iusdBurnMist = grossUsdc * 1000n;
+                if (iusdBurnMist > iusdBal) {
+                  showToast(`Insufficient iUSD: need ${(Number(iusdBurnMist) / 1e9).toFixed(2)}, have ${(Number(iusdBal) / 1e9).toFixed(2)}`);
+                  return;
+                }
+                if (iusdBurnMist > 0n) {
+                  showToast(`\u{1F525} Burning ${(Number(iusdBurnMist) / 1e9).toFixed(2)} iUSD via PSM + swapping USDC \u2192 SUI \u2026`);
+                }
+              }
+
+              const txBytes = await buildIusdBurnAndPurchaseTx(ws.address, purchase, freshSuiP, iusdBurnMist);
+              _idleActionBtn!.textContent = '\u270f';
+              const { digest } = await signAndExecuteTransaction(txBytes);
+              nsAvail = 'owned'; nsTargetAddress = ws.address; nsLastDigest = digest ?? '';
+              nsKioskListing = null; nsTradeportListing = null;
+              app.suinsName = app.suinsName || domain;
+              showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)}) \u2713`);
+              _updateIdleStatus();
+              setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+
+              // ── Auto-follow-up: configure records on the newly acquired name ──
+              //
+              // Tradeport v2 `listings::buy` is `return: []` — the NFT is
+              // transferred internally inside the Move call, so the buy PTB
+              // has no NFT handle to chain setTargetAddress onto. A second
+              // transaction is the only way to point the new name at the
+              // buyer's wallet; without it anyone resolving `${domain}` via
+              // SuiNS will still hit the seller.
+              //
+              // Critical realization: we don't need to parse objectChanges
+              // to find the new NFT's object id. The listing's `nftTokenId`
+              // (for Tradeport) or `nftId` (for kiosk) IS the object id of
+              // the SuinsRegistration — the tx just transfers it to us, the
+              // object identity doesn't change. The earlier version of this
+              // follow-up tried to find the NFT by scanning the tx's object
+              // changes and failed because the Tradeport kiosk-unwrap path
+              // doesn't emit a `recipient` field in the shape the scanner
+              // expected. Using the listing id directly bypasses the whole
+              // parsing problem.
+              //
+              // Fire-and-forget so a follow-up failure (user rejects, roster
+              // aborts, propagation lag, etc.) never rolls back or blocks
+              // the trade. If it fails the user still owns the name; they
+              // can run window.configureNameRecords('${label}') from the
+              // browser console to retry (exposed from src/ski.ts).
+              //
+              // Privacy: the SUIAMI Roster entry written here only exposes
+              // (name → sui address) on-chain — the BTC/ETH/SOL squid data
+              // lives Seal-encrypted in a referenced Walrus blob, reusing
+              // the buyer's existing blob when present so no extra payload
+              // is uploaded and no new decryption surface is created.
+              const newNftId = purchase.type === 'kiosk' ? purchase.nftId : purchase.nftTokenId;
+              (async () => {
+                try {
+                  showToast(`\u{1F527} Configuring ${domain} records\u2026`);
+                  // Small propagation beat so the new owner indexes settle
+                  // before the configure PTB references the NFT object.
+                  await new Promise(r => setTimeout(r, 2000));
+                  const { buildPostTradeConfigureTx, fetchExistingSquidConfig } = await import('./suins.js');
+                  const existingCfg = await fetchExistingSquidConfig(ws.address);
+                  const cfgBytes = await buildPostTradeConfigureTx({
+                    sender: ws.address,
+                    nftId: newNftId,
+                    domain,
+                    walrusBlobId: existingCfg?.walrusBlobId,
+                    sealNonce: existingCfg?.sealNonce,
+                    writeRoster: true,
+                  });
+                  await signAndExecuteTransaction(cfgBytes);
+                  const hasSquids = !!(existingCfg?.walrusBlobId);
+                  showToast(
+                    hasSquids
+                      ? `\u2713 ${domain} records set \u2014 SUIAMI squids linked`
+                      : `\u2713 ${domain} points at your wallet`,
+                  );
+                } catch (cfgErr) {
+                  const msg = cfgErr instanceof Error ? cfgErr.message : String(cfgErr);
+                  console.warn('[trade-configure] follow-up failed:', msg);
+                  if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+                    showCopyableToast(`${domain} configure failed \u2014 run configureNameRecords('${label}') in console to retry`, msg);
+                  }
+                }
+              })();
+            } catch (err) {
+              const raw = err instanceof Error ? err.message : String(err);
+              console.warn('[SKI-Trade] purchase failed:', raw);
+              if (!raw.toLowerCase().includes('reject')) {
+                showCopyableToast(raw.slice(0, 200), raw);
+              }
+            } finally {
+              _idleActionBtn!.disabled = false;
+              _idleActionBtn!.textContent = 'TRADE';
+            }
+            return;
+          }
+
           try {
-            // Ask infer engine for the best action + pre-built TX
+            // No resolved listing — fall back to /api/infer.
             const inferRes = await fetch('/api/infer', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -11068,6 +11712,9 @@ function bindEvents() {
               recommended?: { action: string; confidence: number; reason: string; route?: string };
               tx?: { base64: string; description: string } | null;
               balances?: { sui?: { usd: number }; usdc?: { usd: number }; iusd?: { usd: number }; total_usd?: number };
+              listing?: { priceMist: string; priceUsd?: number | null } | null;
+              nameStatus?: 'available' | 'taken';
+              purchased?: { digest: string };
               error?: string;
             };
 
@@ -11094,12 +11741,17 @@ function bindEvents() {
               showToast(`${label}.sui purchased \u2713`);
               _updateIdleStatus();
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
-            } else if (infer.nameStatus === 'available' && label) {
+            } else if (infer.nameStatus === 'available' && !infer.listing && label) {
               // Fresh registration — /api/infer doesn't yet build
               // register PTBs. Fall through to the client builder,
               // which now supports an iUSD → USDC → NS route via
               // the seeded iUSD/USDC pool so a wallet holding only
               // stables can still register a name in one sig.
+              //
+              // Gate on `!infer.listing` so Tradeport-listed names
+              // (which the SuiNS resolver sometimes reports as
+              // unresolved when the NFT is kiosk-wrapped) never
+              // fall through to this MINT path and mint-spam NS.
               _idleActionBtn!.textContent = '\u270f';
               showToast(`\u26a1 Registering ${label}.sui`);
               const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;
@@ -11370,8 +12022,12 @@ function bindEvents() {
       _updateIdleStatus(); // immediate render from cached state
       const _initLabel = nsLabel.trim();
       if (_initLabel.length >= 3 && isValidNsLabel(_initLabel)) {
-        // Show card immediately from cached state
-        if (nsAvail) _updateIdleCard(_initLabel);
+        // Show card immediately — don't wait for nsAvail to load.
+        // On hard refresh, nsAvail is empty until fetchAndShowNsPrice
+        // resolves, which made the card stick on the wallet's primary
+        // while the input showed the restored label. Commit the card
+        // to the restored label up front; the fetch will refine it.
+        _updateIdleCard(_initLabel);
         // Force re-fetch even if cached — ensures _updateIdleStatus sees fresh ownership
         nsPriceFetchFor = '';
         fetchAndShowNsPrice(_initLabel).then(async () => {
@@ -11436,6 +12092,9 @@ function bindEvents() {
         if (!ws.address) { showToast('Connect wallet first'); return; }
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
+        // Hoisted so retry-on-auth-setup branch in catch can re-submit the mint
+        let mintAmount: bigint = 0n;
+        let collateralValueMist: bigint = 0n;
         try {
           // Find all non-gas tokens to route to iUSD (keep SUI for gas)
           const nonGas = walletCoins.filter(c =>
@@ -11558,7 +12217,8 @@ function bindEvents() {
           // Max mint at 150% ratio: collateral * 10000 / 15000 - currentSupply
           const maxMint = totalCollateral * 10000n / 15000n - currentSupply;
           // Leave 5% buffer
-          const mintAmount = maxMint * 95n / 100n;
+          mintAmount = maxMint * 95n / 100n;
+          collateralValueMist = totalCollateral;
 
           if (mintAmount <= 0n) {
             showToast('Collateral fully utilized — no iUSD to mint');
@@ -11720,36 +12380,114 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
+          // Volcarodon PSM mint — USDC → iUSD at 1:1 minus fee_bps.
+          // The DeepBook iUSD/USDC pool is structurally dead (verified
+          // 2026-04-14: $0.006 quote balance, zero bids). PSM bypasses
+          // it entirely by minting from a wrapped TreasuryCap inside a
+          // shared Reserve. First mint self-seeds the reserve, so
+          // there's no cold-start liquidity requirement on the PSM
+          // side.
+          //
+          // Two paths picked automatically:
+          //   (a) wallet holds USDC → direct PSM mint (buildPsmMintTx)
+          //   (b) wallet holds zero USDC but has SUI → single-PTB
+          //       cold start via buildSuiToIusdTx: DeepBook
+          //       swap_exact_base_for_quote(SUI, USDC) → feeds the
+          //       resulting Coin<USDC> straight into the PSM's
+          //       mint_from_usdc entry call, auto-transferring the
+          //       fresh iUSD to the sender. One signature, no
+          //       intermediate USDC to manage, and the reserve grows
+          //       by the full USDC amount.
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const addr = normalizeSuiAddress(ws.address);
-          // Find USDC balance
-          const usdcType = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+          const { USDC_TYPE, queryReserveState, quoteMintOutIusdMist, buildPsmMintTx } = await import('./client/psm.js');
           const rpc = await fetch('https://sui-rpc.publicnode.com', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, usdcType] }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, USDC_TYPE] }),
           });
           const rpcData = await rpc.json() as any;
           const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
-          if (!coins.length) { showToast('No USDC to swap for iUSD'); return; }
           const totalUsdc = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
-          showToast(`\ud83d\udcb5 Swapping ${(Number(totalUsdc) / 1e6).toFixed(2)} USDC \u2192 iUSD\u2026`);
-          const { buildSwapTx } = await import('./suins.js');
-          const iusdType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
-          const result = await buildSwapTx(ws.address, usdcType, iusdType, totalUsdc);
-          await signAndExecuteTransaction(result.txBytes);
-          showToast(`\u2728 ${(Number(totalUsdc) / 1e6).toFixed(2)} iUSD acquired`);
+
+          if (coins.length === 0 || totalUsdc === 0n) {
+            // ── Cold-start path: zero USDC on-chain ──
+            //
+            // DeepBook SUI/USDC enforces min_size=1 SUI / lot_size=0.1
+            // SUI (verified on-chain). Anything below the minimum
+            // silently returns zero USDC and tanks the downstream PSM
+            // mint with EZeroAmount. Enforce 1.1 SUI minimum swap so
+            // we're comfortably above the floor and aligned to lots.
+            //
+            // Total wallet SUI needed:
+            //   0.2 SUI gas buffer + 1.1 SUI minimum swap = 1.3 SUI
+            //
+            // For wallets with more headroom, scale up: use max of
+            // (1.1 SUI, 80% of spendable) so users who hold a lot of
+            // SUI put more of it to work per click.
+            const GAS_BUFFER_MIST = 200_000_000n;      // 0.2 SUI reserved for gas
+            const MIN_SWAP_MIST = 1_100_000_000n;      // 1.1 SUI — clears DB 1 SUI min_size
+            const suiBal = BigInt(Math.floor((app.sui ?? 0) * 1e9));
+            const spendable = suiBal > GAS_BUFFER_MIST ? suiBal - GAS_BUFFER_MIST : 0n;
+            if (spendable < MIN_SWAP_MIST) {
+              showToast(`Need at least 1.3 SUI to cold-start mint (have ${(Number(suiBal) / 1e9).toFixed(3)})`);
+              return;
+            }
+            // Use 80% of spendable for wallets with plenty, bounded
+            // below by the 1.1 SUI minimum.
+            const scaledMist = (spendable * 80n) / 100n;
+            const swapMist = scaledMist > MIN_SWAP_MIST ? scaledMist : MIN_SWAP_MIST;
+            const freshSuiP = (await fetchSuiPrice()) ?? suiPriceCache?.price ?? 0;
+            if (!freshSuiP || freshSuiP <= 0) {
+              showToast('SUI price unavailable \u2014 try again in a moment');
+              return;
+            }
+            const expectedUsd = (Number(swapMist) / 1e9) * freshSuiP;
+            // 2% DeepBook slippage floor × (1 - 50 bps PSM fee).
+            const expectedIusd = expectedUsd * 0.98 * 0.995;
+            showToast(`\u{1F4B5} Cold-start: ${(Number(swapMist) / 1e9).toFixed(3)} SUI \u2192 \u2248${expectedIusd.toFixed(2)} iUSD (DeepBook + PSM)\u2026`);
+            const { buildSuiToIusdTx } = await import('./suins.js');
+            const bytes = await buildSuiToIusdTx({
+              sender: addr,
+              suiAmountMist: swapMist,
+              suiPriceUsd: freshSuiP,
+            });
+            await signAndExecuteTransaction(bytes);
+            showToast(`\u2728 \u2248${expectedIusd.toFixed(2)} iUSD minted \u2014 reserve +$${expectedUsd.toFixed(2)}`);
+            refreshPortfolio(true);
+            return;
+          }
+
+          // ── Normal path: wallet already holds USDC ──
+          // Reserve pre-flight — read fee_bps so we can quote the
+          // expected iUSD out and set a realistic slippage floor.
+          const state = await queryReserveState();
+          const expectedIusd = quoteMintOutIusdMist(totalUsdc, state.feeBps);
+          // Allow 10 bps extra slop on top of the contract's own
+          // fee_bps deduction to tolerate rounding on small amounts.
+          const minIusdOut = (expectedIusd * 9990n) / 10000n;
+          showToast(`\ud83d\udcb5 Minting ${(Number(totalUsdc) / 1e6).toFixed(2)} USDC \u2192 \u2248${(Number(expectedIusd) / 1e9).toFixed(2)} iUSD via PSM\u2026`);
+          const { bytes } = await buildPsmMintTx({
+            sender: addr,
+            usdcCoinIds: coins.map((c: any) => c.coinObjectId),
+            usdcAmountMist: totalUsdc,
+            minIusdOutMist: minIusdOut,
+          });
+          await signAndExecuteTransaction(bytes);
+          showToast(`\u2728 ${(Number(expectedIusd) / 1e9).toFixed(2)} iUSD minted via PSM \u2014 reserve +$${(Number(totalUsdc) / 1e6).toFixed(2)}`);
           refreshPortfolio(true);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Swap failed';
-          if (msg.includes('not supported')) {
-            showToast('iUSD/USDC pool needs liquidity — use Burn to improve ratio');
-          } else if (!msg.toLowerCase().includes('reject')) {
-            showToast(msg);
-          }
+          const msg = err instanceof Error ? err.message : 'Mint failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
         } finally { btn.style.opacity = ''; }
       });
 
-      // Burn button — burn user's iUSD to improve collateral ratio
+      // Burn button — iUSD → USDC via Volcarodon PSM at 1:1 minus fee.
+      // Pre-flight check inspects the Reserve's s_balance and caps the
+      // burn to whatever the reserve can currently serve. If the reserve
+      // is short of the user's full balance, we burn the maximum the
+      // reserve can cover and leave the remainder in the wallet with an
+      // explanatory toast — never sign a tx we know will abort with
+      // EInsufficientReserve.
       _idleOverlay.querySelector('#ski-idle-iusd-burn')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         const ws = getState();
@@ -11757,39 +12495,47 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
-          // Find user's iUSD coins
-          const iusdType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const addr = normalizeSuiAddress(ws.address);
+          const { IUSD_TYPE, queryReserveState, quoteBurnOutUsdcMist, maxBurnableIusdMist, buildPsmBurnTx } = await import('./client/psm.js');
           const rpc = await fetch('https://sui-rpc.publicnode.com', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, iusdType] }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, IUSD_TYPE] }),
           });
           const rpcData = await rpc.json() as any;
           const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
           if (!coins.length) { showToast('No iUSD to burn'); return; }
-          const totalBal = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
-          showToast(`\ud83d\udd25 Burning ${(Number(totalBal) / 1e9).toFixed(2)} iUSD\u2026`);
-          const { Transaction } = await import('@mysten/sui/transactions');
-          const tx = new Transaction();
-          tx.setSender(addr);
-          const IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9';
-          const TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
-          const TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
-          const primary = tx.object(coins[0].coinObjectId);
-          if (coins.length > 1) tx.mergeCoins(primary, coins.slice(1).map((c: any) => tx.object(c.coinObjectId)));
-          tx.moveCall({
-            package: IUSD_PKG, module: 'iusd', function: 'burn_and_redeem',
-            arguments: [tx.object(TREASURY_CAP), tx.object(TREASURY), primary, tx.object('0x6')],
+          const totalIusd = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+          // Pre-flight — fetch live Reserve state, cap burn at whatever
+          // s_balance can cover. If the reserve is fully empty, tell the
+          // user to mint first (self-seeds the reserve).
+          const state = await queryReserveState();
+          if (state.sBalanceMist === 0n) {
+            showToast('PSM reserve empty \u2014 use Mint (USDC \u2192 iUSD) to seed it first');
+            return;
+          }
+          const reserveCapIusd = maxBurnableIusdMist(state);
+          const burnIusd = totalIusd < reserveCapIusd ? totalIusd : reserveCapIusd;
+          const expectedUsdc = quoteBurnOutUsdcMist(burnIusd, state.feeBps);
+          const minUsdcOut = (expectedUsdc * 9990n) / 10000n;
+          const partial = burnIusd < totalIusd;
+          if (partial) {
+            showToast(`Reserve holds $${(Number(state.sBalanceMist) / 1e6).toFixed(2)} \u2014 burning ${(Number(burnIusd) / 1e9).toFixed(2)} iUSD of ${(Number(totalIusd) / 1e9).toFixed(2)}`);
+          } else {
+            showToast(`\ud83d\udd25 Burning ${(Number(burnIusd) / 1e9).toFixed(2)} iUSD \u2192 \u2248$${(Number(expectedUsdc) / 1e6).toFixed(2)} USDC via PSM\u2026`);
+          }
+          const { bytes } = await buildPsmBurnTx({
+            sender: addr,
+            iusdCoinIds: coins.map((c: any) => c.coinObjectId),
+            iusdAmountMist: burnIusd,
+            minUsdcOutMist: minUsdcOut,
           });
-          const bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
-          bytes.tx = tx;
           await signAndExecuteTransaction(bytes);
-          showToast(`\ud83d\udd25 ${(Number(totalBal) / 1e9).toFixed(2)} iUSD burned — ratio improving`);
+          showToast(`\u2728 +$${(Number(expectedUsdc) / 1e6).toFixed(2)} USDC from PSM burn`);
           refreshPortfolio(true);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Burn failed';
-          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
         } finally { btn.style.opacity = ''; }
       });
 
@@ -11826,7 +12572,14 @@ function bindEvents() {
             try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
             _unfreezeGif();
           } else {
-            // Currently closed → open (show whatever's already been rendered)
+            // Currently closed → open. If empty, delegate to the full
+            // Rumble button: when cached addresses exist it renders
+            // instantly and never fires DKG. If no cache + no addresses,
+            // it'll prompt to Rumble — same end state as a fresh user.
+            if (!addrRow.innerHTML.trim()) {
+              const rumbleBtn = _idleOverlay?.querySelector('#ski-idle-rumble') as HTMLButtonElement | null;
+              if (rumbleBtn) { rumbleBtn.click(); return; }
+            }
             addrRow.removeAttribute('hidden');
             squidBtn?.classList.add('ski-idle-quick-btn--active');
             try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
@@ -11947,30 +12700,159 @@ function bindEvents() {
         }
       });
 
-      // Quick-amount chips: one tap fills `@name$amount` into the
-      // thunder input, marks the compose stage as 'confirmed', and
-      // fires `_sendIdleThunder` so the transaction builds + the
-      // wallet popup opens immediately. Zero extra taps.
+      // Quick-amount chips with popout:
+      //   • $0.01 anchors right (row-reverse) and is always visible.
+      //   • First tap on $0.01 pops out $1 + $7.50 to its left.
+      //   • Second tap on $0.01 (while expanded) sends $0.01 and collapses.
+      //   • Tapping $1 or $7.50 sends and collapses.
+      //   • Clicking anywhere outside the quick-amt row while expanded collapses.
+      const _topRow = _idleOverlay?.querySelector('.ski-idle-thunder-quick-amts-top') as HTMLElement | null;
+      const EXPANDED_CLS = 'ski-idle-thunder-quick-amts-top--expanded';
+
+      const _qaSend = (amt: string) => {
+        const name = _cardCurrentName
+          || _activeStormCounterparty
+          || nsLabel.trim().toLowerCase()
+          || (app.suinsName?.replace(/\.sui$/, '') || '');
+        if (!name) { showToast('Search a name first'); return; }
+        const value = `@${name}$${amt}`;
+        _setThunderInputWithCursorAtEnd(value);
+        setTimeout(() => {
+          _thunderComposeStage = 'confirmed';
+          _thunderComposeConfirmedRaw = value;
+          _sendIdleThunder();
+        }, 120);
+      };
+
+      // Mint-context for the quick-amount buttons. The card is now
+      // driven purely by user intent — blank when nothing is typed,
+      // filled once a name is searched. When there's no active typed
+      // label and no open storm conversation, clicking a quick amount
+      // mints that USD of USDC → iUSD via PSM. As soon as the user
+      // types any name to search/trade, the context flips back to
+      // thunder-send (where each amount sends to the typed target).
+      //
+      // This also catches the case where the user types their own
+      // primary — sending a thunder to yourself is nonsensical, so
+      // we'd rather reclaim the interaction for a mint.
+      const _isSelfCardContext = (): boolean => {
+        if (_activeStormCounterparty) return false;
+        const typed = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+        if (!typed) return true; // blank input = mint-appropriate
+        const primary = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
+        return !!primary && typed === primary;
+      };
+
+      // PSM mint of `amtUsd` USD worth of USDC → iUSD via Volcarodon.
+      // Used by the quick-amount buttons when the card is showing the
+      // user's own primary. Each mint grows the Reserve's s_balance by
+      // the full USDC amount and grows burn capacity for future trades.
+      const _qaMint = async (amtUsd: string) => {
+        const ws = getState();
+        if (!ws.address) { showToast('Connect wallet first'); return; }
+        const usd = Number(amtUsd);
+        if (!Number.isFinite(usd) || usd <= 0) { showToast('Invalid amount'); return; }
+        try {
+          const usdcAmountMist = BigInt(Math.round(usd * 1e6));
+          const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+          const addr = normalizeSuiAddress(ws.address);
+          const { USDC_TYPE, queryReserveState, quoteMintOutIusdMist, buildPsmMintTx } = await import('./client/psm.js');
+          const rpc = await fetch('https://sui-rpc.publicnode.com', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, USDC_TYPE] }),
+          });
+          const rpcData = await rpc.json() as any;
+          const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
+          if (!coins.length) { showToast('No USDC in wallet'); return; }
+          const totalUsdc = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+          if (usdcAmountMist > totalUsdc) {
+            showToast(`Need $${usd.toFixed(2)} USDC — wallet has $${(Number(totalUsdc) / 1e6).toFixed(2)}`);
+            return;
+          }
+          const state = await queryReserveState();
+          const expectedIusd = quoteMintOutIusdMist(usdcAmountMist, state.feeBps);
+          const minIusdOut = (expectedIusd * 9990n) / 10000n;
+          showToast(`\u{1F4B5} Minting $${usd.toFixed(2)} USDC \u2192 \u2248${(Number(expectedIusd) / 1e9).toFixed(4)} iUSD via PSM\u2026`);
+          const { bytes } = await buildPsmMintTx({
+            sender: addr,
+            usdcCoinIds: coins.map((c: any) => c.coinObjectId),
+            usdcAmountMist,
+            minIusdOutMist: minIusdOut,
+          });
+          await signAndExecuteTransaction(bytes);
+          showToast(`\u2728 ${(Number(expectedIusd) / 1e9).toFixed(4)} iUSD minted \u2014 reserve +$${usd.toFixed(2)}`);
+          refreshPortfolio(true);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Mint failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
+        }
+      };
+
+      let _qaOutsideHandler: ((ev: Event) => void) | null = null;
+      const _qaCollapse = () => {
+        _topRow?.classList.remove(EXPANDED_CLS);
+        if (_qaOutsideHandler) {
+          document.removeEventListener('click', _qaOutsideHandler, true);
+          _qaOutsideHandler = null;
+        }
+      };
+      const _qaExpand = () => {
+        _topRow?.classList.add(EXPANDED_CLS);
+        // Bind on next tick so the current click doesn't immediately collapse us.
+        setTimeout(() => {
+          _qaOutsideHandler = (ev: Event) => {
+            const target = ev.target as HTMLElement | null;
+            if (!target) return;
+            if (target.closest('#ski-idle-thunder-quick-amts')) return;
+            _qaCollapse();
+          };
+          document.addEventListener('click', _qaOutsideHandler, true);
+        }, 0);
+      };
+
       _idleOverlay.querySelectorAll<HTMLButtonElement>('.ski-idle-thunder-quick-amt').forEach((btn) => {
         btn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           const amt = btn.dataset.amt ?? '';
           if (!amt) return;
-          const name = _cardCurrentName
-            || _activeStormCounterparty
-            || nsLabel.trim().toLowerCase()
-            || (app.suinsName?.replace(/\.sui$/, '') || '');
-          if (!name) { showToast('Search a name first'); return; }
-          const value = `@${name}$${amt}`;
-          _setThunderInputWithCursorAtEnd(value);
-          // Auto-send after a short delay so the input value
-          // has settled and the preview/tag sync has fired.
-          setTimeout(() => {
-            _thunderComposeStage = 'confirmed';
-            _thunderComposeConfirmedRaw = value;
-            _sendIdleThunder();
-          }, 120);
+          const isExpanded = _topRow?.classList.contains(EXPANDED_CLS) ?? false;
+          // Context-sensitive dispatch. If the card is on the user's
+          // own primary (self-context), the quick amounts become PSM
+          // mint actions (USDC → iUSD). Otherwise they keep the
+          // original thunder-send behavior.
+          const action = _isSelfCardContext() ? _qaMint : _qaSend;
+          // $0.01 — first click expands, second click (while expanded) fires.
+          if (amt === '0.01') {
+            if (isExpanded) {
+              _qaCollapse();
+              void action('0.01');
+            } else {
+              _qaExpand();
+            }
+            return;
+          }
+          // $1 / $7.50 — fire + collapse (only reachable while expanded).
+          _qaCollapse();
+          void action(amt);
         });
+      });
+
+      // Dynamic titles on the quick-amount buttons so hover tells the
+      // user whether they're about to send a thunder or mint iUSD.
+      const _updateQaTitles = () => {
+        const mint = _isSelfCardContext();
+        _idleOverlay?.querySelectorAll<HTMLButtonElement>('.ski-idle-thunder-quick-amt').forEach((btn) => {
+          const amt = btn.dataset.amt ?? '';
+          if (!amt || btn.id === 'ski-idle-recall-btn') return;
+          btn.title = mint ? `Mint $${amt} USDC \u2192 iUSD` : `Send $${amt}`;
+        });
+      };
+      _updateQaTitles();
+      // Keep titles in sync with context changes. Cheap — runs a few
+      // querySelectorAlls and attribute writes per event.
+      window.addEventListener('ski:balance-updated', () => {
+        if (_isStaleIdleMount()) return;
+        _updateQaTitles();
       });
 
       // Hang the helper off the overlay so the identity card's
@@ -12103,8 +12985,10 @@ function bindEvents() {
                 addrRow.setAttribute('hidden', '');
                 _unfreezeGif();
               } else {
-                // Use the card's resolved address — matches whoever the card is showing
-                const addr = nsTargetAddress || nsNftOwner || ws.address || '';
+                // Squids always shows the user's OWN dWallet addresses,
+                // regardless of which name card is currently displayed.
+                // Viewing another person's chains is a separate SUIAMI flow.
+                const addr = ws.address || '';
                 const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
                 const cachedBaseAddr = status.ethAddress; // same EVM address
                 const cachedTronAddr = status.ethAddress ? ethToTron(status.ethAddress) : '';
@@ -12118,7 +13002,11 @@ function bindEvents() {
                 // Per-row USD balances
                 const _suiUsd2 = app.sui * (suiPriceCache?.price ?? 0) + app.stableUsd;
                 const _solUsd2 = app.solBalance > 0 ? app.solBalance * (getTokenPrice('SOL') ?? 83) : 0;
-                const _fmtBal2 = (v: number) => v >= 0.50 ? `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${Math.round(v).toLocaleString()}</span></span>` : '';
+                const _fmtBal2 = (v: number) => {
+                  if (!Number.isFinite(v) || v < 0) return '';
+                  const num = v >= 0.50 ? Math.round(v).toLocaleString() : v > 0 ? v.toFixed(2) : '0';
+                  return `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${num}</span></span>`;
+                };
 
                 // Resolve cross-chain addresses: own wallet first, then cached IKA for any address
                 const _isOwnAddr = ws.address && addr.toLowerCase() === ws.address.toLowerCase();
@@ -12137,7 +13025,7 @@ function bindEvents() {
                 }
                 const _baseAddr = _eth; // same EVM address
                 const _tronAddr = _eth ? ethToTron(_eth) : '';
-                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} ${short}${_isOwnAddr ? _fmtBal2(_suiUsd2) : ''}</span>`;
+                const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} <span class="ski-idle-addr-hex">${short}</span>${_isOwnAddr ? _fmtBal2(_suiUsd2) : ''}</span>`;
 
                 // --- Cross-chain rows: dark placeholders when viewing others without SUIAMI ---
                 if (!_isOwnAddr && !_hasSuiamiProof) {
@@ -12206,15 +13094,81 @@ function bindEvents() {
                     } catch {}
                   })();
                 } else {
-                  // Own wallet — show all addresses directly
-                  const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} ${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>` : '';
-                  const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} ${_sol.slice(0, 6)}\u2026${_sol.slice(-6)}${_fmtBal2(_solUsd2)}</span>` : '';
+                  // Own wallet — show all addresses directly with USD balances
+                  const _btcUsd2 = (getTokenPrice('BTC') ?? 0) * app.btcBalance;
+                  const _ethTotalUsd2 = ((getTokenPrice('ETH') ?? 0) * app.ethBalance) + app.ethUsdc;
+                  const _tronUsd2 = app.tronUsdt;
+                  const _shortStr = (s: string) => `${s.slice(0, 6)}\u2026${s.slice(-6)}`;
+                  const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} <span class="ski-idle-addr-hex">${_shortStr(_btc)}</span>${_fmtBal2(_btcUsd2)}</span>` : '';
+                  const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} <span class="ski-idle-addr-hex">${_shortStr(_sol)}</span>${_fmtBal2(_solUsd2)}</span>` : '';
                   const baseChip = _baseAddr ? `<span class="ski-idle-addr-l2-chip" data-l2="base" title="Base L2">${baseIcon}</span>` : '';
-                  const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} ${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}${baseChip}</span>` : '';
-                  const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} ${_baseAddr.slice(0, 6)}\u2026${_baseAddr.slice(-6)}</span>` : '';
-                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} ${_tronAddr.slice(0, 6)}\u2026${_tronAddr.slice(-6)}</span>` : '';
+                  const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} <span class="ski-idle-addr-hex">${_shortStr(_eth)}</span>${baseChip}${_fmtBal2(_ethTotalUsd2)}</span>` : '';
+                  const baseLine = _baseAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--base" style="padding-left:1.2em;display:none" title="${_baseAddr}">${baseIcon} <span class="ski-idle-addr-hex">${_shortStr(_baseAddr)}</span></span>` : '';
+                  const tronLine = _tronAddr ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tronAddr}">${tronIcon} <span class="ski-idle-addr-hex">${_shortStr(_tronAddr)}</span>${_fmtBal2(_tronUsd2)}</span>` : '';
                   const suiamiLine = `<button class="ski-idle-addr-suiami ski-idle-addr-suiami--verified" type="button" title="Click to copy SUIAMI proof">\u2713 SUIAMI</button>`;
-                  addrRow.innerHTML = `${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
+                  const qrTop = `<div class="ski-idle-addr-qr-top" id="ski-idle-addr-qr-top" style="--addr-qr-color:#4da2ff"></div>`;
+                  addrRow.innerHTML = `${qrTop}${suiLine}${btcLine}${solLine}${ethLine}${baseLine}${tronLine}${suiamiLine}`;
+                  // Render initial QR (sui) + wire chain-row clicks to swap it.
+                  const _qrEl = addrRow.querySelector('#ski-idle-addr-qr-top') as HTMLElement | null;
+                  const _setQr = (mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                    if (!_qrEl || !qaddr) return;
+                    _qrEl.style.setProperty('--addr-qr-color', color);
+                    _getAddrQrSvg(qaddr, mode).then(svg => { if (_qrEl) _qrEl.innerHTML = svg; }).catch(() => {});
+                  };
+                  // Highlight a chain row in its chain color + deselect siblings.
+                  const _selectChainRow = (el: HTMLElement | null, color: string) => {
+                    if (!el) return;
+                    addrRow.querySelectorAll('.ski-idle-addr-line[data-addr-selected="1"]').forEach(s => {
+                      const h = s as HTMLElement;
+                      h.style.removeProperty('--addr-sel-bg');
+                      h.style.removeProperty('--addr-sel-color');
+                      h.removeAttribute('data-addr-selected');
+                    });
+                    el.setAttribute('data-addr-selected', '1');
+                    el.style.setProperty('--addr-sel-bg', `${color}25`);
+                    el.style.setProperty('--addr-sel-color', color);
+                  };
+                  _setQr('usd', addr, '#22c55e');
+                  _selectChainRow(addrRow.querySelector('.ski-idle-addr-line--sui'), '#22c55e');
+                  // Click the QR to expand/shrink it.
+                  _qrEl?.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    _qrEl.classList.toggle('ski-idle-addr-qr-top--expanded');
+                  });
+                  // Each chain row clickable → update QR + highlight row + copy.
+                  const _wireQr = (sel: string, mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                    const el = addrRow.querySelector(sel) as HTMLElement | null;
+                    if (!el || !qaddr) return;
+                    el.addEventListener('click', (ev) => {
+                      ev.stopPropagation();
+                      ev.preventDefault();
+                      _setQr(mode, qaddr, color);
+                      _selectChainRow(el, color);
+                      navigator.clipboard.writeText(qaddr).catch(() => {});
+                    }, true);
+                  };
+                  // Hover swap: hex → chain@name (or name.sui for sui row).
+                  const _bareName = (app.suinsName || '').replace(/\.sui$/, '');
+                  const _wireHover = (sel: string, label: string) => {
+                    if (!_bareName || !label) return;
+                    const el = addrRow.querySelector(sel) as HTMLElement | null;
+                    if (!el) return;
+                    const hexEl = el.querySelector('.ski-idle-addr-hex') as HTMLElement | null;
+                    if (!hexEl) return;
+                    const orig = hexEl.textContent || '';
+                    el.addEventListener('mouseenter', () => { hexEl.textContent = label; });
+                    el.addEventListener('mouseleave', () => { hexEl.textContent = orig; });
+                  };
+                  _wireHover('.ski-idle-addr-line--sui', `${_bareName}.sui`);
+                  _wireHover('.ski-idle-addr-line--btc', `btc@${_bareName}`);
+                  _wireHover('.ski-idle-addr-line--sol', `sol@${_bareName}`);
+                  _wireHover('.ski-idle-addr-line--eth', `eth@${_bareName}`);
+                  _wireHover('.ski-idle-addr-line--tron', `tron@${_bareName}`);
+                  _wireQr('.ski-idle-addr-line--sui', 'usd', addr, '#22c55e');
+                  _wireQr('.ski-idle-addr-line--btc', 'btc', _btc, '#f7931a');
+                  _wireQr('.ski-idle-addr-line--sol', 'sol', _sol, '#9945FF');
+                  _wireQr('.ski-idle-addr-line--eth', 'eth', _eth, '#627eea');
+                  _wireQr('.ski-idle-addr-line--tron', 'tron', _tronAddr, '#FF0013');
                 }
 
                 addrRow.removeAttribute('hidden');
@@ -12357,7 +13311,128 @@ function bindEvents() {
           if (final.ethAddress) chains.push('ETH');
           if (final.solAddress) { chains.push('SOL'); updateStep(edStep, 'done', `ed25519 \u2713 SOL`); }
 
-          const summaryStep = addStep(`Rumble complete \u2014 ${chains.join(' + ') || 'no chains'} ready`, 'done');
+          // Persist to app state + cache so future overlay opens hit the
+          // cached render path. Then re-trigger the cached render now so
+          // the user sees the hex address row immediately, not just the
+          // rumble status panel.
+          if (final.btcAddress || final.solAddress || final.ethAddress) {
+            if (final.btcAddress) app.btcAddress = final.btcAddress;
+            if (final.ethAddress) app.ethAddress = final.ethAddress;
+            if (final.solAddress) app.solAddress = final.solAddress;
+            try {
+              localStorage.setItem(`ski:ika-addrs:${ws.address}`, JSON.stringify({
+                btc: app.btcAddress, eth: app.ethAddress, sol: app.solAddress,
+              }));
+            } catch {}
+            // Trigger a balance refresh now that addresses are live.
+            refreshPortfolio(true).catch(() => {});
+            // Render addresses directly into the addrRow as monospace chips
+            const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+            if (addrRow) {
+              const addr = ws.address || '';
+              const short = `${addr.slice(0, 6)}\u2026${addr.slice(-6)}`;
+              const _btc = final.btcAddress || '';
+              const _sol = final.solAddress || '';
+              const _eth = final.ethAddress || '';
+              const suiIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#22c55e" stroke="white" stroke-width="2.5"/><text x="20" y="20" text-anchor="middle" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="22" font-weight="700" fill="white">$</text></svg></span>`;
+              const btcIcon = `<img src="${BTC_ICON_URI}" class="ski-idle-addr-icon" alt="BTC">`;
+              const solIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline">${SOL_ICON_SVG}</span>`;
+              const ethIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#627eea" stroke="white" stroke-width="2.5"/><path d="M20 8 L13 21 L20 25 Z" fill="#fff" opacity="0.6"/><path d="M20 8 L27 21 L20 25 Z" fill="#fff"/><path d="M20 26 L13 22 L20 32 Z" fill="#fff" opacity="0.6"/><path d="M20 26 L27 22 L20 32 Z" fill="#fff"/></svg></span>`;
+              const tronIcon = `<span class="ski-idle-addr-icon ski-idle-addr-icon--inline"><svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="17.5" fill="#FF0013" stroke="white" stroke-width="2.5"/><g transform="translate(7.5,11) scale(0.046)"><path d="M378.8 0H4.5L167.1 340.7 505 121.1 378.8 0zM182.7 261.8L71.1 44.4h270.5L182.7 261.8zM204.1 294.5L454.4 147l-112.7 344.4L204.1 294.5z" fill="white"/></g></svg></span>`;
+              const _tron = _eth ? ethToTron(_eth) : '';
+              const _fmtBalFb = (v: number) => {
+                if (!Number.isFinite(v) || v < 0) return '';
+                const num = v >= 0.50 ? Math.round(v).toLocaleString() : v > 0 ? v.toFixed(2) : '0';
+                return `<span class="ski-idle-addr-bal"><span class="ski-idle-addr-bal-sign">$</span><span class="ski-idle-addr-bal-num">${num}</span></span>`;
+              };
+              const _solUsd2Fb = ((getTokenPrice('SOL') ?? 0) * app.solBalance) + app.solIusdBalance;
+              const _btcUsd2Fb = (getTokenPrice('BTC') ?? 0) * app.btcBalance;
+              const _ethUsd2Fb = ((getTokenPrice('ETH') ?? 0) * app.ethBalance) + app.ethUsdc;
+              const _tronUsd2Fb = app.tronUsdt;
+              const suiLine = `<span class="ski-idle-addr-line ski-idle-addr-line--sui" title="${addr}">${suiIcon} <span class="ski-idle-addr-hex">${short}</span></span>`;
+              const btcLine = _btc ? `<span class="ski-idle-addr-line ski-idle-addr-line--btc" title="${_btc}">${btcIcon} <span class="ski-idle-addr-hex">${_btc.slice(0, 6)}\u2026${_btc.slice(-6)}</span>${_fmtBalFb(_btcUsd2Fb)}</span>` : '';
+              const solLine = _sol ? `<span class="ski-idle-addr-line ski-idle-addr-line--sol" title="${_sol}">${solIcon} <span class="ski-idle-addr-hex">${_sol.slice(0, 6)}\u2026${_sol.slice(-6)}</span>${_fmtBalFb(_solUsd2Fb)}</span>` : '';
+              const ethLine = _eth ? `<span class="ski-idle-addr-line ski-idle-addr-line--eth" title="${_eth}">${ethIcon} <span class="ski-idle-addr-hex">${_eth.slice(0, 6)}\u2026${_eth.slice(-6)}</span>${_fmtBalFb(_ethUsd2Fb)}</span>` : '';
+              const tronLine = _tron ? `<span class="ski-idle-addr-line ski-idle-addr-line--tron" title="${_tron}">${tronIcon} <span class="ski-idle-addr-hex">${_tron.slice(0, 6)}\u2026${_tron.slice(-6)}</span>${_fmtBalFb(_tronUsd2Fb)}</span>` : '';
+              const qrTop = `<div class="ski-idle-addr-qr-top" id="ski-idle-addr-qr-top" style="--addr-qr-color:#4da2ff"></div>`;
+              addrRow.innerHTML = `${qrTop}${suiLine}${btcLine}${solLine}${ethLine}${tronLine}`;
+              const _qrEl = addrRow.querySelector('#ski-idle-addr-qr-top') as HTMLElement | null;
+              const _setQr = (mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                if (!_qrEl || !qaddr) return;
+                _qrEl.style.setProperty('--addr-qr-color', color);
+                _getAddrQrSvg(qaddr, mode).then(svg => { if (_qrEl) _qrEl.innerHTML = svg; }).catch(() => {});
+              };
+              const _selectChainRow = (el: HTMLElement | null, color: string) => {
+                if (!el || !addrRow) return;
+                addrRow.querySelectorAll('.ski-idle-addr-line[data-addr-selected="1"]').forEach(s => {
+                  const h = s as HTMLElement;
+                  h.style.removeProperty('--addr-sel-bg');
+                  h.style.removeProperty('--addr-sel-color');
+                  h.removeAttribute('data-addr-selected');
+                });
+                el.setAttribute('data-addr-selected', '1');
+                el.style.setProperty('--addr-sel-bg', `${color}25`);
+                el.style.setProperty('--addr-sel-color', color);
+              };
+              _setQr('usd', addr, '#22c55e');
+              _selectChainRow(addrRow.querySelector('.ski-idle-addr-line--sui'), '#22c55e');
+              _qrEl?.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                _qrEl.classList.toggle('ski-idle-addr-qr-top--expanded');
+              });
+              const _wireQr = (sel: string, mode: 'usd' | 'sui' | 'btc' | 'sol' | 'eth' | 'tron', qaddr: string, color: string) => {
+                const el = addrRow.querySelector(sel) as HTMLElement | null;
+                if (!el || !qaddr) return;
+                el.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  ev.preventDefault();
+                  _setQr(mode, qaddr, color);
+                  _selectChainRow(el, color);
+                  navigator.clipboard.writeText(qaddr).catch(() => {});
+                }, true);
+              };
+              // Hover swap: hex → chain@name (or name.sui).
+              const _bareName = (app.suinsName || '').replace(/\.sui$/, '');
+              const _wireHover = (sel: string, label: string) => {
+                if (!_bareName || !label) return;
+                const el = addrRow.querySelector(sel) as HTMLElement | null;
+                if (!el) return;
+                const hexEl = el.querySelector('.ski-idle-addr-hex') as HTMLElement | null;
+                if (!hexEl) return;
+                const orig = hexEl.textContent || '';
+                el.addEventListener('mouseenter', () => { hexEl.textContent = label; });
+                el.addEventListener('mouseleave', () => { hexEl.textContent = orig; });
+              };
+              _wireHover('.ski-idle-addr-line--sui', `${_bareName}.sui`);
+              _wireHover('.ski-idle-addr-line--btc', `btc@${_bareName}`);
+              _wireHover('.ski-idle-addr-line--sol', `sol@${_bareName}`);
+              _wireHover('.ski-idle-addr-line--eth', `eth@${_bareName}`);
+              _wireHover('.ski-idle-addr-line--tron', `tron@${_bareName}`);
+              _wireQr('.ski-idle-addr-line--sui', 'usd', addr, '#22c55e');
+              _wireQr('.ski-idle-addr-line--btc', 'btc', _btc, '#f7931a');
+              _wireQr('.ski-idle-addr-line--sol', 'sol', _sol, '#9945FF');
+              _wireQr('.ski-idle-addr-line--eth', 'eth', _eth, '#627eea');
+              _wireQr('.ski-idle-addr-line--tron', 'tron', _tron, '#FF0013');
+              addrRow.removeAttribute('hidden');
+              _idleOverlay?.querySelector('.ski-idle-quick-btn--squid')?.classList.add('ski-idle-quick-btn--active');
+              try { sessionStorage.setItem('ski:idle-squids', '1'); } catch {}
+              addrRow.querySelectorAll('.ski-idle-addr-line').forEach(el => {
+                el.addEventListener('click', (ev) => {
+                  ev.stopPropagation();
+                  const h = el as HTMLElement;
+                  const full = h.title || '';
+                  const c = h.classList.contains('ski-idle-addr-line--btc') ? '#f7931a'
+                    : h.classList.contains('ski-idle-addr-line--sol') ? '#c084fc'
+                    : h.classList.contains('ski-idle-addr-line--eth') ? '#818cf8'
+                    : h.classList.contains('ski-idle-addr-line--tron') ? '#FF0013'
+                    : '#22c55e';
+                  toggleAddrRow(h, full, c);
+                });
+              });
+            }
+          }
+
+          const summaryStep = addStep(`Squids Rumbled \ud83e\udd91 ${chains.join(' + ') || 'no chains'}`, 'done');
           if (summaryStep) {
             summaryStep.style.cursor = 'pointer';
             summaryStep.title = 'Tap to show addresses';
@@ -12827,21 +13902,30 @@ function bindEvents() {
         }
 
         let raw = _idleThunderInput?.value.trim() || '';
-        if (!raw) return;
+        // Glaceon Lv.30 #141 Hail — allow attachment-only sends. If
+        // the user has staged one or more attachments, skip the
+        // empty-text short-circuit so the send flow can run with
+        // just the files. Still requires either raw text OR pending
+        // files — totally empty send still returns.
+        const _hasStagedAttachments = _pendingThunderFiles.length > 0;
+        if (!raw && !_hasStagedAttachments) return;
         const ws = getState();
         if (!ws.address) return;
         try {
           // If an open-storm convo already targets a specific counterparty
           // and the user's text has no @tag, prepend the counterparty as the
           // implicit recipient. This lets users type bare messages inside an
-          // open storm without repeating @name on every line.
+          // open storm without repeating @name on every line. Also covers
+          // the attachment-only case where raw starts empty — we need a
+          // recipient tag for the parser even though the user didn't type
+          // text.
           const _openStormTarget = (() => {
             const convoOpen = _idleOverlay?.querySelector('#ski-idle-thunder-convo:not([hidden])');
             if (!convoOpen) return '';
             return (nsLabel || '').replace(/\.sui$/, '').toLowerCase();
           })();
           if (_openStormTarget && !/(?:^|[^a-z0-9_-])@[a-z0-9-]{3,63}/i.test(raw)) {
-            raw = `@${_openStormTarget} ${raw}`;
+            raw = raw ? `@${_openStormTarget} ${raw}` : `@${_openStormTarget}`;
           }
           const draft = _parseThunderCompose(raw);
           if (!draft || draft.error || draft.recipients.length === 0) {
@@ -13541,17 +14625,13 @@ function bindEvents() {
       // path), we hit "Cannot access _closeCompetingPanels before
       // initialization" because the const line hasn't executed yet.
       function _closeCompetingPanels() {
-        const addrRow = _idleOverlay?.querySelector('#ski-idle-addr') as HTMLElement | null;
+        // Squids row is intentionally NOT closed here — storm + squids
+        // coexist so the user keeps sight of their own addresses while
+        // a conversation opens in the background.
         const rp = _idleOverlay?.querySelector('#ski-idle-roster') as HTMLElement | null;
         const rumblePanel = _idleOverlay?.querySelector('#ski-idle-rumble-panel') as HTMLElement | null;
-        const squidBtn = _idleOverlay?.querySelector('.ski-idle-quick-btn--squid');
-        if (addrRow && !addrRow.hasAttribute('hidden')) {
-          addrRow.setAttribute('hidden', '');
-          try { sessionStorage.setItem('ski:idle-squids', '0'); } catch {}
-        }
         if (rp && !rp.hasAttribute('hidden')) rp.setAttribute('hidden', '');
         if (rumblePanel && !rumblePanel.hasAttribute('hidden')) rumblePanel.setAttribute('hidden', '');
-        squidBtn?.classList.remove('ski-idle-quick-btn--active');
       }
       // ─── Thunder history stale-while-revalidate cache ────────────────
       // Decrypted messages are cached in localStorage (AES-GCM encrypted)
@@ -13804,12 +14884,19 @@ function bindEvents() {
         // On hard refresh the wallet address can take a moment to land
         // (dappkit reconnect is async). Wait up to ~3s for it before
         // giving up — otherwise the restore path silently bails and
-        // leaves the storm closed.
-        let myAddr = (getState().address || '').toLowerCase();
+        // leaves the storm closed. Normalize so leading-zero variants
+        // (`0x2b…` vs `0x002b…`) compare equal; unnormalized Sui
+        // addresses mis-classify own bubbles as incoming.
+        let myAddr = (() => {
+          const a = getState().address || '';
+          try { return a ? normalizeSuiAddress(a).toLowerCase() : ''; } catch { return a.toLowerCase(); }
+        })();
         if (!myAddr) {
           for (let i = 0; i < 30 && !myAddr; i++) {
             await new Promise(r => setTimeout(r, 100));
-            myAddr = (getState().address || '').toLowerCase();
+            const a = getState().address || '';
+            try { myAddr = a ? normalizeSuiAddress(a).toLowerCase() : ''; }
+            catch { myAddr = a.toLowerCase(); }
           }
         }
         if (!myAddr) {
@@ -14186,7 +15273,10 @@ function bindEvents() {
             : [];
           if (_attachments.length === 0) {
             // Plain text bubble, no attachments — fast path.
-            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}</div>`;
+            const _editedBadge = (m as unknown as { isEdited?: boolean }).isEdited
+              ? ' <span class="ski-idle-bubble-edited" title="edited">(edited)</span>'
+              : '';
+            return `<div class="ski-idle-bubble ${baseCls}" data-id="${esc(m.messageId)}">${nameTag}${esc(m.text)}${_editedBadge}</div>`;
           }
           // Mixed / attachment-only bubble: one container with an
           // optional text line, then the attachment rows. Keeps the
@@ -14199,28 +15289,40 @@ function bindEvents() {
             const fileName = a.fileName || `file-${ai + 1}`;
             const mimeType = a.mimeType || 'application/octet-stream';
             const fileSize = Number(a.fileSize || 0);
+            // Glaceon Lv.30 #141 Frost Breath — human size label.
+            // "2.4 MB" / "847 KB" / "12 B". Preserves one decimal for
+            // MB so a 2.4 MB PDF doesn't display as "2 MB".
             const sizeLabel = fileSize >= 1024 * 1024
               ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
               : fileSize >= 1024
-                ? `${(fileSize / 1024).toFixed(0)} KB`
+                ? `${Math.round(fileSize / 1024)} KB`
                 : `${fileSize} B`;
             const isImg = mimeType.startsWith('image/');
             const isVid = mimeType.startsWith('video/') || mimeType === 'video/webm';
             const isAud = mimeType.startsWith('audio/');
+            const isPdf = mimeType.includes('pdf');
             const isMedia = isImg || isVid || isAud;
             const icon = isImg ? '\u{1F5BC}\u{FE0F}'
               : isVid ? '\u25B6\uFE0F'
               : isAud ? '\u{1F3B5}'
-              : mimeType.includes('pdf') ? '\u{1F4D1}'
+              : isPdf ? '\u{1F4D1}'
               : '\u{1F4CE}';
             const storageId = a.wire?.storageId || '';
             const kindAttr = isImg ? 'image' : isVid ? 'video' : isAud ? 'audio' : 'file';
             const mediaCls = isMedia ? ' ski-idle-attach-row--media' : '';
             const playHintCls = isMedia ? ' ski-idle-attach-row--playable' : '';
+            // Glaceon Lv.30 #141 Frost Breath — non-media files render
+            // as a download chip. Truncate >24 chars so long names
+            // don't break the bubble layout. The data-filename attr
+            // keeps the full name for the download anchor.
+            const chipCls = !isMedia ? ' ski-idle-attach-row--chip' : '';
+            const displayName = !isMedia && fileName.length > 24
+              ? `${fileName.slice(0, 21)}\u2026`
+              : fileName;
             const titleText = isMedia
               ? `Seal-encrypted ${kindAttr} \u2014 click to play`
-              : 'Seal-encrypted attachment \u2014 click to download';
-            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${titleText}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(fileName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
+              : `Seal-encrypted ${isPdf ? 'PDF' : 'file'} \u2014 ${fileName} (${sizeLabel}) \u2014 click to download`;
+            return `<div class="ski-idle-attach-row${mediaCls}${playHintCls}${chipCls}" data-attach-idx="${ai}" data-attach-storage="${esc(storageId)}" data-mime="${esc(mimeType)}" data-filename="${esc(fileName)}" data-kind="${kindAttr}" title="${esc(titleText)}"><span class="ski-idle-bubble-attach-icon">${icon}</span><span class="ski-idle-bubble-attach-meta"><span class="ski-idle-bubble-attach-name">${esc(displayName)}</span><span class="ski-idle-bubble-attach-size">${sizeLabel}</span></span><span class="ski-idle-bubble-attach-seal" title="Seal-encrypted \u00b7 decrypted locally">\u{1F512}</span></div>`;
           }).join('');
           return `<div class="ski-idle-bubble ${baseCls} ski-idle-bubble--mixed" data-id="${esc(m.messageId)}">${nameTag}${_textLine}${_attachmentRows}</div>`;
         }).join('');
@@ -14245,6 +15347,72 @@ function bindEvents() {
         // up the freshly painted bubbles (the button is gated on
         // convo-visible + at-least-one-bubble).
         _renderThunderComposePreview?.();
+        // Glaceon Lv.30 #141 Icy Wind — auto-decrypt image attachments
+        // inline. Images paint as a 240px <img> below the bubble text
+        // without requiring a click. Cached blob URLs survive
+        // re-renders so scrolling doesn't re-fetch. Click the image to
+        // open full-size in a new tab.
+        (async () => {
+          try {
+            const imgRows = Array.from(convoEl.querySelectorAll<HTMLElement>(
+              '.ski-idle-attach-row[data-kind="image"]:not(.ski-idle-attach-row--loaded):not(.ski-idle-attach-row--loading)'
+            ));
+            if (imgRows.length === 0) return;
+            // Group rows by message so we fetch each Thunder's
+            // attachment handles at most once.
+            const byMsg = new Map<string, HTMLElement[]>();
+            for (const row of imgRows) {
+              const bubEl = row.closest<HTMLElement>('.ski-idle-bubble');
+              const msgId = bubEl?.dataset.id || '';
+              if (!msgId) continue;
+              const list = byMsg.get(msgId) || [];
+              list.push(row);
+              byMsg.set(msgId, list);
+            }
+            if (byMsg.size === 0) return;
+            const { getThunders } = await import('./client/thunder.js');
+            const fresh = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+            for (const [msgId, rows] of byMsg) {
+              const srcMsg = fresh.messages.find((mm: { messageId: string }) => mm.messageId === msgId);
+              const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+              for (const row of rows) {
+                const idx = Number(row.dataset.attachIdx || '0') || 0;
+                const fileName = row.dataset.filename || `image-${idx + 1}`;
+                const mime = row.dataset.mime || 'image/png';
+                const cacheKey = `${msgId}:${idx}`;
+                let entry = _attachBlobCache.get(cacheKey);
+                if (!entry) {
+                  const handle = handles[idx];
+                  if (!handle) continue;
+                  row.classList.add('ski-idle-attach-row--loading');
+                  try {
+                    const bytes = await handle.data();
+                    const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
+                    entry = { url: URL.createObjectURL(blob), mime, fileName };
+                    _attachBlobCache.set(cacheKey, entry);
+                  } catch {
+                    row.classList.remove('ski-idle-attach-row--loading');
+                    continue;
+                  }
+                  row.classList.remove('ski-idle-attach-row--loading');
+                }
+                // Replace the row contents with an inline <img>. Click
+                // opens the blob URL full-size in a new tab.
+                row.innerHTML = `<img class="ski-idle-bubble-attach-inline" src="${entry.url}" alt="${esc(fileName)}" data-no-bubble-click="1" loading="lazy"><span class="ski-idle-attach-row-label">\u{1F512} ${esc(fileName)}</span>`;
+                row.classList.add('ski-idle-attach-row--loaded');
+                row.classList.add('ski-idle-attach-row--inline-image');
+                const imgEl = row.querySelector<HTMLImageElement>('.ski-idle-bubble-attach-inline');
+                if (imgEl) {
+                  imgEl.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try { window.open(entry!.url, '_blank', 'noopener'); } catch {}
+                  });
+                }
+              }
+            }
+          } catch { /* best-effort; click-to-reveal path still works */ }
+        })();
         // Peer-side settlement detection: for every transfer bubble
         // with a stored tx digest, look up the on-chain vault object
         // and mark the bubble as settled if it's been consumed by a
@@ -14418,6 +15586,72 @@ function bindEvents() {
         // Recompute on next frame in case layout hasn't settled (fonts, QR svg).
         requestAnimationFrame(_syncProgress);
 
+        // Aggressive auto-claim: when a recipient loads a storm, fire the
+        // existing per-bubble click flow for every unsettled transfer
+        // addressed to them. The click handler below already handles the
+        // full Seal-decrypt + buildShieldedClaimTx + sign + submit path,
+        // plus the settled-paint update — we just dispatch the clicks so
+        // the user doesn't have to.
+        //
+        // Rate-limited: 800ms stagger between claims so we don't flood
+        // the wallet with concurrent sign prompts. Skips anything
+        // already settled, already recall-armed, or expired (those go
+        // through the server sweeper instead).
+        setTimeout(() => {
+          const claimable = Array.from(convoEl.querySelectorAll<HTMLElement>(
+            '.ski-idle-bubble--transfer[data-iou-role="recipient"]:not(.ski-idle-bubble--transfer-settled):not(.ski-idle-bubble--recall-armed)',
+          ));
+          if (claimable.length === 0) return;
+          try { console.log(`[thunder] auto-claiming ${claimable.length} incoming transfer(s)`); } catch {}
+          let delay = 0;
+          for (const b of claimable) {
+            setTimeout(() => {
+              try {
+                b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              } catch {}
+            }, delay);
+            delay += 800;
+          }
+        }, 400);
+
+        // Double-click an out-bubble to edit the text. Transfer bubbles,
+        // attachment-mixed bubbles, and incoming bubbles are skipped —
+        // only the plain text the sender wrote is mutable. Delegates
+        // once on convoEl so we don't touch the dense per-bubble click
+        // handler below. Sender auth is enforced server-side; the DO's
+        // /update handler rejects anyone who isn't the original sender.
+        if (!(convoEl as unknown as { _skiEditBound?: boolean })._skiEditBound) {
+          (convoEl as unknown as { _skiEditBound: boolean })._skiEditBound = true;
+          convoEl.addEventListener('dblclick', async (ev) => {
+            const target = ev.target as HTMLElement | null;
+            const bub = target?.closest<HTMLElement>('.ski-idle-bubble--out');
+            if (!bub) return;
+            if (bub.classList.contains('ski-idle-bubble--transfer')) return;
+            if (bub.classList.contains('ski-idle-bubble--mixed')) return;
+            const msgId = bub.dataset.id || '';
+            if (!msgId) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const _currentText = (bub.textContent || '').replace(/\s*\(edited\)\s*$/, '').trim();
+            const next = window.prompt('Edit thunder', _currentText);
+            if (next == null) return; // user cancelled
+            const trimmed = next.trim();
+            if (!trimmed || trimmed === _currentText) return;
+            try {
+              const { editThunder } = await import('./client/thunder-stack.js');
+              // groupUuid is captured from the enclosing convo-open
+              // closure and matches the storm we're viewing.
+              await editThunder({ groupRef: { uuid: groupUuid }, messageId: msgId, text: trimmed });
+              // Optimistic patch — replace text + append (edited)
+              bub.innerHTML = `${esc(trimmed)} <span class="ski-idle-bubble-edited" title="edited">(edited)</span>`;
+              showToast('Thunder edited \u2713');
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              showToast(`Edit failed: ${msg.slice(0, 120)}`);
+            }
+          });
+        }
+
         // Click-to-delete: tap once = confirm (red), tap again = strike/delete
         // Incoming signals on owned names → on-chain strike (rebate → treasury)
         // Outgoing or local-only → local delete
@@ -14456,17 +15690,28 @@ function bindEvents() {
               const _mime = _row.dataset.mime || 'application/octet-stream';
               const _kind = _row.dataset.kind || 'file';
               const _idx = Number(_idxStr) || 0;
+              const _cacheKey = `${_msgId}:${_idx}`;
               _row.classList.add('ski-idle-attach-row--loading');
               try {
-                const { getThunders } = await import('./client/thunder.js');
-                const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
-                const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
-                const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
-                const handle = handles[_idx];
-                if (!handle) throw new Error('Attachment handle not found');
-                const bytes = await handle.data();
-                const blob = new Blob([bytes], { type: _mime });
-                const url = URL.createObjectURL(blob);
+                // Glaceon Lv.30 #141 Frost Breath — reuse cached blob
+                // URL on repeat clicks so downloads don't re-decrypt
+                // or re-hit the Seal key-server threshold quorum.
+                let url: string;
+                const _cached = _attachBlobCache.get(_cacheKey);
+                if (_cached) {
+                  url = _cached.url;
+                } else {
+                  const { getThunders } = await import('./client/thunder.js');
+                  const { messages } = await getThunders({ groupRef: { uuid: groupId }, limit: 50 });
+                  const srcMsg = messages.find((mm: { messageId: string }) => mm.messageId === _msgId);
+                  const handles = (srcMsg as unknown as { attachments?: Array<{ data: () => Promise<Uint8Array> }> })?.attachments ?? [];
+                  const handle = handles[_idx];
+                  if (!handle) throw new Error('Attachment handle not found');
+                  const bytes = await handle.data();
+                  const blob = new Blob([bytes as unknown as BlobPart], { type: _mime });
+                  url = URL.createObjectURL(blob);
+                  _attachBlobCache.set(_cacheKey, { url, mime: _mime, fileName: _fileName });
+                }
                 if (_kind === 'image') {
                   // Replace the icon cell with the decoded <img>.
                   const iconSlot = _row.querySelector('.ski-idle-bubble-attach-icon');
@@ -14492,14 +15737,16 @@ function bindEvents() {
                     try { await aud.play(); } catch { /* autoplay blocked, user can press play */ }
                   }
                 } else {
-                  // Generic download trigger
+                  // Generic download trigger. Blob URL is cached in
+                  // _attachBlobCache so re-clicks are instant and
+                  // don't re-decrypt; the URL is released on page
+                  // unload rather than per-click.
                   const a = document.createElement('a');
                   a.href = url;
                   a.download = _fileName;
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
-                  setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 60_000);
                 }
                 showToast(`\u{1F512} ${_fileName} decrypted`);
               } catch (err) {
@@ -14667,6 +15914,9 @@ function bindEvents() {
                     showToast(_isShielded ? '\u23f3 Claiming shielded\u2026' : '\u23f3 Claiming IOU\u2026');
                     try {
                       let bytes: Uint8Array;
+                      // Captured by the shielded branch; used by the
+                      // optimistic balance credit on success.
+                      let _claimedMist = 0n;
                       if (_isShielded) {
                         // Shielded claim needs the opening (r, amount)
                         // recovered from the Seal-encrypted blob stored
@@ -14696,6 +15946,7 @@ function bindEvents() {
                         const openingLen = view2.getUint32(0, true);
                         const openingB64 = new TextDecoder().decode(plaintext.slice(4, 4 + openingLen));
                         const { blinding, amountMist } = decodeOpening(openingB64);
+                        _claimedMist = amountMist;
                         bytes = await buildShieldedClaimTx({
                           sender: getState().address || '',
                           vaultObjectId: ref.objectId,
@@ -14706,6 +15957,17 @@ function bindEvents() {
                         });
                       } else {
                         bytes = await buildClaimIouTx(ref.objectId, ref.initialSharedVersion, _claimSponsor ?? undefined);
+                        // Legacy IOU — parse amount from the visible
+                        // bubble text ("$X.XX") as a best-effort credit.
+                        const amtText = _bubEl.querySelector('.ski-idle-bubble-amt')?.textContent || '';
+                        const amtMatch = amtText.match(/\$([\d.]+)/);
+                        if (amtMatch) {
+                          const usd = parseFloat(amtMatch[1]);
+                          const suiPrice = getSuiPriceWithFallback();
+                          if (usd > 0 && suiPrice > 0) {
+                            _claimedMist = BigInt(Math.floor((usd / suiPrice) * 1e9));
+                          }
+                        }
                       }
                       const r = _claimSponsor
                         ? await signAndExecuteSponsoredTx(bytes, true)
@@ -14719,8 +15981,43 @@ function bindEvents() {
                       // paint and the stamped pill.
                       _bubEl.classList.add('ski-idle-bubble--transfer-settled');
                       _markSettled(_txDigest, claimDigest || undefined);
-                      // Refresh balance immediately so the claimed funds show up
-                      setTimeout(() => refreshPortfolio(true), 2000);
+                      // Optimistic balance: credit the user's liquid
+                      // SUI immediately so the SKI menu / card / total
+                      // USD all reflect the claimed amount without
+                      // waiting on the indexer. refreshPortfolio still
+                      // runs in the background to reconcile with the
+                      // real on-chain state, but the user never sees
+                      // the gap.
+                      try {
+                        const _amtSui = Number(_claimedMist) / 1e9;
+                        app.sui += _amtSui;
+                        const _suiPrice = getSuiPriceWithFallback();
+                        if (typeof app.usd === 'number') {
+                          app.usd += _amtSui * _suiPrice;
+                        }
+                        // Invalidate the per-card balance cache for
+                        // every address so any card rendered next
+                        // picks up fresh data. Keyed by lowercase
+                        // address across both render paths (NFT
+                        // hover card + idle-overlay card).
+                        for (const k of Object.keys(_cardBalCache)) delete _cardBalCache[k];
+                        try {
+                          for (const k of Object.keys(localStorage)) {
+                            if (k.startsWith('ski:card-bal:')) localStorage.removeItem(k);
+                          }
+                        } catch {}
+                        // Re-render SKI menu + any visible card so
+                        // the new balance lands immediately.
+                        render();
+                        if (nsLabel) _updateIdleCard(nsLabel);
+                      } catch { /* non-fatal — indexer path still runs below */ }
+                      // Indexer-reconciled refresh. Force-bypass the
+                      // 15s throttle. Fires twice — once immediately
+                      // (catches any balances not covered by the
+                      // optimistic path like stables) and once at
+                      // 2500ms (catches slow-indexing fullnodes).
+                      refreshPortfolio(true).catch(() => {});
+                      setTimeout(() => refreshPortfolio(true).catch(() => {}), 2500);
                       if (claimDigest) {
                         _bubEl.dataset.tx = claimDigest;
                         _bubEl.dataset.claimTx = claimDigest;
@@ -15183,6 +16480,7 @@ function bindEvents() {
 
       // Primary SuiNS changed — update card + invalidate roster cache
       window.addEventListener('ski:primary-changed', (e) => {
+        if (_isStaleIdleMount()) return;
         const name = ((e as CustomEvent).detail?.name ?? '').replace(/\.sui$/, '');
         if (name) {
           _rosterCache = null;
@@ -15222,6 +16520,7 @@ function bindEvents() {
       // Balance or owned domains updated — refresh card with new data
       // Ownership changed (e.g. purchased name now in roster)
       window.addEventListener('ski:ownership-changed', () => {
+        if (_isStaleIdleMount()) return;
         _updateIdleStatus();
         _cardCacheKey = '';
         const cardName = app.suinsName?.replace(/\.sui$/, '') || nsLabel || '';
@@ -15229,6 +16528,7 @@ function bindEvents() {
       });
 
       window.addEventListener('ski:balance-updated', () => {
+        if (_isStaleIdleMount()) return;
         _cardCacheKey = ''; // invalidate so it re-renders with new balance
         // Use current card name (not primary) to avoid overwriting resolved card
         const cardName = _cardCurrentName || app.suinsName?.replace(/\.sui$/, '') || '';
@@ -15767,11 +17067,17 @@ export function initUI() {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
 
+      // Lapras Lv.10 (#150) auto-populate reverted — the card + NS
+      // input are now driven purely by what the user types/searches.
+      // The previous behavior of adopting the wallet's primary on
+      // new-address connect was clobbering in-progress trades and
+      // was a misfeature in practice. Issue reopened for follow-up.
+
       // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO).
       // Immediately warm the Seal session key so the first convo open doesn't
       // stall on a signature round-trip — on refresh this restores from
       // localStorage with zero prompts.
-      import('./client/thunder.js').then(({ initThunderClient, warmThunderSession }) => {
+      import('./client/thunder.js').then(({ initThunderClient, warmThunderSession, createStorm, stormExists }) => {
         initThunderClient({
           address: ws.address,
           signPersonalMessage: async (msg: Uint8Array) => signPersonalMessage(msg),
@@ -15786,6 +17092,52 @@ export function initUI() {
           },
         });
         warmThunderSession().catch(() => {});
+
+        // Magneton Lv.10 Thunder Wave (#153) — silently create the
+        // user's `thunder-ultron` relay Storm if it doesn't already
+        // exist. Once live, every future conversation can piggyback
+        // through this one Storm without paying pair-creation gas.
+        //
+        // Silent: no toast, no modal, no visible creation prompt.
+        // Sponsored by ultron for non-WaaP wallets (zero SUI cost).
+        // Idempotent: stormExists cache hit short-circuits repeats.
+        // Per-session guard: only attempt once per wallet connect.
+        const _magnetonSessionKey = `ski:magneton-lv10:${ws.address}`;
+        const _magnetonAlreadyTried = (() => {
+          try { return sessionStorage.getItem(_magnetonSessionKey) === '1'; } catch { return false; }
+        })();
+        if (!_magnetonAlreadyTried) {
+          try { sessionStorage.setItem(_magnetonSessionKey, '1'); } catch {}
+          // Wait a tick so warmThunderSession can establish Seal
+          // before we try to create a Storm.
+          setTimeout(async () => {
+            try {
+              const RELAY_UUID = 'thunder-ultron';
+              const exists = await stormExists(RELAY_UUID);
+              if (exists) return;
+              const ULTRON_ADDR = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+              const tx = createStorm({
+                uuid: RELAY_UUID,
+                name: 'ultron relay',
+                members: [ws.address, ULTRON_ADDR],
+              });
+              const _isWaaP = /waap/i.test(getState().walletName || '');
+              // Pre-build to bytes (+augment) for the non-WaaP sponsored path;
+              // pass the unbuilt Transaction for WaaP per feedback_waap_holy_grail.
+              if (!_isWaaP && isSponsorActive()) {
+                const bytes = await tx.build({ client: grpcClient as never });
+                await signAndExecuteSponsoredTx(bytes);
+              } else {
+                await signAndExecuteTransaction(tx as never);
+              }
+              console.log('[magneton] Lv.10 Thunder Wave: thunder-ultron relay Storm created');
+            } catch (err) {
+              // Silent per-spec — log only. Retry on next wallet-connect.
+              console.warn('[magneton] Lv.10 Thunder Wave: storm creation deferred —', err instanceof Error ? err.message : err);
+              try { sessionStorage.removeItem(_magnetonSessionKey); } catch {}
+            }
+          }, 1500);
+        }
       }).catch(() => {});
 
       // Sableye — warm the encrypted private-interaction cache.
@@ -15800,9 +17152,10 @@ export function initUI() {
           const name = ((ev as CustomEvent).detail?.recipientName ?? '') as string;
           if (name) noteCounterparty(name, 'sui');
         });
-        // Drain any server-side xchain webhook log (Sableye Lv.40
-        // lands separately with the Helius/Alchemy handlers) and
-        // map fromAddress → bare name via reverse lookup.
+        // Lv.30 Knock Off — drain the server-side xchain webhook log
+        // and map fromAddresses back to SuiNS bare names via the
+        // existing reverse-lookup cache. Processed items are dropped
+        // from the server log on next warm, so this is at-least-once.
         const pending = drainXchainLog();
         if (pending.length > 0) {
           try {

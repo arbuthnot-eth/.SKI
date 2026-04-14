@@ -75,6 +75,44 @@ Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 - Batch DKG provisioning for agents = "Rumble your squids."
 - If a dWallet doesn't exist yet, the feature is blocked until DKG is run — no shortcuts.
 
+---
+
+## Magneton — Sealed Messaging Through a Keyless Blind Relay
+
+Magneton is SKI's sealed messaging layer. One sentence, canonical:
+
+> **A Prismoid opens a storm with its squids. Each thunder — and each prism — is scribed by ultron into both Prismoids' chronicoms, the chronicoms write through to the timestream, and sibyl reads the timestream to score trust — turning strangers into inkas as each carries the other's suiami.**
+
+- **Prismoid** — your identity vessel. A Move object wrapping one or more IKA dWallets that carries your SuiNS name and every cross-chain address you can touch. Transfer one object, transfer the whole identity atomically.
+- **Squid** — a single chain-capable appendage of a Prismoid. One per curve: secp256k1 squid reaches BTC/EVM, ed25519 squid reaches SOL/Sui. Multiple squids can cooperate on cross-chain multi-sig. "Rumble your squids" provisions them in a single DKG ceremony.
+- **Opening** — the first squid-sign between two Prismoids that opens a storm. Scribed into both chronicoms as the anchor of the relationship. The squid used matches the recipient's native chain, so the anchor is verifiable from any chain the recipient cares about.
+- **Scribe** — the verb. Ultron *scribes* each thunder *and* each prism into both Prismoids' chronicoms. The chronicoms write through to the timestream. One unified pipeline for messages and transactions.
+- **Inscribe** — the opt-in non-repudiable variant. To *inscribe* a thunder or prism = attach a squid signature so the entry is permanently third-party verifiable in the timestream. Default is deniable; flip to inscribed when you want proof. Signal cannot do this for messages; suiami can do it for messages *and* transactions, in one substrate.
+- **Chronicom** — your per-Prismoid Durable Object. Holds the suiamis you carry (your inka set), every storm you participate in, and every prism you exchange. The chronicom is your local view; the timestream is the authoritative one.
+- **Timestream** — the temporal substrate every chronicom writes through to. The on-chain time-ordered ledger of all scribed entries — both thunders and prisms — between Prismoids.
+- **Sibyl** — the oracle. Reads the timestream to score trust, predict spam, and signal inka eligibility.
+- **inka / inkas vs strangers** — an inka is **someone whose suiami you carry**. The moment your chronicom holds another Prismoid's SUI-AUTH-MSG-ID credential, they're an inka. Strangers are anyone whose suiami you don't carry. Country-pool inkas (everyone with a Full SKI Pass in your country) are auto-shared by ultron at key-in time; cross-country inkas are earned through scribed thunders or sent prisms.
+- **suiami** — **SUI-AUTH-MSG-ID.** The authenticated message-identity credential — a tamper-evident proof of ownership of a Prismoid + its SuiNS name + its squids, stamped with country metadata at minting time. Published as the [`suiami` npm package](https://www.npmjs.com/package/suiami).
+- **SKI Pass** — a roster of credentials per SuiNS name (NFT + squids), bound by the name, auto-minted on first key-in, country-attested. Comes in two tiers: Full (default for primary country) and Temporary (any new country until upgraded by either multiple key-ins over time or by sending a Prism worth a threshold to ultron). No expiry unless you don't key in for 3 years.
+
+### The topology: Thunder through ultron
+
+Every thunder is a **double envelope**. The outer envelope is encrypted to ultron and contains only `{ recipient_prismoid, inner_ciphertext }`. The inner envelope is encrypted to the recipient's squid. Ultron routes the inner envelope but **cannot read it** — it is a **keyless blind relay**. It knows who talks to who; it does not know what they say. First commandment holds: no private keys on Cloudflare Workers, ever.
+
+Thunder isn't a performance compromise — it's the decision that unlocks everything downstream:
+
+| Layer | What Thunder unlocks |
+|---|---|
+| **Spam control (inkas vs strangers)** | Enforcement lives at ultron, not in N client implementations. Visiting sui.ski and keying in mints a SKI Pass automatically — that's the gate. Strangers to SKI fix it in 10 seconds; inkas (anyone whose suiami you carry) pass through. Zero client trust needed. |
+| **Delivery model** | One WebSocket per Prismoid to ultron, reused for all traffic. Cloudflare Durable Object hibernatable WebSockets are free when idle. Already wired. |
+| **Forward secrecy** | Single write path. Ultron watches Prismoid rotation events on-chain and scribes new anchors into the timestream. No multi-device desync — the anchor lives in the chronicom where both sides read from it. |
+| **Cross-chain delivery** | Collapses into "ultron emits chain-specific notifications." Ultron has its own dWallets (ed25519, secp256k1) and can drop a SOL memo, an EVM event, or a BTC OP_RETURN when the recipient has no SKI client. The non-Sui recipient installs nothing. |
+| **Magnezone evolution** | Uniform traffic is the *precondition* for onion mixing and cover traffic. Thunder is what makes the mixnet path possible later. |
+
+The alternative — direct peer-to-peer — would leak your entire social graph to any passive observer, force every client to enforce its own spam rules, break cross-chain delivery, and close the door on mixnet evolution forever. Hybrid (direct for inkas, ultron for strangers) doubles the codebase, bifurcates enforcement, and kills mixing. The "latency win" from direct is tens of milliseconds. Not worth it.
+
+Thunder. Ultron sees who, never what. Everything else falls out for free.
+
 ## Terminology
 
 | Word | Meaning |
@@ -132,6 +170,20 @@ After 15s of inactivity (or via SKI button cycle), the menu collapses into a com
 
 The overlay restores instantly on hard refresh via `ski:last-address` localStorage fallback, with IKA addresses cached to `ski:ika-addrs:${address}`.
 
+### Squids Panel — Cross-Chain Balance Display
+
+Clicking the 🦑 squid quick-action opens the **squids panel**, the idle-overlay view of every chain the user's IKA dWallet derives. Each row shows the chain glyph, truncated address, and live USD balance:
+
+- **SUI** — native + stables via gRPC `listBalances` (Mysten fullnode)
+- **BTC** — native via mempool.space `/api/address/<addr>` (free, key-less)
+- **SOL** — native + iUSD-SPL via Helius `/api/sol-rpc` proxy (`getBalance` + `getTokenAccountsByOwner`)
+- **ETH (mainnet)** — native + USDC ERC-20 via **viem** + Alchemy HTTPS transport (`ALCHEMY_ETH_URL` secret, `eth_getBalance` + `erc20Abi.balanceOf`)
+- **TRON** — USDT-TRC20 via TronGrid `/v1/accounts/<addr>` (free tier)
+
+Derived addresses come from the IKA dWallet `public_output` — even dWallets stuck in `AwaitingKeyHolderSignature` produce valid BCS-derived addresses, so users see their cross-chain identity the moment DKG starts instead of waiting for the accept-share step. Balances roll into the single `app.usd` total alongside Sui and stables so the header balance pill is a true net-worth aggregate across every chain brando holds.
+
+**QR top slot** — above the chain rows, a chain-colored QR code with the selected chain's logo inlaid (green `$` for SUI, orange `₿` for BTC, official Solana parallelograms for SOL, indigo `Ξ` for ETH, red Tron triangles for TRON). Clicking a chain row updates the QR + highlights the row in its chain color; clicking the QR expands it to 260×260. Hovering a row swaps the truncated hex for the identity form (`brando.sui` / `btc@brando` / `sol@brando` / `eth@brando` / `tron@brando`) while the native `title` tooltip shows the full hex — both visible simultaneously.
+
 ### SKI Modal
 
 Single-column overlay with key detail pane, Splash legend (keys grouped by shape tier), wallet list, and WaaP social login row. Long-press lock (2.2s) pins a wallet. Layout toggle persists preference.
@@ -160,6 +212,19 @@ Thunder is a thin wrapper around [`@mysten/sui-stack-messaging`](https://github.
 - **Timestamp jitter** — DO rounds `createdAt`/`updatedAt` to 10s buckets + ±5s noise on ingest. Monotonic `order` preserves UI sort.
 - **Sender index on the wire** — new messages store `senderIndex` (position in the DO's participant list) instead of the raw Sui address. A dump of `messages` no longer reveals who authored what.
 - **Attachment guard** — DO rejects `attachments: [...]` at the send boundary; our transport does not round-trip them, and silently accepting would leak blob IDs outside the Seal envelope.
+
+### Thunder Attachments (Regizapdos #147)
+
+Full attachment support lands via `@mysten/sui-stack-messaging` — Seal-encrypted per file, uploaded to Walrus via the configured HTTP publisher, decrypted on click via the SDK's `handle.data()`. All three main send paths (`iUSD transfer`, `SUI shielded transfer`, plain text send) wire `files: AttachmentFile[]` through `sendThunder`. Ancillary paths (read receipts, quick-reply) deliberately don't carry attachments.
+
+**Cache hydration** — `_ThunderEntry` in the stale-while-revalidate localStorage cache preserves attachment refs (`storageId`, `fileName`, `mimeType`, `fileSize`) so reopened storms paint chips/thumbs immediately instead of flashing text-only. Bytes stay in Walrus; only refs cross the localStorage boundary. The AES-GCM key in IndexedDB stays non-extractable.
+
+**Size limits** (aligned with SDK enforcement):
+- Per-file: **2 MB** (was 10 MB UI-side, SDK always enforced 2 MB)
+- Per message: **4 files** (was 10 UI-side)
+- Total per message: **5 MB** (new pre-upload guard — 4×2 MB silent failures now caught at attach time)
+
+Errors fire as UI toasts before the SDK rejects. Walrus upload failures fail the whole send cleanly — no silent text orphaning. WaaP attachment path verification is deferred (needs live repro).
 
 Remaining Phase 2 items (sealed sender, non-derivable group IDs, encrypted membership) are deferred — see `docs/superpowers/specs/2026-04-10-thunder-privacy-audit-and-roadmap.md`.
 
@@ -248,6 +313,31 @@ Seal-encrypted cross-chain identity exchange. No cleartext cross-chain addresses
 
 ---
 
+## Mega Sableye — Private Interaction Set (#148)
+
+Roster chips render with a **black diamond** glyph for names brando has privately interacted with (Thunder send, value transfer, cross-chain credit). The set lives as **AES-GCM ciphertext** in the user's Chronicom Durable Object — the operator only ever sees the opaque blob, and the wrapping key is a **non-extractable** `CryptoKey` persisted in browser IndexedDB so raw key material never leaves the device.
+
+**Client — `src/client/sableye.ts`:**
+- `warmSableye(addr)` — fetch ciphertext from Chronicom, AES-GCM decrypt into in-memory `Set<string>`
+- `noteCounterparty(name, chain)` — add + debounce 2s persist back to Chronicom
+- `hasSableye(name)` — synchronous lookup for render loops (`_renderRosterChip` calls this)
+- `drainXchainLog()` — pulls any server-side webhook touches and processes them through `reverseLookupName`
+- `flushSableye()` / `resetSableye()` — lifecycle
+
+**Chronicom DO slice — `src/server/agents/chronicom.ts`:**
+- `sableye: { cipher?: string; updatedAt?: number; xchainLog?: [...] }`
+- Rejects non-string cipher at the write boundary; DO inspection yields only ciphertext
+- Worker routes `GET/POST /api/chronicom/sableye?addr=<address>`
+
+**Event hooks (minimal resource impact):**
+- **Thunder** — `sendThunder` in `thunder-stack.ts` dispatches `ski:thunder-sent` with the recipient name; ui records the counterparty on every send
+- **Cross-chain** — Helius + Alchemy webhook handlers append to `sableye.xchainLog` via an internal `/sableye-xchain-append` DO route (rides nursery PR #132 — depends on webhook handlers not yet on master)
+- **Roster render** — `_renderRosterChip` consults `hasSableye(bareName)` synchronously; black diamond on hit, blue square on miss
+
+See issue #145, PR #148.
+
+---
+
 ## Shade
 
 Privacy-preserving SuiNS grace-period domain sniping. Commitment-reveal hides domain/target/timing on-chain until execution. Seal encryption for payload privacy.
@@ -289,7 +379,18 @@ See `docs/superpowers/specs/2026-04-11-openclob-bundle-tags.md`.
 
 ## Pokemon Swarm
 
-.SKI runs a Pokedex coordinator Durable Object that watches GitHub issues, branches, and PRs as a live swarm. Per the naming convention: legendary Pokemon are releases, regular Pokemon with level tags are commits and issues, merged PRs are evolutions. Recent evolutions include Raichu Lv.40 (ultron-sponsored thunder gas), Mr. Mime Lv.42 (shielded Pedersen transfers), Alakazam Lv.36 (forward secrecy via DEK rotation), Psyduck Lv.22 (collected-pill fix), Diglett Lv.18 (dust gate), and Dugtrio Lv.36 (batched shielded deposits).
+.SKI runs a Pokedex coordinator Durable Object that watches GitHub issues, branches, and PRs as a live swarm. Per the naming convention: legendary Pokemon are releases, regular Pokemon with level tags are commits and issues, merged PRs are evolutions (canon forms first — Mega, Gigantamax — otherwise Pokemon Infinite Fusion cross-species forms). Recent evolutions include:
+
+- **Mega Sableye** (#148) — Seal-encrypted private interaction set; black-diamond roster glyphs; Chronicom ciphertext slice
+- **Regizapdos** (#147, Zapdos × Registeel fusion) — Thunder attachment hardening; cache hydration of attachment refs; SDK-aligned size limits (2 MB/file, 4 files, 5 MB total)
+- **Raichu Lv.40** — ultron-sponsored thunder gas
+- **Mr. Mime Lv.42** — shielded Pedersen transfers
+- **Alakazam Lv.36** — forward secrecy via DEK rotation
+- **Psyduck Lv.22** — collected-pill fix
+- **Diglett Lv.18** — dust gate
+- **Dugtrio Lv.36** — batched shielded deposits
+
+**gitcatch** — the full commit → evolve → deploy cycle. `gitcatch Pokemon` commits outstanding moves as Pokemon-named commits, lands the PR as an evolution (canon Mega / Gigantamax first, then Infinite Fusion cross-species naming), and deploys to mainnet. Memory: `feedback_gitcatch.md`.
 
 The Pokedex DO is bound as `PokedexAgent` and exposes `/api/pokedex/*` routes. See `docs/superpowers/specs/2026-04-11-pokemon-swarm-agents.md`.
 

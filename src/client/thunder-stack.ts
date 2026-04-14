@@ -100,11 +100,46 @@ const ATTACH_MAX_TOTAL_BYTES = 5_000_000;     // 5 MB total per send
 // Mainnet Seal key servers (free, open mode, 2-of-3 threshold):
 // Overclock, Studio Mirai, H2O Nodes.
 // NodeInfra excluded — broken CORS (duplicate Access-Control-Allow-Origin: *, *)
-const SEAL_SERVERS = [
+const SEAL_SERVERS_MAINNET = [
   { objectId: '0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6', weight: 1 }, // Overclock
   { objectId: '0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10', weight: 1 }, // Studio Mirai
   { objectId: '0x4a65b4ff7ba8f4b538895ee35959f982a95f0db7e2a202ec989d261ea927286a', weight: 1 }, // H2O Nodes
 ];
+
+// Testnet Seal key servers (Mysten-operated open-mode allowlist, 2-of-2 threshold).
+// @mysten/seal v1.1.1 does NOT export testnet defaults — these object IDs come from
+// the Seal testnet registry. Only two verified servers are included here; a third
+// was previously hand-coded with the wrong length (65 hex chars, caught by reviewer5)
+// and has been dropped. SDK will fall back to 2-of-2 threshold until a third
+// verified testnet server is added.
+//   TODO: https://github.com/MystenLabs/seal/blob/main/Design.md (key server list)
+const SEAL_SERVERS_TESTNET = [
+  { objectId: '0x73d05d62c18d9374e3ea529e8e0ed6161da1a141a001dcc14df90e2c2154c95c', weight: 1 }, // mysten-testnet-1
+  { objectId: '0xf5d14a81a982144ae441cd7d64b09027f116a468bd36e7eca494f750591623c8', weight: 1 }, // mysten-testnet-2
+];
+
+/**
+ * Pick Seal key servers based on the current hostname. Testnet hosts get the
+ * Mysten-operated testnet servers; everything else (prod, preview, unknown)
+ * stays on mainnet so we never silently downgrade a live user.
+ *
+ * Hostname condition mirrors getSuinsNetwork() in src/suins.ts exactly so
+ * that Seal key servers and SuiNS PTB network can never split-brain.
+ */
+function pickSealServers(): Array<{ objectId: string; weight: number }> {
+  try {
+    const host = (typeof location !== 'undefined' ? location.hostname : '') || '';
+    const isTestnet =
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      (host.startsWith('dotski-devnet.') && host.endsWith('.workers.dev'));
+    return isTestnet ? SEAL_SERVERS_TESTNET : SEAL_SERVERS_MAINNET;
+  } catch {
+    return SEAL_SERVERS_MAINNET;
+  }
+}
+
+const SEAL_SERVERS = pickSealServers();
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -136,7 +171,11 @@ export interface ThunderClientOptions {
 
 // ─── Client state ───────────────────────────────────────────────────
 
-type MessagingClient = ReturnType<typeof createSuiStackMessagingClient>;
+// Explicit <void> instantiation — without it, `ReturnType` on a generic
+// function resolves TApproveContext to `unknown` (the constraint upper
+// bound) instead of the default `void`, forcing every method to require
+// a `sealApproveContext` field we never pass.
+type MessagingClient = ReturnType<typeof createSuiStackMessagingClient<void>>;
 
 let _client: MessagingClient | null = null;
 let _signer: DappKitSigner | null = null;
@@ -155,11 +194,71 @@ let _address = '';
 // EXTENDED client (the one returned from createSuiStackMessagingClient
 // after the $extend chain). Using `_client` here closes that gap.
 const SESSION_KEY_TTL_MIN = 30;
-const SK_STORAGE_KEY = (addr: string) => `ski:seal-sk:v3:${addr.toLowerCase()}`;
+// Cache version bump: if a restored key ever produces a
+// personalMessage that the wallet's backend rejects, the cause is
+// most likely a format drift between the SDK version that wrote the
+// cache and the one reading it. Bumping the prefix forces every
+// client to re-mint from scratch on first load, without a manual
+// localStorage.clear().
+const SK_STORAGE_PREFIX = 'ski:seal-sk:v4:';
+const SK_STORAGE_KEY = (addr: string) => `${SK_STORAGE_PREFIX}${addr.toLowerCase()}`;
+// Best-effort sweep of any stale v1/v2/v3 entries so they don't linger
+// and confuse future debugging. Fire on module load.
+try {
+  if (typeof localStorage !== 'undefined') {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && /^ski:seal-sk:v[123]:/.test(k)) stale.push(k);
+    }
+    for (const k of stale) localStorage.removeItem(k);
+    if (stale.length > 0) console.log(`[thunder] purged ${stale.length} stale Seal session key cache entries`);
+  }
+} catch { /* non-browser / storage disabled */ }
+
 let _sessionKeyPromise: Promise<SessionKey> | null = null;
+
+// Sticky rejection cooldown — when the user cancels a Seal session-key
+// sign, any subsequent storm-open / decrypt attempt would otherwise
+// re-prompt them immediately, creating an endless popup loop. We track
+// the last rejection time per address and refuse to mint a fresh key
+// for SEAL_REJECT_COOLDOWN_MS after a rejection. The cooldown clears
+// on:
+//   - explicit clearSealRejection() call (UI "retry" button)
+//   - wallet disconnect / reconnect (resetThunderClient)
+//   - the cooldown window elapsing naturally
+const SEAL_REJECT_COOLDOWN_MS = 5 * 60 * 1000; // 5 min
+let _sealRejectionAt: number | null = null;
+let _sealRejectionAddr: string | null = null;
+
+/** Clear the Seal sign rejection cooldown so the next storm open will re-prompt. */
+export function clearSealRejection(): void {
+  if (_sealRejectionAt !== null) console.log('[thunder] Seal rejection cooldown cleared');
+  _sealRejectionAt = null;
+  _sealRejectionAddr = null;
+}
+
+/** True when the user recently cancelled a Seal sign for this address. */
+export function isSealRejected(address: string): boolean {
+  if (!_sealRejectionAt || !_sealRejectionAddr) return false;
+  if (_sealRejectionAddr.toLowerCase() !== address.toLowerCase()) return false;
+  if (Date.now() - _sealRejectionAt > SEAL_REJECT_COOLDOWN_MS) {
+    _sealRejectionAt = null;
+    _sealRejectionAddr = null;
+    return false;
+  }
+  return true;
+}
 
 async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<SessionKey> {
   if (_sessionKeyPromise) return _sessionKeyPromise;
+  // Sticky rejection gate — fast-throw without prompting if the user
+  // cancelled within the cooldown window. Throws a recognizable error
+  // so callers can show "decryption cancelled" UI without spawning
+  // another wallet popup.
+  if (isSealRejected(opts.address)) {
+    throw new Error('Seal session-key sign was cancelled — click retry to prompt again');
+  }
   _sessionKeyPromise = (async () => {
     if (!_client) throw new Error('Thunder client not yet initialized');
     // Try to restore from localStorage.
@@ -202,7 +301,61 @@ async function _loadOrMintSessionKey(opts: ThunderClientOptions): Promise<Sessio
     // at runtime despite the SignPersonalMessageFn type declaring an object
     // arg — the caller in ui.ts passes bytes directly. Match the real runtime
     // shape or the wallet signs garbage and Seal servers reject the cert.
-    const signed = await (opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>)(personalMsg);
+    //
+    // WaaP's Silk Protector microservice intermittently returns 400 on
+    // /get-policy and /v2/handle-request, surfacing as
+    //   "Backend error (400): Failed to generate signature due to unknown server error"
+    // Sometimes the rejection propagates back to us and our wallet.ts
+    // retry handles it; sometimes WaaP shows its own toast and our
+    // promise hangs until the timeout. Either way, a Seal session key
+    // mint is special enough to deserve its own call-site retry loop:
+    // 3 attempts with reinit between, then surface a clean error.
+    const signFn = opts.signPersonalMessage as unknown as (msg: Uint8Array) => Promise<{ signature: string }>;
+    let signed: { signature: string } | undefined;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        signed = await signFn(personalMsg);
+        if (signed?.signature) break;
+        throw new Error('signPersonalMessage returned no signature');
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        // Rejection → terminal. Set the sticky cooldown so subsequent
+        // storm opens DON'T re-prompt the user. They explicitly
+        // cancelled and we should respect that until they reset.
+        const isRejection = /reject/i.test(msg)
+          || /cancel/i.test(msg)
+          || /denied/i.test(msg)
+          || /user closed/i.test(msg)
+          || /action[_\s]*cancel/i.test(msg);
+        if (isRejection) {
+          _sealRejectionAt = Date.now();
+          _sealRejectionAddr = opts.address;
+          console.warn('[thunder] Seal session-key sign cancelled by user — cooldown set for 5 min');
+          throw new Error('Seal session-key sign was cancelled — click retry to prompt again');
+        }
+        const isBackend400 = /backend error\s*\(400\)/i.test(msg)
+          || /failed to generate signature/i.test(msg)
+          || /unknown server error/i.test(msg)
+          || /timed out/i.test(msg);
+        console.warn(`[thunder] Seal session-key sign attempt ${attempt}/3 failed:`, msg);
+        if (attempt < 3 && isBackend400) {
+          // Reinit WaaP iframe between attempts — recovers from stuck
+          // postMessage channels and stale Silk Protector sessions.
+          try {
+            const { reinitWaaP } = await import('../waap.js');
+            await reinitWaaP();
+          } catch { /* best-effort */ }
+          // Small backoff so Silk has a chance to recover if it's a
+          // transient infra blip on their end.
+          await new Promise(r => setTimeout(r, 1500));
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!signed) throw lastErr ?? new Error('Seal session-key sign failed');
     await key.setPersonalMessageSignature(signed.signature);
 
     // Persist for restoration on next page load. The SDK's `export()` returns
@@ -249,7 +402,10 @@ export function initThunderClient(opts: ThunderClientOptions) {
   const gqlClient = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
   _warmer = () => _loadOrMintSessionKey(opts);
-  _client = createSuiStackMessagingClient(gqlClient as any, {
+  // Explicit <void> generic so SuiStackMessagingClient's TApproveContext
+  // resolves as void — without this TS infers `unknown` and every method
+  // starts demanding a `sealApproveContext` field we never pass.
+  _client = createSuiStackMessagingClient<void>(gqlClient as any, {
     seal: { serverConfigs: SEAL_SERVERS, verifyKeyServers: true },
     encryption: {
       sessionKey: {
@@ -317,6 +473,10 @@ export function resetThunderClient() {
   _address = '';
   _warmer = null;
   _sessionKeyPromise = null;
+  // Clear the Seal rejection cooldown — disconnecting is an explicit
+  // user action and signals a fresh start. The next wallet connect
+  // should be allowed to prompt for a new session key.
+  clearSealRejection();
 }
 
 // ─── Timestream DO transport ────────────────────────────────────────
@@ -533,9 +693,9 @@ export async function sendThunder(opts: {
 }): Promise<{ messageId: string }> {
   const groupId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : '';
 
-  // Sableye hook — fire a one-shot browser event the moment we know
-  // the recipient. ui layer listens and records the counterparty in
-  // the Seal-encrypted private interaction set. See issue #145.
+  // Sableye hook: fire a one-shot browser event the moment we know
+  // the recipient. The ui layer listens and records the counterparty
+  // in the Seal-encrypted private interaction set. See issue #145.
   if (opts.recipientName && typeof window !== 'undefined') {
     try {
       window.dispatchEvent(new CustomEvent('ski:thunder-sent', {
@@ -906,6 +1066,30 @@ async function encryptWithRetry(
  * Reads directly from the DO — messages are stored as base64 text.
  * Falls back to SDK's Seal-decrypt path for legacy encrypted messages.
  */
+/**
+ * Edit an existing Thunder. Uses the module-level `_signer` bound at
+ * initThunderClient time so callers don't have to plumb signers
+ * through the UI. Only the original sender can succeed — the DO's
+ * /update handler enforces senderAddress matches the row, and the
+ * Seal envelope uses the same key version as the original so
+ * participants can decrypt it. Attachments are left unchanged.
+ */
+export async function editThunder(opts: {
+  groupRef: GroupRef;
+  messageId: string;
+  text: string;
+}): Promise<{ messageId: string }> {
+  if (!_signer) throw new Error('Thunder client not initialized — call initThunderClient first');
+  const client = getThunderClient();
+  await client.messaging.editMessage({
+    groupRef: opts.groupRef,
+    messageId: opts.messageId,
+    text: opts.text,
+    signer: _signer as unknown as Parameters<typeof client.messaging.editMessage>[0]['signer'],
+  });
+  return { messageId: opts.messageId };
+}
+
 export async function getThunders(opts: {
   groupRef: GroupRef;
   afterOrder?: number;

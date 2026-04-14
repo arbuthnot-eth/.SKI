@@ -92,6 +92,30 @@ const waapPlaceholder: Wallet = {
   },
 };
 
+// Static zkLogin placeholder so the modal roster shows a zkLogin row before
+// the real zklogin.ts module finishes loading.  Clicking the placeholder
+// triggers the lazy-load; once the real wallet registers, getSuiWallets()
+// returns that one instead.
+const ZKLOGIN_PLACEHOLDER_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjgiIGhlaWdodD0iMTI4Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjMDBkNGFhIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDA4OGZmIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIGZpbGw9InVybCgjZykiIHJ4PSIyNCIvPjx0ZXh0IHg9IjY0IiB5PSI3OCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZvbnQtc2l6ZT0iNDQiIGZpbGw9IndoaXRlIj5aSzwvdGV4dD48L3N2Zz4=';
+const zkLoginPlaceholder: Wallet = {
+  name: 'zkLogin',
+  version: '1.0.0' as const,
+  icon: ZKLOGIN_PLACEHOLDER_ICON as `data:image/svg+xml;base64,${string}`,
+  chains: ['sui:mainnet' as const],
+  accounts: [],
+  features: {
+    'standard:connect': {
+      version: '1.0.0',
+      async connect() {
+        // Placeholder — the real zkLogin wallet replaces this once loaded.
+        // Trigger lazy load so the next click hits the real wallet.
+        import('./zklogin.js').then(({ registerZkLogin }) => registerZkLogin()).catch(() => {});
+        return { accounts: [] };
+      },
+    },
+  },
+};
+
 /** Get all Sui-compatible wallets currently registered */
 export function getSuiWallets(): Wallet[] {
   const real = walletsApi.get().filter((w) => {
@@ -102,6 +126,10 @@ export function getSuiWallets(): Wallet[] {
   // Include static WaaP placeholder if the real WaaP SDK hasn't registered yet
   if (!real.some(w => /waap/i.test(w.name))) {
     real.push(waapPlaceholder);
+  }
+  // Include static zkLogin placeholder if the real zklogin module hasn't registered yet
+  if (!real.some(w => /^zklogin$/i.test(w.name))) {
+    real.push(zkLoginPlaceholder);
   }
   return real;
 }
@@ -348,14 +376,28 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
   const { wallet, account } = currentState;
   if (!wallet || !account) throw new Error('No wallet connected');
 
-  // Wallets sometimes hang indefinitely on signPersonalMessage (WaaP in
-  // particular, when its iframe's message channel is in a bad state).
-  // Race each attempt against a 30s timeout; if WaaP times out we also
-  // tear down and re-register the iframe before a second attempt, which
-  // recovers from the "target origin mismatch" dead state without a
-  // full page refresh.
-  const timeoutMs = 30_000;
+  // Wallets sometimes hang indefinitely on signPersonalMessage. WaaP in
+  // particular has two distinct failure modes:
+  //   1. iframe message channel is in a bad state — the call hangs forever
+  //   2. WaaP iframe shows its own error toast (e.g. "Backend error 400")
+  //      but doesn't re-throw the rejection to our promise — also hangs
+  // Both manifest as "no response" from our caller's perspective.
+  //
+  // Timeout history:
+  //   - 30s (original): too long, user dismissed the toast before the
+  //     retry path could fire on desktop
+  //   - 5s (Eevee Charm IX): caused REGRESSION on MOBILE — fired before
+  //     the user could context-switch to the wallet app and tap Confirm
+  //     (mobile signing routinely takes 10-20s of context switch + scroll
+  //     + tap time, vs ~2s on desktop click-to-confirm). The signature
+  //     came back AFTER our timeout had already torn down the iframe.
+  //   - 30s (current): mobile-tolerant. The "WaaP shows its own 400 toast
+  //     and never resolves" case still recovers within 30s — the user
+  //     dismissing the toast before then is acceptable (they get a clean
+  //     error after, can retry). Mobile users with slow taps don't lose
+  //     valid signatures.
   const isWaaP = /waap|silk/i.test(wallet.name);
+  const timeoutMs = 30_000;
   const doSign = () => withBackpackRetry(() => {
     if (/backpack/i.test(wallet.name)) return dappKit.signPersonalMessage({ message });
     if (!('sui:signPersonalMessage' in wallet.features)) {

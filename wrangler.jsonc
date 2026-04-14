@@ -4,6 +4,24 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Tell the bundler that .wasm files should be built as
+  // WebAssembly.Module compiled modules. Required for the `import
+  // wasmModule from 'ika-wasm-binary'` line in UltronSigningAgent to
+  // produce a usable module at runtime.
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+  ],
+
+  // Redirect the IKA SDK's import of `@ika.xyz/ika-wasm` to our shim.
+  // The shim patches process.versions to force the SDK's non-Node path
+  // and exposes a default async init that runs initSync with the
+  // pre-compiled WebAssembly.Module. Without this, the SDK tries to
+  // use the Node variant (fs.readFileSync-based) in Workers because
+  // `nodejs_compat` sets `process.versions.node`.
+  "alias": {
+    "@ika.xyz/ika-wasm": "./src/server/wasm/ika-wasm-shim.ts"
+  },
+
   // Custom domain
   "routes": [
     { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
@@ -54,6 +72,10 @@
       {
         "name": "Pokedex",
         "class_name": "Pokedex"
+      },
+      {
+        "name": "UltronSigningAgent",
+        "class_name": "UltronSigningAgent"
       }
     ]
   },
@@ -94,6 +116,10 @@
     {
       "tag": "v9",
       "new_sqlite_classes": ["Pokedex"]
+    },
+    {
+      "tag": "v10",
+      "new_sqlite_classes": ["UltronSigningAgent"]
     }
   ],
 

@@ -3,6 +3,11 @@ import { agentsMiddleware } from 'hono-agents';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
+import { createZkLoginApp } from './zklogin-proxy.js';
+import { encryptProxy } from './encrypt-proxy.js';
+import { verifyVectorIntent } from './vector-intent.js';
+import { createPublicClient, http, erc20Abi, type Address } from 'viem';
+import { mainnet } from 'viem/chains';
 // ika-provision.ts is available for server-side DKG if needed in future,
 // but DKG WASM must run client-side (browser) — Workers can't run it.
 
@@ -13,14 +18,26 @@ interface Env {
   TimestreamAgent: DurableObjectNamespace;
   NameIndex: DurableObjectNamespace;
   Pokedex: DurableObjectNamespace;
+  UltronSigningAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
   SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
   HELIUS_API_KEY?: string; // Solana RPC (Helius)
   HELIUS_WEBHOOK_SECRET?: string; // Validates incoming Helius webhook requests
+  ALCHEMY_WEBHOOK_SECRET?: string; // Validates incoming Alchemy Address Activity webhooks
+  ALCHEMY_ETH_URL?: string; // Alchemy ETH mainnet HTTPS endpoint (viem transport)
+  ZKLOGIN_PROVER_URL?: string; // zkLogin prover upstream (devnet vampire / mainnet self-host)
+  ENCRYPT_GRPC_URL?: string; // dWallet Encrypt upstream (pre-alpha devnet)
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ── zkLogin prover proxy + Encrypt FHE bridge ───────────────────────
+// Mounted early so rate-limit middleware still applies via /api/* prefix.
+// zkLogin: vampire Mysten's free devnet prover, self-host for mainnet later.
+// Encrypt: stub mode until pre-alpha exposes gRPC-Web or grpc-gateway.
+app.route('/api/zklogin', createZkLoginApp());
+app.route('/api/encrypt', encryptProxy);
 
 // ── Rate limiting middleware ────────────────────────────────────────────
 // Simple per-IP sliding window. Uses in-memory Map (resets on cold start).
@@ -100,9 +117,50 @@ app.use('*', async (c, next) => {
   if (c.req.header('upgrade') === 'websocket') return;
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  c.header('X-Frame-Options', 'SAMEORIGIN');
+  // X-Frame-Options omitted — we use frame-ancestors (CSP) instead, which is
+  // the modern replacement. XFO SAMEORIGIN conflicts with WaaP's cross-origin
+  // iframe lifecycle in some browsers.
   c.header('Permissions-Policy', 'clipboard-read=()'); // block clipboard read prompts (WalletConnect w3m-input-address)
-  // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page
+  // CSP: allow self + Sui RPCs + Walrus + CDN for /squids marked page.
+  // WaaP (human.tech) needs explicit frame-src + connect-src entries for its
+  // iframe-based wallet protocol. Without these, every WaaP auth/signing
+  // iframe is silently blocked by the default-src 'self' fallback and the
+  // whole wallet looks broken. The domains come from @human.tech/waap-constants.
+  const WAAP_FRAME = [
+    'https://waap.xyz',
+    'https://*.waap.xyz',
+    'https://*.silk-protector.com',
+    'https://*.silk-protector-microservice-km.com',
+    'https://*.silk-protector-microservice-pe.com',
+    'https://*.silkwallet.net',
+    'https://silksecure.net',
+    'https://*.silksecure.net',
+    'https://dashboard.silk.sc',
+    'https://gastank.app-76797b4474a8.enclave.evervault.com',
+  ].join(' ');
+  const WAAP_CONNECT = [
+    'https://*.waap.xyz',
+    'https://prod-waap-ws-relay.fly.dev',
+    'wss://prod-waap-ws-relay.fly.dev',
+    'https://*.silk-protector.com',
+    'https://*.silk-protector-microservice-km.com',
+    'https://*.silk-protector-microservice-pe.com',
+    'https://*.silkwallet.net',
+    'https://silksecure.net',
+    'https://*.silksecure.net',
+    'https://gastank.app-76797b4474a8.enclave.evervault.com',
+    'https://api.fpjs.io',
+    'https://fpcdn.io',
+  ].join(' ');
+  // OAuth providers WaaP redirects to for social auth
+  const OAUTH_FORMS = [
+    'https://accounts.google.com',
+    'https://api.twitter.com',
+    'https://x.com',
+    'https://twitter.com',
+    'https://discord.com',
+    'https://github.com',
+  ].join(' ');
   c.header('Content-Security-Policy', [
     "default-src 'self'",
     // Inline script in index.html for shell restore — nonce would be ideal but
@@ -111,10 +169,11 @@ app.use('*', async (c, next) => {
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
-    "connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space https://fpcdn.io https://api.fpjs.io",
+    `connect-src 'self' https://*.sui.io https://sui-rpc.publicnode.com https://rpc.ankr.com https://*.blockvision.org https://*.walrus.space https://aggregator.walrus-testnet.walrus.space ${WAAP_CONNECT}`,
+    `frame-src 'self' ${WAAP_FRAME}`,
     "frame-ancestors 'self' https://*.sui.ski",
     "base-uri 'self'",
-    "form-action 'self'",
+    `form-action 'self' ${OAUTH_FORMS}`,
   ].join('; '));
 });
 
@@ -272,6 +331,105 @@ app.get('/api/shade/status/:address', async (c) => {
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }
+});
+
+// ── Shade Lock-On III — user's pending Shade orders ──
+// Scan on-chain for both legacy ShadeOrder and StableShadeOrder<T>
+// objects where owner == the requested address. Returns a flat list
+// with { objectId, coinType, stable, depositMist, sealedPayload,
+// commitment, graceEndMs, status } so a UI can render pending orders
+// with countdown + refund buttons without opening DevTools.
+//
+// Entirely GraphQL — does not call the ShadeExecutorAgent DO. Safe to
+// poll from any client. No auth gate since the data is already public
+// on-chain; we just filter by owner address (which is visible in the
+// `owner` field of every order object).
+app.get('/api/shade/orders/:address', async (c) => {
+  const address = c.req.param('address');
+  const lower = address.toLowerCase();
+  const SHADE_V4_PACKAGE = '0xb9227899ff439591c6d51a37bca2a9bde03cea3e28f12866c0d207034d1c9203';
+  const SHADE_V5_PACKAGE = '0x9978db0aa0283b4f9fee41a0b98bff91cfed548693766e2036317f9ee77e3837';
+  const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+  const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+  const GQL = 'https://graphql.mainnet.sui.io/graphql';
+  type OrderNode = {
+    address: string;
+    asMoveObject?: {
+      contents?: {
+        json?: {
+          owner?: string;
+          deposit?: string;
+          sealed_payload?: string;
+          commitment?: string;
+          grace_end_ms?: string;
+          execute_after_ms?: string;
+        };
+        type?: { repr?: string };
+      };
+    };
+  };
+  const queryType = async (type: string): Promise<OrderNode[]> => {
+    try {
+      const res = await fetch(GQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($type: String!) {
+            objects(filter: { type: $type }) {
+              nodes { address asMoveObject { contents { json type { repr } } } }
+            }
+          }`,
+          variables: { type },
+        }),
+      });
+      if (!res.ok) return [];
+      const json = await res.json() as { data?: { objects?: { nodes?: OrderNode[] } } };
+      return json?.data?.objects?.nodes ?? [];
+    } catch { return []; }
+  };
+  // Scan legacy + stable-over-iUSD + stable-over-USDC in parallel. Stable
+  // type scans are generic per coin type; adding more stables is a matter
+  // of appending to this list. The contract is `StableShadeOrder<T>` so
+  // each instantiation is its own Move type and must be queried separately.
+  const [legacy, stableIusd, stableUsdc] = await Promise.all([
+    queryType(`${SHADE_V4_PACKAGE}::shade::ShadeOrder`),
+    queryType(`${SHADE_V5_PACKAGE}::shade::StableShadeOrder<${IUSD_TYPE}>`),
+    queryType(`${SHADE_V5_PACKAGE}::shade::StableShadeOrder<${USDC_TYPE}>`),
+  ]);
+  const now = Date.now();
+  const toOrder = (n: OrderNode, stable: boolean, coinType: string) => {
+    const json = n.asMoveObject?.contents?.json ?? {};
+    const graceEndMs = Number(json.grace_end_ms ?? json.execute_after_ms ?? 0);
+    const status = graceEndMs === 0
+      ? 'pending'
+      : now < graceEndMs
+      ? 'waiting'
+      : 'expired';
+    return {
+      objectId: n.address,
+      stable,
+      coinType,
+      owner: json.owner ?? '',
+      depositMist: json.deposit ?? '0',
+      sealedPayload: json.sealed_payload,
+      commitment: json.commitment,
+      graceEndMs,
+      msUntilGrace: graceEndMs === 0 ? null : graceEndMs - now,
+      status,
+    };
+  };
+  const orders = [
+    ...legacy
+      .filter(n => (n.asMoveObject?.contents?.json?.owner ?? '').toLowerCase() === lower)
+      .map(n => toOrder(n, false, 'SUI')),
+    ...stableIusd
+      .filter(n => (n.asMoveObject?.contents?.json?.owner ?? '').toLowerCase() === lower)
+      .map(n => toOrder(n, true, IUSD_TYPE)),
+    ...stableUsdc
+      .filter(n => (n.asMoveObject?.contents?.json?.owner ?? '').toLowerCase() === lower)
+      .map(n => toOrder(n, true, USDC_TYPE)),
+  ];
+  return c.json({ address, count: orders.length, orders });
 });
 
 // Schedule a shade order for auto-execution via HTTP POST
@@ -1529,6 +1687,1113 @@ app.post('/api/cache/swap-sui-for-deep', async (c) => {
   }
 });
 
+// ── Solana RPC proxy — relays browser JSON-RPC calls to Helius ──────
+// Why: api.mainnet-beta.solana.com 403s on most browser origins and
+// publicnode is rate-limited. Sui.ski has a Helius developer plan
+// stashed in HELIUS_API_KEY, but we can't ship the key to the
+// browser. This endpoint proxies JSON-RPC POST bodies to Helius with
+// the key server-side so the client just talks to same-origin.
+//
+// Read-only scope: we don't accept methods that cost money (like
+// sendTransaction) through this proxy — those still route via our
+// own signer paths. Balance/account/tx lookups are what the browser
+// actually needs.
+const SOL_RPC_ALLOWED_METHODS = new Set([
+  'getBalance',
+  'getAccountInfo',
+  'getMultipleAccounts',
+  'getTokenAccountBalance',
+  'getTokenAccountsByOwner',
+  'getProgramAccounts',
+  'getSignaturesForAddress',
+  'getTransaction',
+  'getSignatureStatuses',
+  'getLatestBlockhash',
+  'getMinimumBalanceForRentExemption',
+  'getSlot',
+  'getEpochInfo',
+  'getHealth',
+  'getBlockHeight',
+  'getFeeForMessage',
+  'simulateTransaction',
+]);
+app.post('/api/sol-rpc', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'Helius key not configured' }, 500);
+    const body = await c.req.json() as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
+    if (!body || typeof body.method !== 'string') {
+      return c.json({ error: 'Invalid JSON-RPC body' }, 400);
+    }
+    if (!SOL_RPC_ALLOWED_METHODS.has(body.method)) {
+      return c.json({ error: `Method ${body.method} not allowed on proxy` }, 403);
+    }
+    const r = await fetch(`https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, method: body.method, params: body.params ?? [] }),
+    });
+    const j = await r.json();
+    // Mirror the upstream response verbatim so callers that parse
+    // raw JSON-RPC shapes don't need any special-casing.
+    return c.json(j as Record<string, unknown>, r.status as any, {
+      'cache-control': 'no-store',
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Cross-chain balance proxies — IKA dWallet-derived addresses ─────
+// Browser hits these to populate the BTC/ETH/TRON chips in the idle
+// overlay squids row. Each endpoint returns raw on-chain amounts;
+// browser combines with CoinGecko prices for USD totals.
+
+// BTC — mempool.space (free, no key). Sums confirmed + unconfirmed.
+app.get('/api/balance/btc/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^(bc1|[13])[a-zA-Z0-9]{20,90}$/.test(addr)) return c.json({ error: 'invalid BTC addr' }, 400);
+  try {
+    const r = await fetch(`https://mempool.space/api/address/${addr}`);
+    if (!r.ok) return c.json({ error: `mempool.space ${r.status}` }, 502);
+    const j = await r.json() as { chain_stats?: { funded_txo_sum?: number; spent_txo_sum?: number }; mempool_stats?: { funded_txo_sum?: number; spent_txo_sum?: number } };
+    const conf = (j.chain_stats?.funded_txo_sum ?? 0) - (j.chain_stats?.spent_txo_sum ?? 0);
+    const unconf = (j.mempool_stats?.funded_txo_sum ?? 0) - (j.mempool_stats?.spent_txo_sum ?? 0);
+    return c.json({ sats: conf + unconf }, 200, { 'cache-control': 'public,max-age=30' });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ETH (mainnet) — viem + Alchemy transport. Native wei + USDC raw (6dp).
+const USDC_MAINNET: Address = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+app.get('/api/balance/eth/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) return c.json({ error: 'invalid ETH addr' }, 400);
+  if (!c.env.ALCHEMY_ETH_URL) return c.json({ error: 'ALCHEMY_ETH_URL not configured' }, 500);
+  try {
+    const client = createPublicClient({ chain: mainnet, transport: http(c.env.ALCHEMY_ETH_URL) });
+    const [wei, usdcRaw] = await Promise.all([
+      client.getBalance({ address: addr as Address }),
+      client.readContract({
+        address: USDC_MAINNET,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [addr as Address],
+      }),
+    ]);
+    return c.json({ wei: wei.toString(), usdcRaw: usdcRaw.toString() }, 200, { 'cache-control': 'public,max-age=30' });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// TRON — TronGrid. Returns TRX (sun) + USDT-TRC20 raw.
+// USDT-TRC20 contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+app.get('/api/balance/tron/:addr', async (c) => {
+  const addr = c.req.param('addr');
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr)) return c.json({ error: 'invalid TRON addr' }, 400);
+  try {
+    const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}`);
+    if (!r.ok) return c.json({ error: `trongrid ${r.status}` }, 502);
+    const j = await r.json() as { data?: Array<{ balance?: number; trc20?: Array<Record<string, string>> }> };
+    const acct = j.data?.[0];
+    const sun = acct?.balance ?? 0;
+    let usdtRaw = '0';
+    for (const entry of acct?.trc20 ?? []) {
+      const v = entry['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
+      if (v) { usdtRaw = v; break; }
+    }
+    return c.json({ sun, usdtRaw }, 200, { 'cache-control': 'public,max-age=30' });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── UltronSigningAgent WASM smoke test (Registeel Toxic Spikes) ─────
+// Spike endpoint to validate that the IKA WASM binary loads inside a
+// Durable Object runtime. Proves/disproves the two claims from the
+// project_ultron_do_signing feasibility study:
+//   1. dwallet_mpc_wasm_bg.wasm imports + initializes in a Worker DO
+//   2. A pure-crypto exported function runs without throwing
+//
+// If this returns {ok:true}, the full UltronSigningAgent plan unlocks
+// (presign + decrypt + sign + submit all layer on top of the same
+// initSync path).
+app.get('/api/ultron/wasm-spike', async (c) => {
+  try {
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const res = await stub.fetch(new Request('https://ultron-signer/wasm-spike', {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'ultron' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// Increment A of the full signing flow: read ultron's ed25519 dWallet
+// via JSON-RPC + IkaClient inside the DO. If this returns the dWallet
+// in Active state with a non-empty public_output, the transport path
+// is proven and every subsequent signing step uses the same surface.
+app.get('/api/ultron/read-dwallet', async (c) => {
+  try {
+    const curve = c.req.query('curve') || 'ed25519';
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const res = await stub.fetch(new Request(`https://ultron-signer/read-dwallet?curve=${encodeURIComponent(curve)}`, {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'ultron' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// Increment B of the signing flow: accept ultron's encrypted user share
+// to transition the dWallet from AwaitingKeyHolderSignature → Active.
+// Re-derives the deterministic seed from SHADE_KEEPER_PRIVATE_KEY,
+// reconstructs UserShareEncryptionKeys, builds a PTB calling
+// IkaTransaction.acceptEncryptedUserShare, signs with ultron's keypair,
+// and submits via JSON-RPC. Admin-gated: this is a one-time mutation.
+// Write ultron's cross-chain identity into the SUIAMI Roster. Chains
+// come from the two IKA DKG ceremonies landed earlier in this session
+// (ed25519 for SOL, secp256k1 for BTC/ETH) — first time ultron is
+// registered roster-side with real IKA-derived addresses, not raw
+// keypair re-encodings. Admin-gated via signed personal message;
+// signs + submits server-side with ultron's own keypair so no browser
+// session needs to be online. Ultron doing its own SUIAMI — finally.
+app.post('/api/cache/ultron-roster', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    // No auth gate. The endpoint is self-referential: ultron writes its
+    // own IKA-derived addresses to its own roster entry with its own
+    // keypair. There's no path for a caller to extract value — the
+    // worst case is someone rate-spamming ultron into paying trivial
+    // gas for repeated identical writes. Accept {} body.
+    try { await c.req.json(); } catch { /* body optional */ }
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+    const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronSuiAddr = normalizeSuiAddress(keypair.getPublicKey().toSuiAddress());
+
+    // IKA-derived addresses from the DKG ceremonies. Hardcoded because
+    // ultron's DWalletCaps are static — any change would require a new
+    // DKG. These exact bytes were verified via on-chain readouts earlier
+    // in the session.
+    const BTC_ULTRON = 'bc1qz5glnvhxacqva2cgydehqhgxjx22jru86gwgp9';
+    const ETH_ULTRON = '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d';
+    const SOL_ULTRON = 'GfVzGHiSPyTnX6bawnahJnUPXeASF6qKPd224VQws1DW';
+    const name = 'ultron';
+    const nameHash = Array.from(keccak_256(new TextEncoder().encode(name)));
+
+    const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+    const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
+
+    const tx = new Transaction();
+    tx.setSender(ultronSuiAddr);
+    tx.moveCall({
+      package: ROSTER_PKG,
+      module: 'roster',
+      function: 'set_identity',
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.string(name),
+        tx.pure.vector('u8', nameHash),
+        tx.pure.vector('string', ['sui', 'btc', 'eth', 'sol']),
+        tx.pure.vector('string', [ultronSuiAddr, BTC_ULTRON, ETH_ULTRON, SOL_ULTRON]),
+        tx.pure.vector('address', []),
+        tx.pure.string(''),
+        tx.pure.vector('u8', []),
+        tx.object('0x6'),
+      ],
+    });
+
+    const transport = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
+    const txBytes = await tx.build({ client: transport as never });
+    const { signature } = await keypair.signTransaction(txBytes);
+
+    // Submit via the JSON-RPC fallback chain shade-executor uses.
+    const rpcEndpoints = [
+      'https://sui-rpc.publicnode.com',
+      'https://sui-mainnet-endpoint.blockvision.org',
+      'https://rpc.ankr.com/sui',
+    ];
+    let digest = '';
+    let lastErr = '';
+    for (const url of rpcEndpoints) {
+      try {
+        const txBytesB64 = btoa(String.fromCharCode(...txBytes));
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'sui_executeTransactionBlock',
+            params: [txBytesB64, [signature], { showEffects: true }, 'WaitForLocalExecution'],
+          }),
+        });
+        const j = await r.json() as {
+          result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } };
+          error?: { message?: string };
+        };
+        if (j.error) { lastErr = j.error.message ?? 'rpc error'; continue; }
+        const effStatus = j.result?.effects?.status?.status;
+        if (effStatus && effStatus !== 'success') {
+          lastErr = j.result?.effects?.status?.error ?? 'effects failed';
+          continue;
+        }
+        digest = j.result?.digest ?? '';
+        if (digest) break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (!digest) return c.json({ error: `All RPC endpoints failed: ${lastErr}` }, 502);
+
+    return c.json({
+      ok: true,
+      digest,
+      ultronSuiAddr,
+      chains: { sui: ultronSuiAddr, btc: BTC_ULTRON, eth: ETH_ULTRON, sol: SOL_ULTRON },
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+app.post('/api/ultron/accept-share', async (c) => {
+  try {
+    const curve = c.req.query('curve') || 'ed25519';
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const res = await stub.fetch(new Request(`https://ultron-signer/accept-share?curve=${encodeURIComponent(curve)}`, {
+      method: 'POST',
+      headers: { 'x-partykit-room': 'ultron' },
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// ── Leafeon Increment D glue: full signing chain end-to-end ──────────
+// POST /api/ultron/sign
+// Body: { curve: 'secp256k1'|'ed25519', message: '<hex>', hashScheme: 'KECCAK256'|'SHA256'|... }
+// Chains four DO calls:
+//   1. /request-presign  — Increment C PTB, returns { presignObjectId, presignCapId }
+//   2. /poll-presign     — waits until presign state === Completed
+//   3. /request-sign     — Increment D PTB, returns { signSessionId }
+//   4. /poll-sign        — waits until sign state === Completed, parses signature
+// Returns { ok, presignDigest, presignObjectId, signDigest, signSessionId, signatureHex, durationMs }.
+//
+// Admin-ish: this burns real IKA on every call, so it's POST + gated
+// behind the same DO route guard as accept-share. Callers should already
+// have ultron's dwallet in Active state (run /accept-share first if not).
+app.post('/api/ultron/sign', async (c) => {
+  const t0 = Date.now();
+  try {
+    const body = await c.req.json() as {
+      curve?: 'ed25519' | 'secp256k1';
+      message?: string;
+      hashScheme?: string;
+    };
+    const curve = body.curve ?? 'secp256k1';
+    const messageHex = (body.message ?? '').replace(/^0x/, '');
+    const hashScheme = body.hashScheme ?? (curve === 'ed25519' ? 'SHA512' : 'KECCAK256');
+    if (!messageHex) return c.json({ error: 'message (hex) required' }, 400);
+
+    const stub = c.env.UltronSigningAgent.get(
+      c.env.UltronSigningAgent.idFromName('ultron-spike'),
+    );
+    const headers = { 'content-type': 'application/json', 'x-partykit-room': 'ultron' };
+
+    // 1. Request presign (Increment C)
+    const presignRes = await stub.fetch(new Request(
+      `https://ultron-signer/request-presign?curve=${encodeURIComponent(curve)}`,
+      { method: 'POST', headers },
+    ));
+    const presignJson = await presignRes.json() as {
+      ok?: boolean; error?: string; digest?: string;
+      presignObjectId?: string; presignCapId?: string;
+    };
+    if (!presignJson.ok || !presignJson.presignObjectId || !presignJson.presignCapId) {
+      return c.json({
+        ok: false,
+        step: 'request-presign',
+        error: presignJson.error ?? 'request-presign missing ids',
+        presignJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+    const presignDigest = presignJson.digest;
+    const presignObjectId = presignJson.presignObjectId;
+    const presignCapId = presignJson.presignCapId;
+
+    // 2. Poll presign until Completed
+    const pollPresignRes = await stub.fetch(new Request(
+      `https://ultron-signer/poll-presign?id=${encodeURIComponent(presignObjectId)}`,
+      { method: 'GET', headers },
+    ));
+    const pollPresignJson = await pollPresignRes.json() as {
+      ok?: boolean; error?: string; completed?: boolean; state?: string;
+    };
+    if (!pollPresignJson.ok || !pollPresignJson.completed) {
+      return c.json({
+        ok: false,
+        step: 'poll-presign',
+        error: pollPresignJson.error ?? 'presign not completed',
+        presignDigest, presignObjectId,
+        pollPresignJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+
+    // 3. Request sign (Increment D)
+    const signReqBody = JSON.stringify({ curve, presignObjectId, presignCapId, messageHex, hashScheme });
+    const signRes = await stub.fetch(new Request(
+      'https://ultron-signer/request-sign',
+      { method: 'POST', headers, body: signReqBody },
+    ));
+    const signJson = await signRes.json() as {
+      ok?: boolean; error?: string; digest?: string; signSessionId?: string;
+    };
+    if (!signJson.ok || !signJson.signSessionId) {
+      return c.json({
+        ok: false,
+        step: 'request-sign',
+        error: signJson.error ?? 'request-sign missing session id',
+        presignDigest, presignObjectId,
+        signJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+    const signDigest = signJson.digest;
+    const signSessionId = signJson.signSessionId;
+
+    // 4. Poll sign until Completed and parse signature
+    const pollSignRes = await stub.fetch(new Request(
+      `https://ultron-signer/poll-sign?id=${encodeURIComponent(signSessionId)}&curve=${encodeURIComponent(curve)}`,
+      { method: 'GET', headers },
+    ));
+    const pollSignJson = await pollSignRes.json() as {
+      ok?: boolean; error?: string; completed?: boolean; signatureHex?: string; state?: string;
+    };
+    if (!pollSignJson.ok || !pollSignJson.signatureHex) {
+      return c.json({
+        ok: false,
+        step: 'poll-sign',
+        error: pollSignJson.error ?? 'sign not completed',
+        presignDigest, presignObjectId,
+        signDigest, signSessionId,
+        pollSignJson,
+        durationMs: Date.now() - t0,
+      }, 500);
+    }
+
+    return c.json({
+      ok: true,
+      curve,
+      presignDigest,
+      presignObjectId,
+      signDigest,
+      signSessionId,
+      signatureHex: pollSignJson.signatureHex,
+      durationMs: Date.now() - t0,
+    });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      durationMs: Date.now() - t0,
+    }, 500);
+  }
+});
+
+// ── Probe: old sol@ultron balances ──────────────────────────────────
+// Derives the legacy Solana address from SHADE_KEEPER_PRIVATE_KEY
+// (raw ed25519 pubkey, base58-encoded) and reports SOL + SPL balances
+// at that address. Used before running the sweep to see exactly what
+// needs to move to the new IKA-derived sol@ultron.
+//
+// Read-only: the address itself is public info, so no auth needed.
+app.get('/api/cache/ultron-sol-probe', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { b58encode } = await import('./solana-spl.js');
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const oldSolAddress = b58encode(keypair.getPublicKey().toRawBytes());
+
+    const SOL_RPCS = [
+      'https://sui-rpc.publicnode.com', // ignored, SOL only — keep list pure
+    ];
+    // Use the same Helius-first logic we use elsewhere — direct fetch keeps
+    // the endpoint self-contained and avoids importing the full rpcCall helper.
+    const helius = c.env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`
+      : 'https://api.mainnet-beta.solana.com';
+
+    const rpc = async (method: string, params: unknown[]) => {
+      const r = await fetch(helius, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (!r.ok) throw new Error(`${method} HTTP ${r.status}`);
+      const j = await r.json() as { result?: unknown; error?: { message?: string } };
+      if (j.error) throw new Error(`${method}: ${j.error.message}`);
+      return j.result;
+    };
+
+    const [solRes, tokenRes] = await Promise.all([
+      rpc('getBalance', [oldSolAddress, { commitment: 'confirmed' }]),
+      rpc('getTokenAccountsByOwner', [
+        oldSolAddress,
+        { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+        { encoding: 'jsonParsed', commitment: 'confirmed' },
+      ]),
+    ]);
+
+    const solLamports = Number((solRes as { value?: number })?.value ?? 0);
+    const tokenAccounts = ((tokenRes as { value?: Array<{ pubkey: string; account: { data: { parsed: { info: { mint: string; tokenAmount: { amount: string; decimals: number; uiAmountString: string } } } } } }> })?.value ?? [])
+      .map((t) => ({
+        ata: t.pubkey,
+        mint: t.account.data.parsed.info.mint,
+        amount: t.account.data.parsed.info.tokenAmount.amount,
+        decimals: t.account.data.parsed.info.tokenAmount.decimals,
+        uiAmount: t.account.data.parsed.info.tokenAmount.uiAmountString,
+      }))
+      .filter((t) => BigInt(t.amount) > 0n);
+
+    return c.json({
+      oldSolAddress,
+      solLamports,
+      solUi: solLamports / 1e9,
+      tokenAccounts,
+      totalTokens: tokenAccounts.length,
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Split ultron's SUI into multiple small coins for presign payments ──
+// IKA's request_presign Move function consumes a SUI Coin object as a
+// payment arg by VALUE, which means it must be a real on-chain object
+// rather than the output of splitCoins (the SDK's payment helper rejects
+// splitCoins outputs as "Unused result without the drop ability"). To
+// keep ultron's main SUI coin intact for gas, we split it into a handful
+// of small coins ahead of time so each presign call has its own dedicated
+// payment coin. Idempotent: running it again just creates more small
+// coins. No auth needed — this only rearranges ultron's own SUI.
+app.post('/api/cache/ultron-split-sui', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json().catch(() => ({})) as { count?: number; sizeMist?: string };
+    const count = Math.max(1, Math.min(20, Number(body.count ?? 5)));
+    const sizeMist = BigInt(body.sizeMist ?? '50000000'); // default 0.05 SUI per piece
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+
+    // Pull ultron's largest SUI coin to use as gas via raw JSON-RPC.
+    const coinsRes = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
+        params: [ultronAddr, '0x2::sui::SUI'],
+      }),
+    });
+    const coinsJson = await coinsRes.json() as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+    const coins = (coinsJson.result?.data ?? []).sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (coins.length === 0) return c.json({ error: 'ultron has no SUI coins' }, 400);
+    const gasCoin = coins[0];
+
+    // Reference price for build via raw JSON-RPC.
+    const gasPriceRes = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getReferenceGasPrice', params: [] }),
+    });
+    const gasPriceJson = await gasPriceRes.json() as { result?: string };
+    const gasPrice = BigInt(gasPriceJson.result ?? '1000');
+
+    // Build the split tx. setGasPayment + setGasPrice + setGasBudget
+    // pin everything explicitly so the SDK doesn't try to do a network
+    // discovery round trip during build (which is what was failing
+    // through the GraphQL transport).
+    const tx = new Transaction();
+    tx.setSender(ultronAddr);
+    tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
+    tx.setGasPrice(gasPrice);
+    tx.setGasBudget(50_000_000n); // 0.05 SUI for split tx
+    const splits: Array<bigint> = [];
+    for (let i = 0; i < count; i++) splits.push(sizeMist);
+    const newCoins = tx.splitCoins(tx.gas, splits.map(s => tx.pure.u64(s)));
+    const recipients: unknown[] = [];
+    for (let i = 0; i < count; i++) recipients.push(newCoins[i]);
+    tx.transferObjects(recipients as never[], tx.pure.address(ultronAddr));
+    const txBytes = await tx.build();
+    const { signature } = await keypair.signTransaction(txBytes);
+    // Submit via JSON-RPC executeTransactionBlock — the blessed exception
+    // for tx submit per CLAUDE.md.
+    const submitRes = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'sui_executeTransactionBlock',
+        params: [toBase64(txBytes), [signature], { showEffects: true }, 'WaitForLocalExecution'],
+      }),
+    });
+    const submitJson = await submitRes.json() as { result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } }; error?: { message?: string } };
+    if (submitJson.error) {
+      return c.json({ error: `submit failed: ${submitJson.error.message}` }, 500);
+    }
+    const status = submitJson.result?.effects?.status?.status;
+    if (status !== 'success') {
+      return c.json({ error: `tx status ${status}: ${submitJson.result?.effects?.status?.error ?? ''}` }, 500);
+    }
+    return c.json({
+      ok: true,
+      digest: submitJson.result?.digest ?? '',
+      ultronAddr,
+      count,
+      sizeMist: sizeMist.toString(),
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// ── Ultron iUSD transfer ─────────────────────────────────────────────
+// One-shot endpoint that signs as ultron and transfers iUSD to a
+// recipient. Used to return the 90.75 iUSD loss from the orphan
+// forwardToAddress mistake back to the t2000 treasury — ultron only
+// holds ~$43, so this is a partial repayment. The remainder is
+// blocked on iUSD mint headroom which is currently at 0 (see
+// /api/cache/realize-yield and contracts/iusd/sources/iusd.move
+// EInsufficientCollateral abort).
+app.post('/api/cache/ultron-transfer-iusd', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json().catch(() => ({})) as { recipient?: string; amountMist?: string };
+    if (!body.recipient) return c.json({ error: 'recipient required' }, 400);
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+    const recipient = normalizeSuiAddress(body.recipient);
+
+    const IUSD_TYPE = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+
+    // Pull ultron's SUI coins (for gas) + iUSD coins.
+    const rpcCall = async (method: string, params: unknown[]) => {
+      const r = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      return r.json() as Promise<{ result?: unknown; error?: { message?: string } }>;
+    };
+
+    const suiJ = await rpcCall('suix_getCoins', [ultronAddr, '0x2::sui::SUI']) as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+    const suiCoins = (suiJ.result?.data ?? []).sort((a, b) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (suiCoins.length === 0) return c.json({ error: 'ultron has no SUI coins for gas' }, 400);
+    const gasCoin = suiCoins[0];
+
+    const iusdJ = await rpcCall('suix_getCoins', [ultronAddr, IUSD_TYPE]) as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+    const iusdCoins = iusdJ.result?.data ?? [];
+    if (iusdCoins.length === 0) return c.json({ error: 'ultron has no iUSD' }, 400);
+    const totalIusdMist = iusdCoins.reduce((acc, c2) => acc + BigInt(c2.balance), 0n);
+    const amountMist = body.amountMist ? BigInt(body.amountMist) : totalIusdMist;
+    if (amountMist > totalIusdMist) return c.json({ error: `amount ${amountMist} > available ${totalIusdMist}` }, 400);
+
+    const gasPriceJ = await rpcCall('suix_getReferenceGasPrice', []) as { result?: string };
+    const gasPrice = BigInt(gasPriceJ.result ?? '1000');
+
+    const tx = new Transaction();
+    tx.setSender(ultronAddr);
+    tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
+    tx.setGasPrice(gasPrice);
+    tx.setGasBudget(50_000_000n);
+
+    // Pass every iUSD coin as an owned object ref. Merge into the
+    // first then split if we're not sending the full amount, else
+    // just merge + transferObjects the merged coin to recipient.
+    const iusdRefs = iusdCoins.map(cc => tx.objectRef({ objectId: cc.coinObjectId, version: cc.version, digest: cc.digest }));
+    const primary = iusdRefs[0];
+    if (iusdRefs.length > 1) {
+      tx.mergeCoins(primary, iusdRefs.slice(1));
+    }
+    if (amountMist === totalIusdMist) {
+      tx.transferObjects([primary], tx.pure.address(recipient));
+    } else {
+      const [toSend] = tx.splitCoins(primary, [tx.pure.u64(amountMist)]);
+      tx.transferObjects([toSend], tx.pure.address(recipient));
+    }
+
+    const txBytes = await tx.build();
+    const { signature } = await keypair.signTransaction(txBytes);
+    const submitJ = await rpcCall('sui_executeTransactionBlock', [toBase64(txBytes), [signature], { showEffects: true, showBalanceChanges: true }, 'WaitForLocalExecution']) as { result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } }; error?: { message?: string } };
+    if (submitJ.error) return c.json({ error: `submit failed: ${submitJ.error.message}` }, 500);
+    const status = submitJ.result?.effects?.status?.status;
+    if (status !== 'success') return c.json({ error: `tx status ${status}: ${submitJ.result?.effects?.status?.error ?? ''}` }, 500);
+    return c.json({
+      ok: true,
+      digest: submitJ.result?.digest ?? '',
+      ultronAddr,
+      recipient,
+      amountMist: amountMist.toString(),
+      amountUsd: Number(amountMist) / 1e9,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// ── Volcarodon PSM round-trip smoke test (ultron-signed) ──────────────
+// Mints a tiny amount of USDC → iUSD via psm::mint_from_usdc, waits for
+// propagation, then burns the minted iUSD back via psm::burn_for_usdc.
+// Uses ultron's keeper key (SHADE_KEEPER_PRIVATE_KEY) so the round-trip
+// happens without any user signature. Returns both digests, the reserve
+// state before and after, and the net cost in USDC for the two 50 bps
+// fees. Default amount is 10,000 USDC mist ($0.01). Not admin-gated —
+// ultron is funding the test itself; worst case it loses ~0.01% of its
+// $0.371 USDC balance per call.
+app.post('/api/cache/psm-smoke', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json().catch(() => ({})) as { amountMist?: string };
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
+
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddr = normalizeSuiAddress(keypair.toSuiAddress());
+
+    const PSM_PKG     = '0xe0e0113e44c38ef5cfbbac826cfff0cf0438109b0358b0039aca8d183065f5af';
+    const PSM_RESERVE = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+    const PSM_RESERVE_INITIAL_SHARED_VERSION = 843442664;
+    const IUSD_TYPE   = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
+    const USDC_TYPE   = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+    const TYPE_ARGS   = [IUSD_TYPE, USDC_TYPE];
+
+    const rpcCall = async (method: string, params: unknown[]) => {
+      const r = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      return r.json() as Promise<{ result?: any; error?: { message?: string } }>;
+    };
+
+    // Snapshot reserve state before.
+    const reserveBeforeJ = await rpcCall('sui_getObject', [PSM_RESERVE, { showContent: true }]);
+    const rbFields = reserveBeforeJ.result?.data?.content?.fields;
+    const reserveBefore = {
+      sBalanceMist:    String(rbFields?.s_balance ?? '0'),
+      totalTMinted:    String(rbFields?.total_t_minted ?? '0'),
+      totalTBurned:    String(rbFields?.total_t_burned ?? '0'),
+      totalSIn:        String(rbFields?.total_s_in ?? '0'),
+      totalSOut:       String(rbFields?.total_s_out ?? '0'),
+      feeBps:          Number(rbFields?.fee_bps ?? '50'),
+    };
+    const feeBps = reserveBefore.feeBps;
+
+    const usdcAmountMist = BigInt(body.amountMist ?? '10000'); // $0.01 default
+
+    // Pull ultron's SUI + USDC.
+    const suiJ = await rpcCall('suix_getCoins', [ultronAddr, '0x2::sui::SUI']);
+    const suiCoins = (suiJ.result?.data ?? []).sort((a: any, b: any) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (!suiCoins.length) return c.json({ error: 'ultron has no SUI for gas' }, 400);
+
+    const usdcJ = await rpcCall('suix_getCoins', [ultronAddr, USDC_TYPE]);
+    const usdcCoins = (usdcJ.result?.data ?? []) as Array<{ coinObjectId: string; version: string; digest: string; balance: string }>;
+    if (!usdcCoins.length) return c.json({ error: 'ultron has no USDC' }, 400);
+    const totalUsdc = usdcCoins.reduce((s, c2) => s + BigInt(c2.balance), 0n);
+    if (usdcAmountMist > totalUsdc) return c.json({ error: `requested ${usdcAmountMist} > ultron USDC ${totalUsdc}` }, 400);
+
+    const gasPriceJ = await rpcCall('suix_getReferenceGasPrice', []);
+    const gasPrice = BigInt(gasPriceJ.result ?? '1000');
+
+    // ─── Step 1: MINT ─────────────────────────────────────────────
+    const mintTx = new Transaction();
+    mintTx.setSender(ultronAddr);
+    mintTx.setGasPayment([{ objectId: suiCoins[0].coinObjectId, version: suiCoins[0].version, digest: suiCoins[0].digest }]);
+    mintTx.setGasPrice(gasPrice);
+    mintTx.setGasBudget(50_000_000n);
+
+    const usdcRefs = usdcCoins.map(cc => mintTx.objectRef({ objectId: cc.coinObjectId, version: cc.version, digest: cc.digest }));
+    const primaryUsdc = usdcRefs[0];
+    if (usdcRefs.length > 1) mintTx.mergeCoins(primaryUsdc, usdcRefs.slice(1));
+    const [usdcContribution] = mintTx.splitCoins(primaryUsdc, [mintTx.pure.u64(usdcAmountMist)]);
+
+    // Mirror the on-chain convert_s_to_t math: base = usdc * 1000
+    // (scaling to 9 decimals), then minus fee_bps. Slippage floor at
+    // 10 bps below contract output to absorb any rounding.
+    const expectedIusdMist = (usdcAmountMist * 1000n * BigInt(10000 - feeBps)) / 10000n;
+    const minIusdOut = (expectedIusdMist * 9990n) / 10000n;
+
+    mintTx.moveCall({
+      target: `${PSM_PKG}::psm::mint_from_usdc`,
+      typeArguments: TYPE_ARGS,
+      arguments: [
+        mintTx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcContribution,
+        mintTx.pure.u64(minIusdOut),
+      ],
+    });
+
+    const mintBytes = await mintTx.build();
+    const { signature: mintSig } = await keypair.signTransaction(mintBytes);
+    const mintSubmitJ = await rpcCall('sui_executeTransactionBlock', [toBase64(mintBytes), [mintSig], { showEffects: true, showBalanceChanges: true, showEvents: true }, 'WaitForLocalExecution']);
+    if (mintSubmitJ.error) return c.json({ error: `mint submit failed: ${mintSubmitJ.error.message}` }, 500);
+    const mintStatus = mintSubmitJ.result?.effects?.status?.status;
+    if (mintStatus !== 'success') {
+      return c.json({ error: `mint tx status ${mintStatus}: ${mintSubmitJ.result?.effects?.status?.error ?? ''}` }, 500);
+    }
+    const mintDigest = mintSubmitJ.result?.digest ?? '';
+
+    // Propagation — give the indexer a beat before re-fetching coins.
+    await new Promise(r => setTimeout(r, 2000));
+
+    // ─── Step 2: BURN the minted iUSD back ───────────────────────
+    const suiJ2 = await rpcCall('suix_getCoins', [ultronAddr, '0x2::sui::SUI']);
+    const suiCoins2 = (suiJ2.result?.data ?? []).sort((a: any, b: any) => Number(BigInt(b.balance) - BigInt(a.balance)));
+    if (!suiCoins2.length) return c.json({ error: 'ultron lost all SUI between mint and burn (impossible)' }, 500);
+
+    const iusdJ = await rpcCall('suix_getCoins', [ultronAddr, IUSD_TYPE]);
+    const iusdCoins = (iusdJ.result?.data ?? []) as Array<{ coinObjectId: string; version: string; digest: string; balance: string }>;
+    if (!iusdCoins.length) return c.json({ error: 'mint succeeded but no iUSD visible — indexer lag?', mintDigest }, 500);
+    const totalIusd = iusdCoins.reduce((s, c2) => s + BigInt(c2.balance), 0n);
+
+    // Only burn the amount the mint produced, in case ultron had any
+    // stray iUSD from another path we don't want to touch.
+    const burnAmount = expectedIusdMist > totalIusd ? totalIusd : expectedIusdMist;
+
+    const burnTx = new Transaction();
+    burnTx.setSender(ultronAddr);
+    burnTx.setGasPayment([{ objectId: suiCoins2[0].coinObjectId, version: suiCoins2[0].version, digest: suiCoins2[0].digest }]);
+    burnTx.setGasPrice(gasPrice);
+    burnTx.setGasBudget(50_000_000n);
+
+    const iusdRefs = iusdCoins.map(cc => burnTx.objectRef({ objectId: cc.coinObjectId, version: cc.version, digest: cc.digest }));
+    const primaryIusd = iusdRefs[0];
+    if (iusdRefs.length > 1) burnTx.mergeCoins(primaryIusd, iusdRefs.slice(1));
+    const [iusdContribution] = burnTx.splitCoins(primaryIusd, [burnTx.pure.u64(burnAmount)]);
+
+    const expectedUsdcOut = (burnAmount / 1000n) * BigInt(10000 - feeBps) / 10000n;
+    const minUsdcOut = (expectedUsdcOut * 9990n) / 10000n;
+
+    burnTx.moveCall({
+      target: `${PSM_PKG}::psm::burn_for_usdc`,
+      typeArguments: TYPE_ARGS,
+      arguments: [
+        burnTx.sharedObjectRef({ objectId: PSM_RESERVE, initialSharedVersion: PSM_RESERVE_INITIAL_SHARED_VERSION, mutable: true }),
+        iusdContribution,
+        burnTx.pure.u64(minUsdcOut),
+      ],
+    });
+
+    const burnBytes = await burnTx.build();
+    const { signature: burnSig } = await keypair.signTransaction(burnBytes);
+    const burnSubmitJ = await rpcCall('sui_executeTransactionBlock', [toBase64(burnBytes), [burnSig], { showEffects: true, showBalanceChanges: true, showEvents: true }, 'WaitForLocalExecution']);
+    if (burnSubmitJ.error) return c.json({ error: `burn submit failed: ${burnSubmitJ.error.message}`, mintDigest }, 500);
+    const burnStatus = burnSubmitJ.result?.effects?.status?.status;
+    if (burnStatus !== 'success') {
+      return c.json({ error: `burn tx status ${burnStatus}: ${burnSubmitJ.result?.effects?.status?.error ?? ''}`, mintDigest }, 500);
+    }
+    const burnDigest = burnSubmitJ.result?.digest ?? '';
+
+    // Snapshot reserve state after.
+    await new Promise(r => setTimeout(r, 1500));
+    const reserveAfterJ = await rpcCall('sui_getObject', [PSM_RESERVE, { showContent: true }]);
+    const raFields = reserveAfterJ.result?.data?.content?.fields;
+    const reserveAfter = {
+      sBalanceMist:    String(raFields?.s_balance ?? '0'),
+      totalTMinted:    String(raFields?.total_t_minted ?? '0'),
+      totalTBurned:    String(raFields?.total_t_burned ?? '0'),
+      totalSIn:        String(raFields?.total_s_in ?? '0'),
+      totalSOut:       String(raFields?.total_s_out ?? '0'),
+      collectedFeeMist: String(raFields?.collected_fee ?? '0'),
+    };
+
+    const netCostMist = usdcAmountMist - BigInt(reserveAfter.totalSOut) + BigInt(reserveBefore.totalSOut);
+    return c.json({
+      ok: true,
+      ultronAddr,
+      mintDigest,
+      burnDigest,
+      usdcInMist: usdcAmountMist.toString(),
+      iusdMintedMist: expectedIusdMist.toString(),
+      iusdBurnedMist: burnAmount.toString(),
+      usdcOutMist: expectedUsdcOut.toString(),
+      netCostUsdcMist: netCostMist.toString(),
+      netCostUsd: Number(netCostMist) / 1e6,
+      feeBps,
+      reserveBefore,
+      reserveAfter,
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
+// ── Sweep old sol@ultron → new IKA-derived sol@ultron ─────────────────
+// Drains all SOL + SPL balances from the legacy raw-keypair address
+// (old sol@ultron = base58(suiPubkey)) to a recipient — in practice
+// the new IKA-derived address from window.rumbleUltron('ed25519').
+// The server signs with the same SHADE_KEEPER_PRIVATE_KEY because the
+// old address is literally base58(pubkey(keeperKey)), so the same
+// 32-byte private key is the Solana private key for that wallet.
+//
+// Admin-gated like /api/cache/rumble-ultron-seed.
+app.post('/api/cache/sweep-sol-ultron', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json() as {
+      recipient: string; // new sol@ultron (base58)
+      adminAddress: string;
+      signature: string;
+      message: string; // "sweep-sol-ultron:<recipient>:<YYYY-MM-DD>"
+    };
+    if (!body.recipient || !body.adminAddress || !body.signature || !body.message) {
+      return c.json({ error: 'Missing recipient, adminAddress, signature, or message' }, 400);
+    }
+    const normalizedAdmin = body.adminAddress.toLowerCase();
+    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
+      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const expected = `sweep-sol-ultron:${body.recipient}:${today}`;
+    if (body.message !== expected) {
+      return c.json({ error: `message must be exactly "${expected}"` }, 400);
+    }
+    try {
+      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+      const messageBytes = new TextEncoder().encode(body.message);
+      await verifyPersonalMessageSignature(messageBytes, body.signature, {
+        address: normalizedAdmin,
+      });
+    } catch (err) {
+      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
+    }
+
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const { ed25519 } = await import('@noble/curves/ed25519.js');
+    const { b58encode, b58decode, sweepSplAccount, sweepNativeSol } = await import('./solana-spl.js');
+    type SolanaRpcConfig = import('./solana-spl.js').SolanaRpcConfig;
+
+    const keypair = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ownerPub = keypair.getPublicKey().toRawBytes();
+    const oldSolAddress = b58encode(ownerPub);
+    const recipientPub = b58decode(body.recipient);
+    if (recipientPub.length !== 32) {
+      return c.json({ error: `recipient ${body.recipient} did not decode to 32 bytes` }, 400);
+    }
+    // Extract the raw 32-byte ed25519 secret so we can sign with noble.
+    // SuiKeypair.getSecretKey() returns bech32; getKeyScheme/export paths
+    // vary by version, so we use the bech32 decoder from @mysten/sui.
+    const { decodeSuiPrivateKey } = await import('@mysten/sui/cryptography');
+    const decoded = decodeSuiPrivateKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    if (decoded.scheme !== 'ED25519') {
+      return c.json({ error: `Unsupported keeper scheme: ${decoded.scheme}` }, 500);
+    }
+    const rawSecret = decoded.secretKey;
+
+    // The SPL sweep uses ed25519.sign(msg, 32-byte private key) which
+    // @noble/curves/ed25519 accepts directly. Solana signature format is
+    // the raw 64-byte ed25519 signature.
+    const signFn = async (msg: Uint8Array): Promise<Uint8Array> => {
+      return ed25519.sign(msg, rawSecret);
+    };
+
+    const helius = c.env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${c.env.HELIUS_API_KEY}`
+      : 'https://api.mainnet-beta.solana.com';
+    const rpcConfig: SolanaRpcConfig = {
+      rpcs: [
+        helius,
+        'https://sui-rpc.publicnode.com', // placeholder, not Solana — we could add a publicnode Solana if one exists
+        'https://api.mainnet-beta.solana.com',
+      ].filter(u => !u.includes('sui-rpc')),
+      heliusApiKey: c.env.HELIUS_API_KEY,
+    };
+
+    // Step 1: query current balances (so we sweep exactly what's there).
+    const rpc = async (method: string, params: unknown[]) => {
+      const r = await fetch(helius, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (!r.ok) throw new Error(`${method} HTTP ${r.status}`);
+      const j = await r.json() as { result?: unknown; error?: { message?: string } };
+      if (j.error) throw new Error(`${method}: ${j.error.message}`);
+      return j.result;
+    };
+    const tokenRes = await rpc('getTokenAccountsByOwner', [
+      oldSolAddress,
+      { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+      { encoding: 'jsonParsed', commitment: 'confirmed' },
+    ]);
+    const accounts = ((tokenRes as { value?: Array<{ pubkey: string; account: { data: { parsed: { info: { mint: string; tokenAmount: { amount: string; decimals: number } } } } } }> })?.value ?? [])
+      .map((t) => ({
+        ata: t.pubkey,
+        mint: t.account.data.parsed.info.mint,
+        amount: BigInt(t.account.data.parsed.info.tokenAmount.amount),
+        decimals: t.account.data.parsed.info.tokenAmount.decimals,
+      }))
+      .filter((t) => t.amount > 0n);
+
+    const swept: Array<{ mint: string; amount: string; decimals: number; signature: string; destAta: string }> = [];
+    // Step 2: sweep each SPL token account.
+    for (const acc of accounts) {
+      try {
+        const res = await sweepSplAccount(
+          signFn,
+          ownerPub,
+          recipientPub,
+          b58decode(acc.ata),
+          b58decode(acc.mint),
+          acc.amount,
+          acc.decimals,
+          rpcConfig,
+        );
+        swept.push({
+          mint: acc.mint,
+          amount: acc.amount.toString(),
+          decimals: acc.decimals,
+          signature: res.signature,
+          destAta: res.destAta,
+        });
+      } catch (err) {
+        console.error(`[sweep-sol-ultron] SPL sweep failed for ${acc.mint}:`, err);
+        return c.json({
+          error: `SPL sweep failed for ${acc.mint}: ${err instanceof Error ? err.message : String(err)}`,
+          partial: swept,
+        }, 500);
+      }
+    }
+
+    // Step 3: wait for SPL txs to settle + rent refunds to land, then drain SOL.
+    await new Promise((r) => setTimeout(r, accounts.length > 0 ? 6000 : 0));
+    const solRes = await rpc('getBalance', [oldSolAddress, { commitment: 'confirmed' }]);
+    const lamports = BigInt((solRes as { value?: number })?.value ?? 0);
+    let solSweep: { signature: string; drained: string } | null = null;
+    try {
+      const drain = await sweepNativeSol(signFn, ownerPub, recipientPub, lamports, rpcConfig);
+      solSweep = { signature: drain.signature, drained: drain.drained.toString() };
+    } catch (err) {
+      console.warn('[sweep-sol-ultron] SOL drain skipped:', err instanceof Error ? err.message : err);
+    }
+
+    return c.json({
+      oldSolAddress,
+      recipient: body.recipient,
+      swept,
+      solSweep,
+    });
+  } catch (err) {
+    console.error('[sweep-sol-ultron] error:', err);
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Rumble Ultron seed — deterministic encryption-key seed for ultron's
+//    IKA dWallet. Server derives from SHADE_KEEPER_PRIVATE_KEY so the
+//    same seed can be re-derived later for autonomous ultron signing.
+//
+//    Admin-gated: caller must sign a personal message "rumble-ultron:
+//    <ultronAddress>:<YYYY-MM-DD>" with an address in the allowlist.
+//    The seed is effectively a signing credential — never expose without
+//    proof the caller is authorized to act on ultron's behalf.
+const ULTRON_ADDRESS = '0xa84cebfde3f0522cd893263d5208a633cd226a1585249b32f02d77438094b3c3';
+const ADMIN_ADDRESSES = new Set([
+  // plankton.sui — active local keystore (publishes iUSD, holds UpgradeCap)
+  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
+  // brando.sui — admin session (WaaP)
+  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
+  // brando.sui — admin session (new wallet, 2026-04-13)
+  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
+]);
+app.post('/api/cache/rumble-ultron-seed', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json() as {
+      curve: 'ed25519' | 'secp256k1';
+      adminAddress: string;
+      signature: string; // base64
+      message: string;   // "rumble-ultron:<ultronAddr>:<YYYY-MM-DD>"
+    };
+    if (!body.curve || !body.adminAddress || !body.signature || !body.message) {
+      return c.json({ error: 'Missing curve, adminAddress, signature, or message' }, 400);
+    }
+    if (body.curve !== 'ed25519' && body.curve !== 'secp256k1') {
+      return c.json({ error: 'curve must be ed25519 or secp256k1' }, 400);
+    }
+    const normalizedAdmin = body.adminAddress.toLowerCase();
+    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
+      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
+    }
+    // Validate message format + freshness (today's UTC date).
+    const today = new Date().toISOString().slice(0, 10);
+    const expected = `rumble-ultron:${ULTRON_ADDRESS}:${today}`;
+    if (body.message !== expected) {
+      return c.json({ error: `message must be exactly "${expected}"` }, 400);
+    }
+    // Verify the personal message signature.
+    try {
+      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+      const messageBytes = new TextEncoder().encode(body.message);
+      await verifyPersonalMessageSignature(messageBytes, body.signature, {
+        address: normalizedAdmin,
+      });
+    } catch (err) {
+      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
+    }
+    // Derive the deterministic seed. The keeper key is the root secret;
+    // the curve + ultron address discriminate per-dWallet so we can reuse
+    // the same mechanism for secp256k1 later without clobbering ed25519.
+    const { sha256 } = await import('@noble/hashes/sha2.js');
+    const keeperBytes = new TextEncoder().encode(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const saltBytes = new TextEncoder().encode(`ultron-dkg:${body.curve}:${ULTRON_ADDRESS}`);
+    const seedInput = new Uint8Array(keeperBytes.length + saltBytes.length);
+    seedInput.set(keeperBytes, 0);
+    seedInput.set(saltBytes, keeperBytes.length);
+    const seed = sha256(seedInput);
+    const seedHex = Array.from(seed, (b) => b.toString(16).padStart(2, '0')).join('');
+    return c.json({ seedHex, ultronAddress: ULTRON_ADDRESS });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Rumble — server-side IKA dWallet check/provision for ultron.sui ──
 app.post('/api/cache/rumble', async (c) => {
   try {
@@ -2016,13 +3281,83 @@ app.post('/api/cache/quest-bounty', async (c) => {
   }
 });
 
+// ── Shade: cancel a StableShadeOrder whose salt is lost ──
+// Owner-only (ultron). Refunds the full deposit back to ultron.
+// Used when the preimage is unrecoverable and the order can't
+// execute through the happy path.
+app.post('/api/cache/shade-cancel-stable', async (c) => {
+  try {
+    const body = await c.req.json() as { objectId: string; noForward?: boolean; forwardToAddress?: string };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-cancel-stable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, res.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Shade: reschedule a stable order that slipped through ──
+// One-shot recovery path for StableShadeOrder objects that were
+// created before the schedule-stable dispatch was wired in the
+// shade-proxy. Calls the TreasuryAgents DO which verifies the
+// salt is in state, resolves initialSharedVersion on-chain, and
+// pushes scheduleStable() to the ShadeExecutorAgent.
+app.post('/api/cache/shade-reschedule', async (c) => {
+  try {
+    const body = await c.req.json() as { objectId: string; initialSharedVersion?: number };
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?shade-reschedule', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify(body),
+    }));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, res.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── OpenCLOB: iUSD SPL on Solana ────────────────────────────────────
+// Public read: returns the mainnet iUSD SPL mint address so the browser
+// can fetch cross-chain iUSD balances against the user's Solana dWallet.
+app.get('/api/cache/iusd-sol-mint', async (c) => {
+  try {
+    const res = await treasuryStub(c).fetch(new Request('https://treasury-do/?iusd-sol-mint', {
+      method: 'GET',
+      headers: { 'x-partykit-room': 'treasury' },
+    }));
+    const text = await res.text();
+    const headers: Record<string, string> = { 'cache-control': 'public, max-age=300' };
+    try { return c.json(JSON.parse(text), res.status as any, headers); }
+    catch { return c.json({ error: text || 'unknown' }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 app.post('/api/cache/create-iusd-sol-mint', async (c) => {
   try {
+    // Self-derive ultron from the worker's own keeper key — the DO expects
+    // callerAddress to equal its own ultron, and only the worker can compute
+    // it. The DO method is idempotent (returns existing mint if already
+    // created), so the endpoint is safe to leave public: worst case, a
+    // caller races us for the one-time creation, and we wanted it anyway.
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) {
+      return c.json({ error: 'No keeper key configured' }, 500);
+    }
+    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const ultronAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
+
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?create-iusd-sol-mint', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
-      body: '{}',
+      body: JSON.stringify({ callerAddress: ultronAddress }),
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
@@ -2033,14 +3368,71 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
 
 app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
   try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key configured' }, 500);
     const body = await c.req.json() as { recipientSolAddress: string; amount: string };
+    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, callerAddress }),
     }));
     const text = await res.text();
     try { return c.json(JSON.parse(text), res.status as any); } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Magnemite: BAM mint v2 — intent-authorized, Vector-principles ──
+// Applies the five Vector principles without requiring the Vector
+// program on-chain:
+//
+//   1. Digest-bound intent — client commits to exact mint parameters
+//      via SHA-256 of a canonical JSON serialization
+//   2. Relayer/authority split — client signs the digest with their
+//      wallet key, ultron verifies + relays but cannot modify
+//   3. Hash-chain state progression — per-signer nonce advances
+//      deterministically; prior seeds invalidate on replay
+//   4. No pre-reveal — intent stays private until POST
+//   5. Expiration primitive — intent.expiresMs enforced server-side
+//
+// Request: { intent: {...}, signature: "base64", publicKey: "base64" }
+// Intent canonical shape (keys sorted alphabetically before hash):
+//   { amount, expiresMs, mintAddress, nonce, recipientSolAddress }
+app.post('/api/cache/bam-mint-v2', async (c) => {
+  try {
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    const body = await c.req.json();
+
+    // All five Vector principles live in the shared helper now.
+    const verified = await verifyVectorIntent<{
+      recipientSolAddress: string;
+      amount: string;
+      mintAddress: string;
+    }>(c, body, ['recipientSolAddress', 'amount', 'mintAddress']);
+    if (!verified.ok) return c.json({ error: verified.error }, verified.status as any);
+    const { intent: i, digestHex } = verified;
+
+    // Signature is valid, nonce is fresh, intent is not expired.
+    // Ultron now acts as a pure relayer: calls the existing BAM mint
+    // flow with no ability to alter recipient or amount.
+    const kp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?bam-mint-iusd-sol', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({
+        recipientSolAddress: i.recipientSolAddress,
+        amount: i.amount,
+        callerAddress,
+      }),
+    }));
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      return c.json({ ...parsed, intentDigest: digestHex }, res.status as any);
+    } catch { return c.json({ error: text }, 500); }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }
@@ -2274,6 +3666,39 @@ app.post('/api/cache/send-iusd', async (c) => {
   }
 });
 
+// ── Magneton: send-iusd v2 — intent-authorized ──────────────────────
+// Same Vector principles as bam-mint-v2. Client signs a digest over
+// { recipient, amountMist, nonce, expiresMs }; ultron verifies + relays
+// to the existing treasury-do/send-iusd handler without any ability to
+// mutate the recipient or amount.
+app.post('/api/cache/send-iusd-v2', async (c) => {
+  try {
+    const body = await c.req.json();
+    const verified = await verifyVectorIntent<{
+      recipient: string;
+      amountMist: string;
+    }>(c, body, ['recipient', 'amountMist']);
+    if (!verified.ok) return c.json({ error: verified.error }, verified.status as any);
+    const { intent: i, digestHex } = verified;
+
+    const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/send-iusd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+      body: JSON.stringify({
+        recipient: i.recipient,
+        amountMist: i.amountMist,
+      }),
+    }));
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      return c.json({ ...parsed, intentDigest: digestHex }, res.status as any);
+    } catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // Debug mint endpoint.
 app.post('/api/cache/debug-mint', async (c) => {
   try {
@@ -2487,6 +3912,294 @@ app.get('/api/cache/rumble', async (c) => {
   }
 });
 
+// ── Helius webhook: general-purpose event receiver ──
+// Auth-gated via HELIUS_WEBHOOK_SECRET. Logs payload and dispatches the
+// set of touched accounts so downstream DOs can trigger balance refresh
+// or event-aware behavior. Separate from /api/sol-webhook, which remains
+// the treasury-specific deposit-detection entry point.
+app.post('/api/helius/webhook', async (c) => {
+  const secret = c.env.HELIUS_WEBHOOK_SECRET;
+  if (secret) {
+    const auth = c.req.header('Authorization') || '';
+    const expected = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+    if (expected !== secret) return c.json({ error: 'Unauthorized' }, 401);
+  }
+  try {
+    const payload = await c.req.json().catch(() => []) as Array<Record<string, unknown>>;
+    const events = Array.isArray(payload) ? payload : [payload];
+    const touched = new Set<string>();
+    for (const ev of events) {
+      const type = ev.type as string | undefined;
+      const sig = ev.signature as string | undefined;
+      // Enhanced Helius payload carries accountData[]; raw payload carries
+      // transaction.message.accountKeys[]. Walk whichever is present.
+      const accountData = ev.accountData as Array<{ account?: string }> | undefined;
+      if (Array.isArray(accountData)) {
+        for (const a of accountData) if (a.account) touched.add(a.account);
+      }
+      const nativeTransfers = ev.nativeTransfers as Array<{ fromUserAccount?: string; toUserAccount?: string }> | undefined;
+      if (Array.isArray(nativeTransfers)) {
+        for (const t of nativeTransfers) {
+          if (t.fromUserAccount) touched.add(t.fromUserAccount);
+          if (t.toUserAccount) touched.add(t.toUserAccount);
+        }
+      }
+      const tokenTransfers = ev.tokenTransfers as Array<{
+        fromUserAccount?: string;
+        toUserAccount?: string;
+        tokenAmount?: number;
+        mint?: string;
+      }> | undefined;
+      if (Array.isArray(tokenTransfers)) {
+        for (const t of tokenTransfers) {
+          if (t.fromUserAccount) touched.add(t.fromUserAccount);
+          if (t.toUserAccount) touched.add(t.toUserAccount);
+        }
+        // ── Porygon-Z Agility v1 — inbound iUSD SPL credit detection ──
+        // When a user sends iUSD SPL to sol@ultron we log a credit intent
+        // that downstream TreasuryAgents will pick up and process into a
+        // Sui-side BAM v2 mint for the sender's Sui identity. This closes
+        // the Shade cross-chain funding gap: the user can bridge in from
+        // their Solana iUSD balance and the credit lands as Sui iUSD
+        // ready to fund a Shade order. Minting itself happens in the
+        // treasury fan-out below — we only detect + log here.
+        //
+        // ULTRON_SOL_ADDRESS is ultron's IKA-native Solana address from
+        // the Registeel Hyper Beam sweep; the iUSD SPL mint address is
+        // whatever OpenCLOB's createIusdSolMint minted first (stored in
+        // TreasuryAgents DO state). We don't hardcode the mint here —
+        // let the downstream handler compare against DO state so a fresh
+        // mint deployment doesn't require a redeploy of this file.
+        const ULTRON_SOL = 'GfVzGHiSPyTnX6bawnahJnUPXeASF6qKPd224VQws1DW';
+        for (const t of tokenTransfers) {
+          if (t.toUserAccount !== ULTRON_SOL) continue;
+          if (!t.fromUserAccount || t.fromUserAccount === ULTRON_SOL) continue;
+          const amount = Number(t.tokenAmount ?? 0);
+          if (amount <= 0) continue;
+          console.log(`[agility] inbound SPL credit to sol@ultron: ${amount} of mint ${t.mint} from ${t.fromUserAccount} (sig ${sig})`);
+
+          // ── Sableye Lv.40 — Astonish (SOL leg) ──
+          // Append cross-chain touch to ultron's Chronicom xchainLog so the
+          // browser can map fromAddress → SuiNS name via its cached SUIAMI
+          // roster and render a private counterparty hit. We write to
+          // ultron's Chronicom because the webhook only knows ultron as the
+          // destination; TODO: parse tx memo / webhook metadata to find the
+          // real destination user and write to their Chronicom instead.
+          try {
+            const fromAddr = t.fromUserAccount;
+            const txHash = sig ?? '';
+            c.executionCtx.waitUntil((async () => {
+              try {
+                const stub = c.env.Chronicom.get(c.env.Chronicom.idFromName(ULTRON_ADDRESS));
+                await stub.fetch(new Request('https://chronicom-do/sableye-xchain-append', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'x-partykit-room': ULTRON_ADDRESS },
+                  body: JSON.stringify({ fromAddress: fromAddr, chain: 'sol', ts: Date.now(), txHash }),
+                }));
+              } catch (e) {
+                console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+              }
+            })());
+          } catch (e) {
+            console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+          }
+
+          // Porygon-Z Agility v2 — fan out to TreasuryAgents.processAgilityInbound
+          // which verifies the mint, resolves the Solana sender to a Sui
+          // identity via SUIAMI roster, records the credit in DO state,
+          // and would call mintIusd on the Sui side. v2 stops short of
+          // the real mint and only logs `[agility-v2] WOULD mint …`.
+          // Fire-and-forget so the webhook response isn't blocked.
+          const fromSolAddress = t.fromUserAccount;
+          const mintAddress = t.mint ?? '';
+          // Convert human-readable tokenAmount → raw units (9 decimals for iUSD SPL).
+          // Helius' tokenAmount is already divided by decimals; we ceil to avoid
+          // rounding-down to 0 on tiny transfers.
+          const amountRaw = String(Math.ceil(amount * 1e9));
+          const inboundSig = sig ?? '';
+          c.executionCtx.waitUntil(
+            authedTreasuryStub(c).fetch(new Request('https://treasury-do/?agility-inbound', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+              body: JSON.stringify({ fromSolAddress, amountRaw, mintAddress, sig: inboundSig }),
+            })).catch((e) => console.warn('[agility-v2] fan-out failed:', e?.message ?? e)),
+          );
+        }
+      }
+      console.log(`[helius-webhook] ${type ?? 'UNKNOWN'} ${sig ?? ''} touched ${touched.size} accounts`);
+    }
+    // Forward to treasury so it can cache-invalidate per-address state.
+    // Fire-and-forget; the HTTP 200 to Helius must not wait on fan-out.
+    if (touched.size > 0) {
+      const addresses = Array.from(touched);
+      c.executionCtx.waitUntil(
+        authedTreasuryStub(c).fetch(new Request('https://treasury-do/?helius-event', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-partykit-room': 'treasury' },
+          body: JSON.stringify({ events, addresses }),
+        })).catch((e) => console.warn('[helius-webhook] treasury fan-out failed:', e?.message ?? e)),
+      );
+    }
+    return c.json({ ok: true, received: events.length, touched: touched.size });
+  } catch (err) {
+    console.warn('[helius-webhook] parse failed:', err instanceof Error ? err.message : err);
+    return c.json({ error: String(err) }, 400);
+  }
+});
+
+// ── Porygon-Z Agility v2 — inbound credit status for a Sui address ──
+// Returns recent iUSD SPL credits detected into sol@ultron that the
+// worker has resolved to the caller's Sui identity via SUIAMI roster.
+// v2 status is always 'detected' — v3 will surface 'minted' + digest.
+app.get('/api/agility/status/:address', async (c) => {
+  const address = c.req.param('address');
+  const limit = c.req.query('limit') ?? '20';
+  try {
+    const res = await authedTreasuryStub(c).fetch(new Request(
+      `https://treasury-do/?agility-status&address=${encodeURIComponent(address)}&limit=${encodeURIComponent(limit)}`,
+      { headers: { 'x-partykit-room': 'treasury' } },
+    ));
+    const text = await res.text();
+    try { return c.json(JSON.parse(text), res.status as any); }
+    catch { return c.json({ error: text }, 500); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Alchemy webhook — ETH leg of Porygon-Z Conversion Beam ──
+// Address Activity notifications for eth@ultron. Verifies the HMAC-SHA256
+// signature Alchemy attaches to the raw body, parses inbound credits,
+// and delegates to eth-inbound.ts for the 95/5 split + Uniswap swap +
+// cross-chain iUSD mint. Returns 200 fast so Alchemy doesn't retry while
+// we process — the actual swap/mint work happens in waitUntil.
+app.post('/api/alchemy/webhook', async (c) => {
+  const { verifyAlchemySignature, parseInboundCredits, computeSplit, formatEth, ETH_ULTRON_ADDRESS } =
+    await import('./eth-inbound');
+  const rawBody = await c.req.text();
+  const sig = c.req.header('x-alchemy-signature');
+  const secret = c.env.ALCHEMY_WEBHOOK_SECRET;
+  if (!secret) {
+    // Fail loud in logs but return 200 — we don't want Alchemy to retry
+    // forever just because we haven't configured the secret yet.
+    console.warn('[alchemy-webhook] ALCHEMY_WEBHOOK_SECRET not set, accepting without verification');
+  } else {
+    const ok = await verifyAlchemySignature(rawBody, sig ?? null, secret);
+    if (!ok) return c.json({ error: 'Invalid signature' }, 401);
+  }
+  type AlchemyEvent = Parameters<typeof parseInboundCredits>[0];
+  let payload: AlchemyEvent;
+  try {
+    payload = JSON.parse(rawBody) as AlchemyEvent;
+  } catch (err) {
+    console.warn('[alchemy-webhook] JSON parse failed:', err instanceof Error ? err.message : err);
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+  const credits = parseInboundCredits(payload);
+  console.log(`[alchemy-webhook] ${payload.event?.activity?.length ?? 0} activity entries, ${credits.length} qualifying credits for ${ETH_ULTRON_ADDRESS}`);
+  for (const credit of credits) {
+    const split = computeSplit(credit.amountWei);
+    console.log(`[alchemy-webhook] credit ${credit.txHash} from ${credit.fromAddress} ${formatEth(credit.amountWei)} ETH → split ${formatEth(split.stablesAmountWei)} to stables + ${formatEth(split.gasReserveWei)} reserved`);
+
+    // ── Sableye Lv.40 — Astonish (ETH leg) ──
+    // See Helius handler above. Write touch to ultron's Chronicom for now;
+    // TODO: once the webhook carries per-user destination metadata, write
+    // to the real destination user's Chronicom.
+    try {
+      const fromAddr = credit.fromAddress;
+      const txHash = credit.txHash;
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const stub = c.env.Chronicom.get(c.env.Chronicom.idFromName(ULTRON_ADDRESS));
+          await stub.fetch(new Request('https://chronicom-do/sableye-xchain-append', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-partykit-room': ULTRON_ADDRESS },
+            body: JSON.stringify({ fromAddress: fromAddr, chain: 'eth', ts: Date.now(), txHash }),
+          }));
+        } catch (e) {
+          console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+        }
+      })());
+    } catch (e) {
+      console.warn('[sableye] append failed:', e instanceof Error ? e.message : e);
+    }
+    // TODO (Porygon-Z Tri Attack): kick off the Uniswap v3 swap + iUSD mint
+    // via a dedicated ConversionBeamAgent DO. For v1 scaffold we just log;
+    // the actual swap requires the eth@ultron dWallet signing path
+    // (UltronSigningAgent Increment C/D) before we can move real funds.
+  }
+  return c.json({ ok: true, received: payload.event?.activity?.length ?? 0, qualifying: credits.length });
+});
+
+// ── Helius webhook management ──
+// Register a new webhook subscription through Helius's v0 API. Admin
+// endpoint: requires the internal treasury auth header derived from the
+// ultron keeper key, same gate we use elsewhere.
+app.post('/api/cache/helius-webhook-register', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not set' }, 500);
+    const body = await c.req.json() as {
+      accountAddresses: string[];
+      transactionTypes?: string[];
+      webhookType?: string;
+    };
+    if (!Array.isArray(body.accountAddresses) || body.accountAddresses.length === 0) {
+      return c.json({ error: 'accountAddresses required' }, 400);
+    }
+    // Derive our own public webhook URL from the inbound host — works
+    // identically on sui.ski and the dotski-devnet staging worker.
+    const origin = new URL(c.req.url).origin;
+    const webhookURL = `${origin}/api/helius/webhook`;
+    const secret = c.env.HELIUS_WEBHOOK_SECRET;
+    if (!secret) return c.json({ error: 'HELIUS_WEBHOOK_SECRET not set — configure it first' }, 500);
+    const createRes = await fetch(`https://api-mainnet.helius-rpc.com/v0/webhooks?api-key=${c.env.HELIUS_API_KEY}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        webhookURL,
+        authHeader: `Bearer ${secret}`,
+        webhookType: body.webhookType || 'enhanced',
+        transactionTypes: body.transactionTypes || ['TRANSFER', 'SWAP', 'TOKEN_MINT', 'NFT_SALE'],
+        accountAddresses: body.accountAddresses,
+      }),
+    });
+    const text = await createRes.text();
+    try { return c.json(JSON.parse(text), createRes.status as any); }
+    catch { return c.json({ error: text }, createRes.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// List all registered webhooks for this project — read-only, no auth
+// needed (the API key scope already restricts to our project).
+app.get('/api/cache/helius-webhook-list', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not set' }, 500);
+    const r = await fetch(`https://api-mainnet.helius-rpc.com/v0/webhooks?api-key=${c.env.HELIUS_API_KEY}`);
+    const text = await r.text();
+    try { return c.json(JSON.parse(text), r.status as any); }
+    catch { return c.json({ error: text }, r.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Delete a webhook by ID — cleanup path for stale subscriptions.
+app.post('/api/cache/helius-webhook-delete', async (c) => {
+  try {
+    if (!c.env.HELIUS_API_KEY) return c.json({ error: 'HELIUS_API_KEY not set' }, 500);
+    const body = await c.req.json() as { webhookID: string };
+    if (!body.webhookID) return c.json({ error: 'webhookID required' }, 400);
+    const r = await fetch(`https://api-mainnet.helius-rpc.com/v0/webhooks/${body.webhookID}?api-key=${c.env.HELIUS_API_KEY}`, { method: 'DELETE' });
+    const text = await r.text();
+    try { return c.json(JSON.parse(text), r.status as any); }
+    catch { return c.json({ ok: r.ok }, r.status as any); }
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Helius webhook: instant SOL deposit detection ──
 app.post('/api/sol-webhook', async (c) => {
   const secret = c.env.HELIUS_WEBHOOK_SECRET;
@@ -2569,3 +4282,4 @@ export { Chronicom } from './agents/chronicom.js';
 export { TimestreamAgent } from './agents/timestream.js';
 export { NameIndex } from './agents/name-index.js';
 export { Pokedex } from './agents/pokedex.js';
+export { UltronSigningAgent } from './agents/ultron-signing-agent.js';

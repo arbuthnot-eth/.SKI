@@ -638,6 +638,68 @@ const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519
 (globalThis as unknown as { rumbleUltron: typeof _rumbleUltron }).rumbleUltron = _rumbleUltron;
 console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
 
+// ── Post-trade configure: browser-console repair tool ──
+//
+// If the trade follow-up configure ever fails (rejection, lag, any
+// reason), the user still owns the new name but its target_address is
+// still pointing wherever the seller last set it. Run this helper from
+// the browser console: `configureNameRecords('great')` — it will find
+// the SuinsRegistration NFT for great.sui in the connected wallet,
+// pull the user's existing SUIAMI Roster squid config (if any), build
+// the post-trade configure PTB, and sign it. One-shot, idempotent —
+// calling it twice just re-writes the same records.
+const _configureNameRecords = async (nameOrDomain: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    showToast('Connect wallet first');
+    return { error: 'not connected' };
+  }
+  const bare = (nameOrDomain || '').replace(/\.sui$/i, '').toLowerCase();
+  if (!bare) {
+    console.error('[configureNameRecords] empty name');
+    return { error: 'empty name' };
+  }
+  const fullDomain = `${bare}.sui`;
+  try {
+    const { buildPostTradeConfigureTx, fetchExistingSquidConfig, fetchOwnedDomains } = await import('./suins.js');
+    const owned = await fetchOwnedDomains(ws.address);
+    const match = owned.find(d => d.name === fullDomain && d.kind === 'nft');
+    if (!match) {
+      console.error(`[configureNameRecords] you don't own ${fullDomain}`);
+      showToast(`${fullDomain} not in wallet`);
+      return { error: 'not owned' };
+    }
+    showToast(`\u{1F527} Configuring ${fullDomain} records\u2026`);
+    const existingCfg = await fetchExistingSquidConfig(ws.address);
+    const cfgBytes = await buildPostTradeConfigureTx({
+      sender: ws.address,
+      nftId: match.objectId,
+      domain: fullDomain,
+      walrusBlobId: existingCfg?.walrusBlobId,
+      sealNonce: existingCfg?.sealNonce,
+      writeRoster: true,
+    });
+    const { digest } = await signAndExecuteTransaction(cfgBytes);
+    const hasSquids = !!(existingCfg?.walrusBlobId);
+    const summary = hasSquids
+      ? `\u2713 ${fullDomain} records set \u2014 SUIAMI squids linked`
+      : `\u2713 ${fullDomain} points at your wallet`;
+    showToast(summary);
+    console.log(`[configureNameRecords] ${fullDomain} configured — digest ${digest}`);
+    return { ok: true, digest, domain: fullDomain, nftId: match.objectId, hasSquids };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[configureNameRecords] failed:', err);
+    if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+      showToast(`Configure failed: ${msg.slice(0, 100)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { configureNameRecords: typeof _configureNameRecords }).configureNameRecords = _configureNameRecords;
+(globalThis as unknown as { configureNameRecords: typeof _configureNameRecords }).configureNameRecords = _configureNameRecords;
+console.log('[ski] configureNameRecords hook installed — call configureNameRecords("<bare-name>") to set target + SUIAMI roster for an owned name');
+
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
 // from window.rumbleUltron). Admin-gated via the same signed-message

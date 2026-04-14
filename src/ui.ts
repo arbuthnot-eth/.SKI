@@ -11634,70 +11634,40 @@ function bindEvents() {
               // buyer's wallet; without it anyone resolving `${domain}` via
               // SuiNS will still hit the seller.
               //
-              // Done here as a fire-and-forget so a follow-up failure (user
-              // rejects, roster call aborts, propagation lag, etc.) never
-              // rolls back or blocks the trade itself — if it fails the user
-              // still owns the name, they just get a warning toast and can
-              // retry from the NS row.
+              // Critical realization: we don't need to parse objectChanges
+              // to find the new NFT's object id. The listing's `nftTokenId`
+              // (for Tradeport) or `nftId` (for kiosk) IS the object id of
+              // the SuinsRegistration — the tx just transfers it to us, the
+              // object identity doesn't change. The earlier version of this
+              // follow-up tried to find the NFT by scanning the tx's object
+              // changes and failed because the Tradeport kiosk-unwrap path
+              // doesn't emit a `recipient` field in the shape the scanner
+              // expected. Using the listing id directly bypasses the whole
+              // parsing problem.
+              //
+              // Fire-and-forget so a follow-up failure (user rejects, roster
+              // aborts, propagation lag, etc.) never rolls back or blocks
+              // the trade. If it fails the user still owns the name; they
+              // can run window.configureNameRecords('${label}') from the
+              // browser console to retry (exposed from src/ski.ts).
               //
               // Privacy: the SUIAMI Roster entry written here only exposes
               // (name → sui address) on-chain — the BTC/ETH/SOL squid data
               // lives Seal-encrypted in a referenced Walrus blob, reusing
               // the buyer's existing blob when present so no extra payload
               // is uploaded and no new decryption surface is created.
+              const newNftId = purchase.type === 'kiosk' ? purchase.nftId : purchase.nftTokenId;
               (async () => {
                 try {
                   showToast(`\u{1F527} Configuring ${domain} records\u2026`);
-                  // Propagation beat — objectChanges aren't indexed instantly.
-                  await new Promise(r => setTimeout(r, 2500));
-                  const txDetailRes = await fetch('https://sui-rpc.publicnode.com', {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({
-                      jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock',
-                      params: [digest, { showObjectChanges: true }],
-                    }),
-                  });
-                  type ObjChange = {
-                    type?: string;
-                    objectType?: string;
-                    objectId?: string;
-                    recipient?: string | { AddressOwner?: string };
-                  };
-                  type TxDetail = { result?: { objectChanges?: ObjChange[] } };
-                  const txData = await txDetailRes.json() as TxDetail;
-                  const changes = txData.result?.objectChanges ?? [];
-                  const SUINS_REG_SUBSTR = '::suins_registration::SuinsRegistration';
-                  const normBuyer = (await import('@mysten/sui/utils')).normalizeSuiAddress(ws.address);
-                  const ownedByBuyer = (c: ObjChange): boolean => {
-                    const r = c.recipient;
-                    if (typeof r === 'string') return r === normBuyer;
-                    const addr = r?.AddressOwner;
-                    return typeof addr === 'string' && addr === normBuyer;
-                  };
-                  // Tradeport v2 typically emits this as `transferred` to the
-                  // buyer. v1 sometimes shows `mutated`. Greenfield-created
-                  // NFTs (fresh mint path) would show `created` but that's
-                  // the register flow, not the trade flow. We accept all
-                  // three to be safe.
-                  const nftChange = changes.find(c =>
-                    c.objectType?.includes(SUINS_REG_SUBSTR) &&
-                    (c.type === 'transferred' || c.type === 'mutated' || c.type === 'created') &&
-                    ownedByBuyer(c),
-                  ) ?? changes.find(c =>
-                    c.objectType?.includes(SUINS_REG_SUBSTR) && c.type === 'created',
-                  );
-                  const nftId = nftChange?.objectId;
-                  if (!nftId) {
-                    console.warn('[trade-configure] NFT not found in tx effects:', changes);
-                    showToast(`\u26a0 ${domain} records unchanged \u2014 retry from NS row`);
-                    return;
-                  }
+                  // Small propagation beat so the new owner indexes settle
+                  // before the configure PTB references the NFT object.
+                  await new Promise(r => setTimeout(r, 2000));
                   const { buildPostTradeConfigureTx, fetchExistingSquidConfig } = await import('./suins.js');
                   const existingCfg = await fetchExistingSquidConfig(ws.address);
                   const cfgBytes = await buildPostTradeConfigureTx({
                     sender: ws.address,
-                    nftId,
+                    nftId: newNftId,
                     domain,
                     walrusBlobId: existingCfg?.walrusBlobId,
                     sealNonce: existingCfg?.sealNonce,
@@ -11714,7 +11684,7 @@ function bindEvents() {
                   const msg = cfgErr instanceof Error ? cfgErr.message : String(cfgErr);
                   console.warn('[trade-configure] follow-up failed:', msg);
                   if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
-                    showCopyableToast(`${domain} configure failed \u2014 retry from NS row`, msg);
+                    showCopyableToast(`${domain} configure failed \u2014 run configureNameRecords('${label}') in console to retry`, msg);
                   }
                 }
               })();

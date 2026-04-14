@@ -12272,36 +12272,53 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
+          // Volcarodon PSM mint — USDC → iUSD at 1:1 minus fee_bps.
+          // The DeepBook iUSD/USDC pool is structurally dead (verified
+          // 2026-04-14: $0.006 quote balance, zero bids). PSM bypasses
+          // it entirely by minting from a wrapped TreasuryCap inside a
+          // shared Reserve. First mint self-seeds the reserve, so
+          // there's no cold-start liquidity requirement.
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const addr = normalizeSuiAddress(ws.address);
-          // Find USDC balance
-          const usdcType = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+          const { USDC_TYPE, queryReserveState, quoteMintOutIusdMist, buildPsmMintTx } = await import('./client/psm.js');
           const rpc = await fetch('https://sui-rpc.publicnode.com', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, usdcType] }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, USDC_TYPE] }),
           });
           const rpcData = await rpc.json() as any;
           const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
           if (!coins.length) { showToast('No USDC to swap for iUSD'); return; }
           const totalUsdc = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
-          showToast(`\ud83d\udcb5 Swapping ${(Number(totalUsdc) / 1e6).toFixed(2)} USDC \u2192 iUSD\u2026`);
-          const { buildSwapTx } = await import('./suins.js');
-          const iusdType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
-          const result = await buildSwapTx(ws.address, usdcType, iusdType, totalUsdc);
-          await signAndExecuteTransaction(result.txBytes);
-          showToast(`\u2728 ${(Number(totalUsdc) / 1e6).toFixed(2)} iUSD acquired`);
+          // Reserve pre-flight — read fee_bps so we can quote the
+          // expected iUSD out and set a realistic slippage floor.
+          const state = await queryReserveState();
+          const expectedIusd = quoteMintOutIusdMist(totalUsdc, state.feeBps);
+          // Allow 10 bps extra slop on top of the contract's own
+          // fee_bps deduction to tolerate rounding on small amounts.
+          const minIusdOut = (expectedIusd * 9990n) / 10000n;
+          showToast(`\ud83d\udcb5 Minting ${(Number(totalUsdc) / 1e6).toFixed(2)} USDC \u2192 \u2248${(Number(expectedIusd) / 1e9).toFixed(2)} iUSD via PSM\u2026`);
+          const { bytes } = await buildPsmMintTx({
+            sender: addr,
+            usdcCoinIds: coins.map((c: any) => c.coinObjectId),
+            usdcAmountMist: totalUsdc,
+            minIusdOutMist: minIusdOut,
+          });
+          await signAndExecuteTransaction(bytes);
+          showToast(`\u2728 ${(Number(expectedIusd) / 1e9).toFixed(2)} iUSD minted via PSM \u2014 reserve +$${(Number(totalUsdc) / 1e6).toFixed(2)}`);
           refreshPortfolio(true);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Swap failed';
-          if (msg.includes('not supported')) {
-            showToast('iUSD/USDC pool needs liquidity — use Burn to improve ratio');
-          } else if (!msg.toLowerCase().includes('reject')) {
-            showToast(msg);
-          }
+          const msg = err instanceof Error ? err.message : 'Mint failed';
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
         } finally { btn.style.opacity = ''; }
       });
 
-      // Burn button — burn user's iUSD to improve collateral ratio
+      // Burn button — iUSD → USDC via Volcarodon PSM at 1:1 minus fee.
+      // Pre-flight check inspects the Reserve's s_balance and caps the
+      // burn to whatever the reserve can currently serve. If the reserve
+      // is short of the user's full balance, we burn the maximum the
+      // reserve can cover and leave the remainder in the wallet with an
+      // explanatory toast — never sign a tx we know will abort with
+      // EInsufficientReserve.
       _idleOverlay.querySelector('#ski-idle-iusd-burn')?.addEventListener('click', async (e) => {
         e.stopPropagation();
         const ws = getState();
@@ -12309,39 +12326,47 @@ function bindEvents() {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.style.opacity = '0.4';
         try {
-          // Find user's iUSD coins
-          const iusdType = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD';
           const { normalizeSuiAddress } = await import('@mysten/sui/utils');
           const addr = normalizeSuiAddress(ws.address);
+          const { IUSD_TYPE, queryReserveState, quoteBurnOutUsdcMist, maxBurnableIusdMist, buildPsmBurnTx } = await import('./client/psm.js');
           const rpc = await fetch('https://sui-rpc.publicnode.com', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, iusdType] }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'suix_getCoins', params: [addr, IUSD_TYPE] }),
           });
           const rpcData = await rpc.json() as any;
           const coins = (rpcData?.result?.data ?? []).filter((c: any) => BigInt(c.balance) > 0n);
           if (!coins.length) { showToast('No iUSD to burn'); return; }
-          const totalBal = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
-          showToast(`\ud83d\udd25 Burning ${(Number(totalBal) / 1e9).toFixed(2)} iUSD\u2026`);
-          const { Transaction } = await import('@mysten/sui/transactions');
-          const tx = new Transaction();
-          tx.setSender(addr);
-          const IUSD_PKG = '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9';
-          const TREASURY_CAP = '0x0c7873b52c69f409f3c9772e85d927b509a133a42e9c134c826121bb6595e543';
-          const TREASURY = '0x64435d5284ba3867c0065b9c97a8a86ee964601f0546df2caa5f772a68627beb';
-          const primary = tx.object(coins[0].coinObjectId);
-          if (coins.length > 1) tx.mergeCoins(primary, coins.slice(1).map((c: any) => tx.object(c.coinObjectId)));
-          tx.moveCall({
-            package: IUSD_PKG, module: 'iusd', function: 'burn_and_redeem',
-            arguments: [tx.object(TREASURY_CAP), tx.object(TREASURY), primary, tx.object('0x6')],
+          const totalIusd = coins.reduce((s: bigint, c: any) => s + BigInt(c.balance), 0n);
+          // Pre-flight — fetch live Reserve state, cap burn at whatever
+          // s_balance can cover. If the reserve is fully empty, tell the
+          // user to mint first (self-seeds the reserve).
+          const state = await queryReserveState();
+          if (state.sBalanceMist === 0n) {
+            showToast('PSM reserve empty \u2014 use Mint (USDC \u2192 iUSD) to seed it first');
+            return;
+          }
+          const reserveCapIusd = maxBurnableIusdMist(state);
+          const burnIusd = totalIusd < reserveCapIusd ? totalIusd : reserveCapIusd;
+          const expectedUsdc = quoteBurnOutUsdcMist(burnIusd, state.feeBps);
+          const minUsdcOut = (expectedUsdc * 9990n) / 10000n;
+          const partial = burnIusd < totalIusd;
+          if (partial) {
+            showToast(`Reserve holds $${(Number(state.sBalanceMist) / 1e6).toFixed(2)} \u2014 burning ${(Number(burnIusd) / 1e9).toFixed(2)} iUSD of ${(Number(totalIusd) / 1e9).toFixed(2)}`);
+          } else {
+            showToast(`\ud83d\udd25 Burning ${(Number(burnIusd) / 1e9).toFixed(2)} iUSD \u2192 \u2248$${(Number(expectedUsdc) / 1e6).toFixed(2)} USDC via PSM\u2026`);
+          }
+          const { bytes } = await buildPsmBurnTx({
+            sender: addr,
+            iusdCoinIds: coins.map((c: any) => c.coinObjectId),
+            iusdAmountMist: burnIusd,
+            minUsdcOutMist: minUsdcOut,
           });
-          const bytes = await tx.build({ client: grpcClient as never }) as Uint8Array & { tx?: unknown };
-          bytes.tx = tx;
           await signAndExecuteTransaction(bytes);
-          showToast(`\ud83d\udd25 ${(Number(totalBal) / 1e9).toFixed(2)} iUSD burned — ratio improving`);
+          showToast(`\u2728 +$${(Number(expectedUsdc) / 1e6).toFixed(2)} USDC from PSM burn`);
           refreshPortfolio(true);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Burn failed';
-          if (!msg.toLowerCase().includes('reject')) showToast(msg);
+          if (!msg.toLowerCase().includes('reject')) showToast(msg.slice(0, 200));
         } finally { btn.style.opacity = ''; }
       });
 

@@ -11624,6 +11624,100 @@ function bindEvents() {
               showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)}) \u2713`);
               _updateIdleStatus();
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
+
+              // ── Auto-follow-up: configure records on the newly acquired name ──
+              //
+              // Tradeport v2 `listings::buy` is `return: []` — the NFT is
+              // transferred internally inside the Move call, so the buy PTB
+              // has no NFT handle to chain setTargetAddress onto. A second
+              // transaction is the only way to point the new name at the
+              // buyer's wallet; without it anyone resolving `${domain}` via
+              // SuiNS will still hit the seller.
+              //
+              // Done here as a fire-and-forget so a follow-up failure (user
+              // rejects, roster call aborts, propagation lag, etc.) never
+              // rolls back or blocks the trade itself — if it fails the user
+              // still owns the name, they just get a warning toast and can
+              // retry from the NS row.
+              //
+              // Privacy: the SUIAMI Roster entry written here only exposes
+              // (name → sui address) on-chain — the BTC/ETH/SOL squid data
+              // lives Seal-encrypted in a referenced Walrus blob, reusing
+              // the buyer's existing blob when present so no extra payload
+              // is uploaded and no new decryption surface is created.
+              (async () => {
+                try {
+                  showToast(`\u{1F527} Configuring ${domain} records\u2026`);
+                  // Propagation beat — objectChanges aren't indexed instantly.
+                  await new Promise(r => setTimeout(r, 2500));
+                  const txDetailRes = await fetch('https://sui-rpc.publicnode.com', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                      jsonrpc: '2.0', id: 1, method: 'sui_getTransactionBlock',
+                      params: [digest, { showObjectChanges: true }],
+                    }),
+                  });
+                  type ObjChange = {
+                    type?: string;
+                    objectType?: string;
+                    objectId?: string;
+                    recipient?: string | { AddressOwner?: string };
+                  };
+                  type TxDetail = { result?: { objectChanges?: ObjChange[] } };
+                  const txData = await txDetailRes.json() as TxDetail;
+                  const changes = txData.result?.objectChanges ?? [];
+                  const SUINS_REG_SUBSTR = '::suins_registration::SuinsRegistration';
+                  const normBuyer = (await import('@mysten/sui/utils')).normalizeSuiAddress(ws.address);
+                  const ownedByBuyer = (c: ObjChange): boolean => {
+                    const r = c.recipient;
+                    if (typeof r === 'string') return r === normBuyer;
+                    const addr = r?.AddressOwner;
+                    return typeof addr === 'string' && addr === normBuyer;
+                  };
+                  // Tradeport v2 typically emits this as `transferred` to the
+                  // buyer. v1 sometimes shows `mutated`. Greenfield-created
+                  // NFTs (fresh mint path) would show `created` but that's
+                  // the register flow, not the trade flow. We accept all
+                  // three to be safe.
+                  const nftChange = changes.find(c =>
+                    c.objectType?.includes(SUINS_REG_SUBSTR) &&
+                    (c.type === 'transferred' || c.type === 'mutated' || c.type === 'created') &&
+                    ownedByBuyer(c),
+                  ) ?? changes.find(c =>
+                    c.objectType?.includes(SUINS_REG_SUBSTR) && c.type === 'created',
+                  );
+                  const nftId = nftChange?.objectId;
+                  if (!nftId) {
+                    console.warn('[trade-configure] NFT not found in tx effects:', changes);
+                    showToast(`\u26a0 ${domain} records unchanged \u2014 retry from NS row`);
+                    return;
+                  }
+                  const { buildPostTradeConfigureTx, fetchExistingSquidConfig } = await import('./suins.js');
+                  const existingCfg = await fetchExistingSquidConfig(ws.address);
+                  const cfgBytes = await buildPostTradeConfigureTx({
+                    sender: ws.address,
+                    nftId,
+                    domain,
+                    walrusBlobId: existingCfg?.walrusBlobId,
+                    sealNonce: existingCfg?.sealNonce,
+                    writeRoster: true,
+                  });
+                  await signAndExecuteTransaction(cfgBytes);
+                  const hasSquids = !!(existingCfg?.walrusBlobId);
+                  showToast(
+                    hasSquids
+                      ? `\u2713 ${domain} records set \u2014 SUIAMI squids linked`
+                      : `\u2713 ${domain} points at your wallet`,
+                  );
+                } catch (cfgErr) {
+                  const msg = cfgErr instanceof Error ? cfgErr.message : String(cfgErr);
+                  console.warn('[trade-configure] follow-up failed:', msg);
+                  if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+                    showCopyableToast(`${domain} configure failed \u2014 retry from NS row`, msg);
+                  }
+                }
+              })();
             } catch (err) {
               const raw = err instanceof Error ? err.message : String(err);
               console.warn('[SKI-Trade] purchase failed:', raw);

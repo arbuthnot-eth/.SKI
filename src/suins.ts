@@ -1844,10 +1844,13 @@ export async function buildSwapAndPurchaseTx(
   }
 
   // Step 2: If still short, swap from output token (USDC) → SUI
-  // Over-estimate input by slippage% to ensure enough SUI output
+  // Over-estimate input by slippage% to ensure enough SUI output.
+  // (iUSD sourcing lives at the caller layer — Volcarodon PSM
+  // burn is pre-signed before this tx so USDC is already on-chain
+  // by the time we get here. The iUSD/USDC DeepBook pool is too
+  // thin for in-PTB composition at the current trade sizes.)
   if (suiAccumulated < totalSuiNeeded && outputCoinType && outputCoinType !== SUI_TYPE) {
     const shortfall = totalSuiNeeded - suiAccumulated;
-    // Add slippage buffer to input amount (swap more USDC to guarantee enough SUI)
     const shortfallWithBuffer = shortfall + (shortfall * SLIPPAGE_BPS / 10000n);
     const shortfallUsd = (Number(shortfallWithBuffer) / 1e9) * suiPrice;
     const minSuiFromBackup = withSlippage(shortfall);
@@ -1921,6 +1924,282 @@ export async function buildSwapAndPurchaseTx(
       return buildSwapAndPurchaseTx(rawAddress, purchase, selectedCoinType, selectedBalance, outputCoinType, suiPrice, selectedTokenPrice, true);
     }
     throw err;
+  }
+}
+
+// ─── Volcarodon PSM + Tradeport chain ────────────────────────────────
+//
+// Single-PTB path for wallets holding mostly iUSD. Burns iUSD via the
+// Volcarodon PSM (returns Coin<USDC> inside the PTB thanks to the v2
+// `burn_for_usdc_coin` variant), merges the resulting USDC into any
+// on-chain USDC, swaps enough USDC → SUI via DeepBook, and uses the
+// result to buy a Tradeport or kiosk listing. One signature, no
+// two-step cascade. Caller must have pre-computed `iusdBurnMist` so
+// the reserve capacity + slippage are respected.
+const VOLCARODON_PKG = '0xc8c79518a709e8d5a9656f033bea3679c4e064ad59ccb56cb8c106253884a410';
+const VOLCARODON_PSM_RESERVE = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
+const VOLCARODON_PSM_RESERVE_INITIAL_SHARED_VERSION = 843442664;
+
+export async function buildIusdBurnAndPurchaseTx(
+  rawAddress: string,
+  purchase: { type: 'kiosk'; kioskId: string; nftId: string; priceMist: string }
+    | { type: 'tradeport'; nftTokenId: string; priceMist: string },
+  suiPrice: number,
+  iusdBurnMist: bigint,
+  _tradeportV2?: boolean,
+): Promise<Uint8Array> {
+  const walletAddress = normalizeSuiAddress(rawAddress);
+  const transport = gqlClient;
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  const USDC_TYPE = suinsCfg().coins.USDC.type;
+  const SLIPPAGE_BPS = 200n;
+  const withSlippage = (expected: bigint) => expected * (10000n - SLIPPAGE_BPS) / 10000n;
+  const priceMist = BigInt(purchase.priceMist);
+
+  // Fetch all the balances we need for routing.
+  const [suiCoins, usdcCoins, iusdCoins] = await Promise.all([
+    listCoinsOfType(transport, walletAddress, SUI_TYPE),
+    listCoinsOfType(transport, walletAddress, USDC_TYPE),
+    listCoinsOfType(transport, walletAddress, IUSD_TYPE),
+  ]);
+  const suiBal = suiCoins.reduce((s, c) => s + c.balance, 0n);
+  const gasBuf = 100_000_000n; // 0.1 SUI gas buffer
+  const suiAccumulated = suiBal > gasBuf ? suiBal - gasBuf : 0n;
+
+  // Step 1: if the caller asked for a PSM burn, execute it inside this PTB.
+  // burn_for_usdc_coin is the composable v2 variant — returns Coin<USDC>
+  // directly instead of transferring to sender. The resulting coin goes
+  // into the same USDC pool that on-chain USDC was merged into.
+  let usdcPool: any = null;
+  if (usdcCoins.length > 0) {
+    usdcPool = tx.objectRef(usdcCoins[0]);
+    if (usdcCoins.length > 1) {
+      tx.mergeCoins(usdcPool, usdcCoins.slice(1).map(c => tx.objectRef(c)));
+    }
+  }
+  if (iusdBurnMist > 0n && iusdCoins.length > 0) {
+    const available = iusdCoins.reduce((s, c) => s + c.balance, 0n);
+    const burn = iusdBurnMist < available ? iusdBurnMist : available;
+    if (burn > 0n) {
+      const iusdPrimary = tx.objectRef(iusdCoins[0]);
+      if (iusdCoins.length > 1) {
+        tx.mergeCoins(iusdPrimary, iusdCoins.slice(1).map(c => tx.objectRef(c)));
+      }
+      const [iusdForBurn] = tx.splitCoins(iusdPrimary, [tx.pure.u64(burn)]);
+      const [usdcFromPsm] = tx.moveCall({
+        target: `${VOLCARODON_PKG}::psm::burn_for_usdc_coin`,
+        typeArguments: [IUSD_TYPE, USDC_TYPE],
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: VOLCARODON_PSM_RESERVE,
+            initialSharedVersion: VOLCARODON_PSM_RESERVE_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          iusdForBurn,
+          tx.pure.u64(1), // min_s_out = 1, we set tight bounds via iusdBurnMist
+        ],
+      });
+      if (usdcPool) {
+        tx.mergeCoins(usdcPool, [usdcFromPsm]);
+      } else {
+        usdcPool = usdcFromPsm;
+      }
+      // Return any iUSD remainder (we may have more iUSD than we burned).
+      tx.transferObjects([iusdPrimary], tx.pure.address(walletAddress));
+    }
+  }
+
+  // Step 2: swap USDC → SUI via DeepBook for the SUI shortfall.
+  if (suiAccumulated < priceMist) {
+    if (!usdcPool) {
+      throw new Error('Insufficient balance: need USDC (either on-chain or via iUSD burn) to cover SUI shortfall');
+    }
+    const shortfall = priceMist - suiAccumulated;
+    const shortfallWithBuffer = shortfall + (shortfall * SLIPPAGE_BPS / 10000n);
+    const shortfallUsd = (Number(shortfallWithBuffer) / 1e9) * suiPrice;
+    const usdcAmount = BigInt(Math.ceil(shortfallUsd * 1e6));
+    const minSuiFromBackup = withSlippage(shortfall);
+
+    const [usdcForSwap] = tx.splitCoins(usdcPool, [tx.pure.u64(usdcAmount)]);
+    const [zeroDEEP] = tx.moveCall({ target: '0x2::coin::zero', typeArguments: [DB_DEEP_TYPE] });
+    const [suiOut, usdcChange, deepChange] = tx.moveCall({
+      target: `${DB_PACKAGE}::pool::swap_exact_quote_for_base`,
+      typeArguments: [SUI_TYPE, USDC_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: DB_SUI_USDC_POOL, initialSharedVersion: DB_SUI_USDC_POOL_INITIAL_SHARED_VERSION, mutable: true }),
+        usdcForSwap, zeroDEEP, tx.pure.u64(minSuiFromBackup), tx.object.clock(),
+      ],
+    });
+    tx.mergeCoins(tx.gas, [suiOut]);
+    tx.transferObjects([usdcChange, deepChange, usdcPool], tx.pure.address(walletAddress));
+  } else if (usdcPool) {
+    // Already have enough SUI — just return the USDC pool untouched.
+    tx.transferObjects([usdcPool], tx.pure.address(walletAddress));
+  }
+
+  // Step 3: split listing price from gas and execute the purchase.
+  if (purchase.type === 'kiosk') {
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(priceMist.toString())]);
+    const [nft, transferRequest] = tx.moveCall({
+      target: '0x2::kiosk::purchase',
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [tx.object(purchase.kioskId), tx.pure.id(purchase.nftId), payment],
+    });
+    tx.moveCall({
+      target: '0x2::transfer_policy::confirm_request',
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [tx.object(SUINS_TRANSFER_POLICY), transferRequest],
+    });
+    tx.transferObjects([nft], tx.pure.address(walletAddress));
+  } else {
+    const listingId = await resolveTradeportListingId(purchase.nftTokenId);
+    const buyId = listingId ?? purchase.nftTokenId;
+    const price = BigInt(purchase.priceMist);
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
+    const tpPkg = _tradeportV2 ? TRADEPORT_V2_PKG : TRADEPORT_V1_PKG;
+    const tpStore = _tradeportV2 ? TRADEPORT_V2_STORE : TRADEPORT_V1_STORE;
+    const tpFn = _tradeportV2 ? 'listings::buy' : 'tradeport_listings::buy_listing_without_transfer_policy';
+    tx.moveCall({
+      target: `${tpPkg}::${tpFn}`,
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: tpStore, initialSharedVersion: 3377344, mutable: true }),
+        tx.pure.id(buyId),
+        payment,
+      ],
+    });
+    tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
+  }
+
+  try {
+    return await buildWithTx(tx, transport);
+  } catch (err) {
+    if (!_tradeportV2 && purchase.type === 'tradeport' && String(err).includes('MoveAbort')) {
+      console.warn('[Tradeport] v1 failed, retrying with v2:', err instanceof Error ? err.message : err);
+      return buildIusdBurnAndPurchaseTx(rawAddress, purchase, suiPrice, iusdBurnMist, true);
+    }
+    throw err;
+  }
+}
+
+// ─── Post-trade configure — privacy-preserving records for a newly acquired name ─────
+//
+// After a Tradeport buy lands, the purchased SuinsRegistration NFT sits in
+// the buyer's wallet but its `target_address` still points wherever the
+// seller last set it. Anyone resolving the name via SuiNS would hit the
+// seller's wallet, not the buyer's — a live footgun.
+//
+// Tradeport v2's `listings::buy` is non-entry but `return: []` — the NFT
+// is transferred internally inside the Move call, so the PTB that runs the
+// buy never gets an NFT handle to chain setTargetAddress onto. This is a
+// structural constraint, not a bug. Fix: a second transaction after the
+// trade, which reads the new NFT's object id from the trade tx's object
+// changes, then configures it.
+//
+// Privacy model — the SUIAMI Roster already provides a private-by-default
+// scheme: on-chain stores (name, Sui address, walrus_blob_id, seal_nonce)
+// and the cross-chain addresses (BTC / ETH / SOL) live encrypted in a
+// Walrus blob keyed by the user's Seal session. We reuse the buyer's
+// existing walrus_blob_id so no additional data is uploaded — the new
+// entry just references the same encrypted payload. This keeps:
+//
+//   - Cross-chain addresses: encrypted, decryptable only by the owner
+//   - Roster → Sui address link: public (same as SuiNS NameRecord which
+//     was going to be set anyway; no additional leakage)
+//   - Default primary: unchanged — setDefault is deliberately skipped so
+//     the buyer's existing primary (superteam, brando, etc.) stays put
+//
+// If the buyer has no prior roster entry at all (first name ever), the
+// caller may pass `walrusBlobId = ''` and `sealNonce = []`; the roster
+// entry is still written and remains operable, just without Walrus
+// cross-chain resolution until the buyer runs the rumble/SUIAMI flow.
+export async function buildPostTradeConfigureTx(opts: {
+  sender: string;
+  nftId: string;            // newly acquired SuinsRegistration object id
+  domain: string;           // 'great.sui' or 'great' (either accepted)
+  walrusBlobId?: string;    // reuse existing encrypted squid blob if available
+  sealNonce?: number[];     // matching nonce for the blob
+  writeRoster?: boolean;    // default true; set false to skip roster entry
+}): Promise<Uint8Array & { tx?: InstanceType<typeof Transaction> }> {
+  const walletAddress = normalizeSuiAddress(opts.sender);
+  const bareName = opts.domain.replace(/\.sui$/i, '').toLowerCase();
+
+  const transport = gqlClient;
+  const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
+
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+
+  // Step 1 — point the name at the buyer. This is the essential call:
+  // without it, any wallet resolving `${bareName}.sui` still hits the
+  // seller's address even though ownership of the NFT moved.
+  const suinsTx = new SuinsTransaction(suinsClient, tx);
+  suinsTx.setTargetAddress({ nft: tx.object(opts.nftId), address: walletAddress });
+
+  // Step 2 — SUIAMI Roster entry. Privacy-preserving: on-chain payload
+  // is just (name, sui_addr, walrus_blob_id, seal_nonce). The cross-chain
+  // squid addresses themselves live in the referenced Walrus blob,
+  // encrypted with Seal; only the owner's decrypt capability can open it.
+  //
+  // We deliberately don't touch the debounce in `maybeAppendRoster` here —
+  // that helper key is `ski:roster:${addr}` which collapses all of a
+  // user's names into a single debounce slot. We want this specific name
+  // to be written unconditionally even if the user already has a roster
+  // entry for their primary, so we inline the call.
+  const shouldWriteRoster = opts.writeRoster !== false && isMainnet();
+  if (shouldWriteRoster) {
+    const nameHash = Array.from(keccak_256(new TextEncoder().encode(bareName)));
+    tx.moveCall({
+      package: ROSTER_PKG,
+      module: 'roster',
+      function: 'set_identity',
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.string(bareName),
+        tx.pure.vector('u8', nameHash),
+        // chains: only 'sui' → buyer address goes plaintext on-chain.
+        // BTC / ETH / SOL are in the Walrus blob, not here.
+        tx.pure.vector('string', ['sui']),
+        tx.pure.vector('string', [walletAddress]),
+        // dwallet_caps — empty for now; IKA cap ownership is intentionally
+        // not exposed in this entry so the squid dWallets aren't linkable
+        // to the name on-chain.
+        tx.pure.vector('address', []),
+        tx.pure.string(opts.walrusBlobId ?? ''),
+        tx.pure.vector('u8', opts.sealNonce ?? []),
+        tx.object('0x6'),
+      ],
+    });
+  }
+
+  // Deliberately NOT calling `suinsTx.setDefault(domain)` — the buyer
+  // may already have a primary they want to keep (e.g. superteam.sui).
+  // Making great.sui the new default is an explicit, separate action.
+
+  const bytes = await buildWithTx(tx, transport);
+  const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };
+  out.tx = tx;
+  return out;
+}
+
+/** Read the buyer's existing SUIAMI Roster entry (by Sui address) and
+ *  return the walrus_blob_id + seal_nonce so a new entry for a freshly
+ *  acquired name can reference the same encrypted squid payload.
+ *  Returns null if no prior entry exists. */
+export async function fetchExistingSquidConfig(
+  address: string,
+): Promise<{ walrusBlobId: string; sealNonce: number[] } | null> {
+  try {
+    const record = await readRosterByAddress(address);
+    if (!record) return null;
+    return {
+      walrusBlobId: record.walrus_blob_id || '',
+      sealNonce: record.seal_nonce || [],
+    };
+  } catch {
+    return null;
   }
 }
 

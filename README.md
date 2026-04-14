@@ -75,6 +75,44 @@ Two DKG ceremonies. Two dWallets. Eight chains. One Sui account.
 - Batch DKG provisioning for agents = "Rumble your squids."
 - If a dWallet doesn't exist yet, the feature is blocked until DKG is run — no shortcuts.
 
+---
+
+## Magneton — Sealed Messaging Through a Keyless Blind Relay
+
+Magneton is SKI's sealed messaging layer. One sentence, canonical:
+
+> **A Prismoid opens a storm with its squids. Each thunder — and each prism — is scribed by ultron into both Prismoids' chronicoms, the chronicoms write through to the timestream, and sibyl reads the timestream to score trust — turning strangers into inkas as each carries the other's suiami.**
+
+- **Prismoid** — your identity vessel. A Move object wrapping one or more IKA dWallets that carries your SuiNS name and every cross-chain address you can touch. Transfer one object, transfer the whole identity atomically.
+- **Squid** — a single chain-capable appendage of a Prismoid. One per curve: secp256k1 squid reaches BTC/EVM, ed25519 squid reaches SOL/Sui. Multiple squids can cooperate on cross-chain multi-sig. "Rumble your squids" provisions them in a single DKG ceremony.
+- **Opening** — the first squid-sign between two Prismoids that opens a storm. Scribed into both chronicoms as the anchor of the relationship. The squid used matches the recipient's native chain, so the anchor is verifiable from any chain the recipient cares about.
+- **Scribe** — the verb. Ultron *scribes* each thunder *and* each prism into both Prismoids' chronicoms. The chronicoms write through to the timestream. One unified pipeline for messages and transactions.
+- **Inscribe** — the opt-in non-repudiable variant. To *inscribe* a thunder or prism = attach a squid signature so the entry is permanently third-party verifiable in the timestream. Default is deniable; flip to inscribed when you want proof. Signal cannot do this for messages; suiami can do it for messages *and* transactions, in one substrate.
+- **Chronicom** — your per-Prismoid Durable Object. Holds the suiamis you carry (your inka set), every storm you participate in, and every prism you exchange. The chronicom is your local view; the timestream is the authoritative one.
+- **Timestream** — the temporal substrate every chronicom writes through to. The on-chain time-ordered ledger of all scribed entries — both thunders and prisms — between Prismoids.
+- **Sibyl** — the oracle. Reads the timestream to score trust, predict spam, and signal inka eligibility.
+- **inka / inkas vs strangers** — an inka is **someone whose suiami you carry**. The moment your chronicom holds another Prismoid's SUI-AUTH-MSG-ID credential, they're an inka. Strangers are anyone whose suiami you don't carry. Country-pool inkas (everyone with a Full SKI Pass in your country) are auto-shared by ultron at key-in time; cross-country inkas are earned through scribed thunders or sent prisms.
+- **suiami** — **SUI-AUTH-MSG-ID.** The authenticated message-identity credential — a tamper-evident proof of ownership of a Prismoid + its SuiNS name + its squids, stamped with country metadata at minting time. Published as the [`suiami` npm package](https://www.npmjs.com/package/suiami).
+- **SKI Pass** — a roster of credentials per SuiNS name (NFT + squids), bound by the name, auto-minted on first key-in, country-attested. Comes in two tiers: Full (default for primary country) and Temporary (any new country until upgraded by either multiple key-ins over time or by sending a Prism worth a threshold to ultron). No expiry unless you don't key in for 3 years.
+
+### The topology: Thunder through ultron
+
+Every thunder is a **double envelope**. The outer envelope is encrypted to ultron and contains only `{ recipient_prismoid, inner_ciphertext }`. The inner envelope is encrypted to the recipient's squid. Ultron routes the inner envelope but **cannot read it** — it is a **keyless blind relay**. It knows who talks to who; it does not know what they say. First commandment holds: no private keys on Cloudflare Workers, ever.
+
+Thunder isn't a performance compromise — it's the decision that unlocks everything downstream:
+
+| Layer | What Thunder unlocks |
+|---|---|
+| **Spam control (inkas vs strangers)** | Enforcement lives at ultron, not in N client implementations. Visiting sui.ski and keying in mints a SKI Pass automatically — that's the gate. Strangers to SKI fix it in 10 seconds; inkas (anyone whose suiami you carry) pass through. Zero client trust needed. |
+| **Delivery model** | One WebSocket per Prismoid to ultron, reused for all traffic. Cloudflare Durable Object hibernatable WebSockets are free when idle. Already wired. |
+| **Forward secrecy** | Single write path. Ultron watches Prismoid rotation events on-chain and scribes new anchors into the timestream. No multi-device desync — the anchor lives in the chronicom where both sides read from it. |
+| **Cross-chain delivery** | Collapses into "ultron emits chain-specific notifications." Ultron has its own dWallets (ed25519, secp256k1) and can drop a SOL memo, an EVM event, or a BTC OP_RETURN when the recipient has no SKI client. The non-Sui recipient installs nothing. |
+| **Magnezone evolution** | Uniform traffic is the *precondition* for onion mixing and cover traffic. Thunder is what makes the mixnet path possible later. |
+
+The alternative — direct peer-to-peer — would leak your entire social graph to any passive observer, force every client to enforce its own spam rules, break cross-chain delivery, and close the door on mixnet evolution forever. Hybrid (direct for inkas, ultron for strangers) doubles the codebase, bifurcates enforcement, and kills mixing. The "latency win" from direct is tens of milliseconds. Not worth it.
+
+Thunder. Ultron sees who, never what. Everything else falls out for free.
+
 ## Terminology
 
 | Word | Meaning |

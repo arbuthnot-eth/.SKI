@@ -3589,20 +3589,22 @@ let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
 let nsLabel = (() => {
   try {
-    // Prefer user's primary SuiNS name — if they have one, it's
-    // what they'll want to see first.
+    // Prefer the last-typed label so hard refresh is stable. If a
+    // user was looking at `great.sui` and reloads, they expect to
+    // land right back on great — not get kicked over to their own
+    // primary name. Only restore if it wasn't an 'available' stub
+    // (half-typed shopping).
+    const saved = localStorage.getItem('ski:ns-label') || '';
+    const savedAvail = sessionStorage.getItem('ski:ns-resolve');
+    const wasAvailable = savedAvail ? JSON.parse(savedAvail)?.avail === 'available' : false;
+    if (saved && !wasAvailable) return saved;
+    // No usable saved label → fall back to the connected wallet's
+    // primary SuiNS name if it's cached locally.
     const ws = getState();
     if (ws.address) {
       const cached = localStorage.getItem(`ski:suins:${ws.address}`);
       if (cached) return cached.replace(/\.sui$/, '');
     }
-    // Fall back to saved label — but only if it was a taken/owned
-    // name the user was actively viewing. Never restore an
-    // 'available' name (half-typed shopping).
-    const saved = localStorage.getItem('ski:ns-label') || '';
-    const savedAvail = sessionStorage.getItem('ski:ns-resolve');
-    const wasAvailable = savedAvail ? JSON.parse(savedAvail)?.avail === 'available' : false;
-    if (saved && !wasAvailable) return saved;
     // No primary + no saved label → empty. The target row below
     // will surface the connected wallet's hex address as the
     // default display, so the user sees their own identity
@@ -9964,12 +9966,23 @@ function bindEvents() {
       // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
       const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
-      // Auto-populate: clear invalid/short labels, default to primary or highest-signal owned name
+      // Auto-populate: prefer the last-typed label (stable across
+      // refresh), then fall back to saved localStorage, then the
+      // wallet's primary name. Clear invalid/short labels.
       let _idleInputVal = nsLabel.trim();
       if (_idleInputVal && (_idleInputVal.length < 3 || !isValidNsLabel(_idleInputVal))) {
         _idleInputVal = '';
         nsLabel = '';
         try { localStorage.removeItem('ski:ns-label'); } catch {}
+      }
+      if (!_idleInputVal) {
+        try {
+          const saved = localStorage.getItem('ski:ns-label') || '';
+          if (saved && isValidNsLabel(saved)) {
+            _idleInputVal = saved;
+            nsLabel = saved;
+          }
+        } catch {}
       }
       if (!_idleInputVal && app.suinsName) {
         _idleInputVal = app.suinsName.replace(/\.sui$/, '');
@@ -11524,29 +11537,43 @@ function bindEvents() {
               const domain = `${label}.sui`;
               const priceMistStr = (nsKioskListing ?? nsTradeportListing)!.priceMist;
               const priceSui = Number(BigInt(priceMistStr)) / 1e9;
-              const suiP = suiPriceCache?.price ?? 0;
-              const priceUsd = suiP > 0 ? priceSui * suiP : 0;
-              showToast(`\u{1F6CD}\u{FE0F} Buying ${domain} for ${priceSui.toFixed(2)} SUI${priceUsd ? ` (~$${priceUsd.toFixed(2)})` : ''}\u2026`);
+              // Refresh SUI price so the displayed USD matches the
+              // card and nothing gets computed against a stale cache.
+              const freshSuiP = (await fetchSuiPrice()) ?? suiPriceCache?.price ?? 0;
+              if (!freshSuiP || freshSuiP <= 0) {
+                showToast('SUI price unavailable — try again in a moment');
+                return;
+              }
+              // Match the card affordability math at ~10200: source
+              // includes the 3% Tradeport fee so the toast aligns
+              // with "Trade $X" displayed on the button title.
+              const fee = nsTradeportListing ? priceSui * 0.03 : 0;
+              const totalSui = priceSui + fee;
+              const priceUsd = totalSui * freshSuiP;
+              showToast(`\u{1F6CD}\u{FE0F} Buying ${domain} for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)})\u2026`);
               const purchase = nsKioskListing
                 ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: priceMistStr }
                 : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: priceMistStr };
-              // null selectedCoinType + null outputCoinType = SUI-through-SUI.
-              // selectedBalance is a hint for estimation; pass the user's current SUI.
-              const suiBal = app.sui ?? 0;
-              const txBytes = await buildSwapAndPurchaseTx(ws.address, purchase, null, suiBal, null, suiP);
+              // Let the function auto-source: SUI first, then swap
+              // USDC→SUI for any shortfall via the DeepBook SUI/USDC
+              // pool. selectedCoinType=null means SUI is the primary
+              // input, outputCoinType=USDC engages the fallback swap.
+              const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+              const suiUsdBalance = (app.sui ?? 0) * freshSuiP;
+              const txBytes = await buildSwapAndPurchaseTx(ws.address, purchase, null, suiUsdBalance, USDC_TYPE, freshSuiP);
               _idleActionBtn!.textContent = '\u270f';
               const { digest } = await signAndExecuteTransaction(txBytes);
               nsAvail = 'owned'; nsTargetAddress = ws.address; nsLastDigest = digest ?? '';
               nsKioskListing = null; nsTradeportListing = null;
               app.suinsName = app.suinsName || domain;
-              showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${priceSui.toFixed(2)} SUI${priceUsd ? ` (~$${priceUsd.toFixed(2)})` : ''} \u2713`);
+              showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)}) \u2713`);
               _updateIdleStatus();
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
             } catch (err) {
               const raw = err instanceof Error ? err.message : String(err);
+              console.warn('[SKI-Trade] purchase failed:', raw);
               if (!raw.toLowerCase().includes('reject')) {
-                const { display, full } = parseNsError(raw);
-                showCopyableToast(display, full);
+                showCopyableToast(raw.slice(0, 200), raw);
               }
             } finally {
               _idleActionBtn!.disabled = false;
@@ -11595,12 +11622,17 @@ function bindEvents() {
               showToast(`${label}.sui purchased \u2713`);
               _updateIdleStatus();
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
-            } else if (infer.nameStatus === 'available' && label) {
+            } else if (infer.nameStatus === 'available' && !infer.listing && label) {
               // Fresh registration — /api/infer doesn't yet build
               // register PTBs. Fall through to the client builder,
               // which now supports an iUSD → USDC → NS route via
               // the seeded iUSD/USDC pool so a wallet holding only
               // stables can still register a name in one sig.
+              //
+              // Gate on `!infer.listing` so Tradeport-listed names
+              // (which the SuiNS resolver sometimes reports as
+              // unresolved when the NFT is kiosk-wrapped) never
+              // fall through to this MINT path and mint-spam NS.
               _idleActionBtn!.textContent = '\u270f';
               showToast(`\u26a1 Registering ${label}.sui`);
               const freshPrice = await fetchSuiPrice() ?? suiPriceCache?.price;

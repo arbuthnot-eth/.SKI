@@ -3589,30 +3589,19 @@ let appBalanceFetched = false; // true once live or cached balance is available
 let skipNextFocusClear = false; // set before programmatic re-focus to avoid wiping user's typed value
 let nsLabel = (() => {
   try {
-    // Prefer the last-typed/searched label unconditionally so hard
-    // refresh is stable. If the user was looking at `great.sui` and
-    // reloads, they expect to land right back on great — not get
-    // kicked over to their own primary.
+    // The card and input are driven *purely* by the user's last
+    // searched/typed label. No auto-populate from the wallet's
+    // primary — the card follows intent, not identity. If the
+    // user was looking at `great.sui` and reloads, they land back
+    // on great. If they had nothing typed, the card stays blank
+    // until they type or click something.
     //
-    // Previously we gated this behind a `wasAvailable` check to
-    // avoid restoring a half-typed registration stub. But the SuiNS
-    // resolver sometimes returns `avail: 'available'` for names
-    // that are actually Tradeport-kiosk-listed (the wrap defeats
-    // the resolver), so the gate ended up dropping real searches
-    // for listed names. Dropped the gate entirely — if there's a
-    // saved label, we trust it. The initial page load never
-    // auto-mints anything, so the worst case of restoring a stale
-    // 'available' value is a harmless blank card until the user
-    // types or triggers another resolve.
+    // Previously this fell back to the connected wallet's primary
+    // from `ski:suins:${address}`, which turned every fresh session
+    // into a self-card and clobbered any trade-in-progress on
+    // refresh. Removed the fallback entirely.
     const saved = localStorage.getItem('ski:ns-label') || '';
     if (saved) return saved;
-    // No saved label → fall back to the connected wallet's primary
-    // SuiNS name if it's cached locally.
-    const ws = getState();
-    if (ws.address) {
-      const cached = localStorage.getItem(`ski:suins:${ws.address}`);
-      if (cached) return cached.replace(/\.sui$/, '');
-    }
     // No primary + no saved label → empty. The target row below
     // will surface the connected wallet's hex address as the
     // default display, so the user sees their own identity
@@ -9985,9 +9974,12 @@ function bindEvents() {
       // Build card + NS input for the idle overlay — mirrors full SKI menu NS row
       const _idleCardDomain = document.getElementById('ski-nft-inline')?.dataset.domain || _lastNftCardDomain || '';
       const _idleVariant: SkiDotVariant = (nsAvail === 'owned' || nsAvail === 'taken') ? 'blue-square' : nsAvail === 'available' ? 'green-circle' : 'black-diamond';
-      // Auto-populate: prefer the last-typed label (stable across
-      // refresh), then fall back to saved localStorage, then the
-      // wallet's primary name. Clear invalid/short labels.
+      // Input populates from the last-searched label only — the card
+      // and input follow user intent, never auto-fill from the
+      // wallet's primary. Blank is the correct default state.
+      //
+      // Invalid/too-short persisted values are cleared so stale
+      // single-char junk doesn't resurrect across sessions.
       let _idleInputVal = nsLabel.trim();
       if (_idleInputVal && (_idleInputVal.length < 3 || !isValidNsLabel(_idleInputVal))) {
         _idleInputVal = '';
@@ -10002,18 +9994,6 @@ function bindEvents() {
             nsLabel = saved;
           }
         } catch {}
-      }
-      if (!_idleInputVal && app.suinsName) {
-        _idleInputVal = app.suinsName.replace(/\.sui$/, '');
-      }
-      if (!_idleInputVal && nsOwnedDomains.length > 0) {
-        const topName = [...nsOwnedDomains]
-          .map(d => {
-            const b = d.name.replace(/\.sui$/, '').toLowerCase();
-            return { bare: b, score: (_thunderCounts[b] ?? 0) };
-          })
-          .sort((a, b) => b.score - a.score)[0];
-        if (topName && topName.score > 0) _idleInputVal = topName.bare;
       }
 
       _idleOverlay.innerHTML = `
@@ -12619,22 +12599,23 @@ function bindEvents() {
         }, 120);
       };
 
-      // Self-card context = quick amounts become PSM mint actions
-      // instead of thunder sends. Sending a thunder to yourself is
-      // nonsensical, so this reclaims the otherwise-dead interaction
-      // for something useful: minting iUSD from USDC via Volcarodon.
+      // Mint-context for the quick-amount buttons. The card is now
+      // driven purely by user intent — blank when nothing is typed,
+      // filled once a name is searched. When there's no active typed
+      // label and no open storm conversation, clicking a quick amount
+      // mints that USD of USDC → iUSD via PSM. As soon as the user
+      // types any name to search/trade, the context flips back to
+      // thunder-send (where each amount sends to the typed target).
       //
-      // Detection: no active storm counterparty AND the currently-
-      // displayed card name matches the connected wallet's primary
-      // (what Lapras Lv.10 auto-loads). If the user types a different
-      // name to search/trade, the card moves off the primary and the
-      // quick amounts revert to thunder-send behavior.
+      // This also catches the case where the user types their own
+      // primary — sending a thunder to yourself is nonsensical, so
+      // we'd rather reclaim the interaction for a mint.
       const _isSelfCardContext = (): boolean => {
         if (_activeStormCounterparty) return false;
+        const typed = nsLabel.trim().replace(/\.sui$/, '').toLowerCase();
+        if (!typed) return true; // blank input = mint-appropriate
         const primary = (app.suinsName || '').replace(/\.sui$/, '').toLowerCase();
-        if (!primary) return false;
-        const current = (_cardCurrentName || nsLabel.trim()).replace(/\.sui$/, '').toLowerCase();
-        return current === primary;
+        return !!primary && typed === primary;
       };
 
       // PSM mint of `amtUsd` USD worth of USDC → iUSD via Volcarodon.
@@ -16961,56 +16942,11 @@ export function initUI() {
         detail: { address: ws.address, walletName: ws.walletName },
       }));
 
-      // Lapras Lv.10 Water Pulse (#150) — on wallet-change, auto-load
-      // the new wallet's primary SuiNS into the overlay name card +
-      // NS input.
-      //
-      // Gates (all must pass before we touch nsLabel):
-      //   1. "Different address than last adopt" — so a same-wallet
-      //      refresh doesn't re-trigger.
-      //   2. "No active typed search" — if nsLabel already holds a
-      //      valid label the user was searching for (e.g. great.sui
-      //      for a trade), we respect it. Lapras only populates into
-      //      a blank input; it never overwrites a live search.
-      try {
-        const _prevLapras = localStorage.getItem('ski:lapras-last-addr') || '';
-        const _isNewAddr = _prevLapras !== ws.address;
-        const _hasActiveSearch = !!nsLabel && isValidNsLabel(nsLabel);
-        if (_isNewAddr && !_hasActiveSearch) {
-          const _adopt = () => {
-            const primary = (app.suinsName || '').replace(/\.sui$/, '');
-            if (!primary || !isValidNsLabel(primary)) return;
-            // Guard again inside the async path — user may have
-            // typed something between the synchronous first call
-            // and the ski:balance-updated follow-up.
-            if (nsLabel && isValidNsLabel(nsLabel)) return;
-            nsLabel = primary;
-            try { localStorage.setItem('ski:ns-label', primary); } catch {}
-            try { localStorage.setItem('ski:lapras-last-addr', ws.address); } catch {}
-            _lastNftCardDomain = `${primary}.sui`;
-            try { sessionStorage.setItem('ski:nft-card-domain', `${primary}.sui`); } catch {}
-            // If the overlay is already mounted (e.g. restored after
-            // refresh), re-render so input + card flip to the new
-            // primary immediately instead of waiting for an idle tick.
-            if (_idleOverlay) _showIdleOverlay();
-          };
-          // Cache may already have the primary; adopt synchronously.
-          _adopt();
-          // Also adopt once fresh portfolio data resolves — covers
-          // the "wallet with no cached primary" case and picks up
-          // SuiNS names registered after the last session.
-          const _onFresh = () => {
-            window.removeEventListener('ski:balance-updated', _onFresh);
-            _adopt();
-          };
-          window.addEventListener('ski:balance-updated', _onFresh);
-        } else if (_isNewAddr && _hasActiveSearch) {
-          // New address but user is mid-search. Record the address
-          // so Lapras doesn't keep re-attempting on every reconnect
-          // of this same wallet; the user's typed label stands.
-          try { localStorage.setItem('ski:lapras-last-addr', ws.address); } catch {}
-        }
-      } catch { /* non-fatal */ }
+      // Lapras Lv.10 (#150) auto-populate reverted — the card + NS
+      // input are now driven purely by what the user types/searches.
+      // The previous behavior of adopting the wallet's primary on
+      // new-address connect was clobbering in-progress trades and
+      // was a misfeature in practice. Issue reopened for follow-up.
 
       // Initialize Thunder Timestream client (Seal 2-of-3 + Timestream DO).
       // Immediately warm the Seal session key so the first convo open doesn't

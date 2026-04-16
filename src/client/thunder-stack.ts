@@ -464,6 +464,29 @@ export async function warmThunderSession(opts?: { address?: string }): Promise<v
   }
 }
 
+/**
+ * Force-mint a fresh Seal session key — prompts the wallet immediately.
+ * Clears the cached key + in-memory promise first so the mint path runs
+ * end-to-end. Returns true on success, false on cancellation or failure.
+ *
+ * Used by the idle-overlay ski clock: clicking the countdown chip calls
+ * this so the user can re-sign before the current key ages out, without
+ * having to open a storm first. The clock auto-detects the new expiry
+ * via its localStorage poll once _loadOrMintSessionKey writes the key.
+ */
+export async function refreshSealSession(): Promise<boolean> {
+  if (!_warmer || !_address) return false;
+  try { localStorage.removeItem(SK_STORAGE_KEY(_address)); } catch {}
+  _sessionKeyPromise = null;
+  clearSealRejection(); // fresh click = intentional retry, clear cooldown
+  try {
+    await _warmer();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function resetThunderClient() {
   if (_client) {
     try { _client.messaging.disconnect(); } catch {}

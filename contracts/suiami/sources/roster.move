@@ -204,3 +204,186 @@ public fun record_updated_ms(record: &IdentityRecord): u64 { record.updated_ms }
 public fun record_walrus_blob_id(record: &IdentityRecord): &String { &record.walrus_blob_id }
 public fun record_seal_nonce(record: &IdentityRecord): &vector<u8> { &record.seal_nonce }
 public fun record_verified(record: &IdentityRecord): bool { record.verified }
+
+// ─── CF edge history (Porygon) ──────────────────────────────────────
+//
+// Append-only log of Seal-sealed Walrus blob IDs, one per CF fingerprint
+// change. Stored as a separate dynamic field keyed by wallet address so
+// the additive upgrade doesn't touch IdentityRecord's BCS shape. Client
+// does change detection before appending (typical user: 1-3 lifetime
+// entries).
+
+/// Dynamic-field key for per-address CF history store.
+public struct CfHistoryKey has copy, drop, store { addr: address }
+
+/// CF-history container. `blobs` is oldest-first.
+public struct CfHistory has store, drop {
+    blobs: vector<String>,
+    updated_ms: u64,
+}
+
+/// Append a Walrus blob ID to the caller's CF history. Creates the
+/// history store on first write. Asserts the caller has a roster
+/// record (prevents anonymous writes from consuming storage).
+public fun append_cf_history(
+    roster: &mut Roster,
+    blob_id: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let key = CfHistoryKey { addr: sender };
+    if (dynamic_field::exists_<CfHistoryKey>(&roster.id, key)) {
+        let history: &mut CfHistory = dynamic_field::borrow_mut(&mut roster.id, key);
+        history.blobs.push_back(blob_id);
+        history.updated_ms = clock.timestamp_ms();
+    } else {
+        let mut blobs = vector::empty<String>();
+        blobs.push_back(blob_id);
+        dynamic_field::add(&mut roster.id, key, CfHistory {
+            blobs,
+            updated_ms: clock.timestamp_ms(),
+        });
+    };
+}
+
+/// Read the caller's or any address's CF history blob IDs.
+public fun cf_history(roster: &Roster, addr: address): &vector<String> {
+    let key = CfHistoryKey { addr };
+    let h: &CfHistory = dynamic_field::borrow(&roster.id, key);
+    &h.blobs
+}
+
+/// Last-updated timestamp of the CF history store.
+public fun cf_history_updated_ms(roster: &Roster, addr: address): u64 {
+    let key = CfHistoryKey { addr };
+    let h: &CfHistory = dynamic_field::borrow(&roster.id, key);
+    h.updated_ms
+}
+
+/// Does this address have any CF history? Checked by Seal policy.
+public fun has_cf_history(roster: &Roster, addr: address): bool {
+    let key = CfHistoryKey { addr };
+    dynamic_field::exists_<CfHistoryKey>(&roster.id, key)
+}
+
+// ─── Granular mutators ──────────────────────────────────────────────
+//
+// Update a single field without rewriting the whole record via
+// `set_identity`. Callers pass `name_hash` because it's not stored on
+// the record but is needed to locate the by_name index copy. Every
+// mutator propagates to all three dynamic-field indexes to prevent
+// drift.
+
+/// Rewrites name_hash / sui_address / chain:addr indexes with the same
+/// record bytes. Internal — mutators call this after updating fields.
+fun rewrite_indexes(roster_id: &mut UID, record: &IdentityRecord, name_hash: vector<u8>) {
+    if (dynamic_field::exists_<vector<u8>>(roster_id, name_hash)) {
+        dynamic_field::remove<vector<u8>, IdentityRecord>(roster_id, name_hash);
+    };
+    dynamic_field::add(roster_id, name_hash, *record);
+
+    let addr = record.sui_address;
+    if (dynamic_field::exists_<address>(roster_id, addr)) {
+        dynamic_field::remove<address, IdentityRecord>(roster_id, addr);
+    };
+    dynamic_field::add(roster_id, addr, *record);
+
+    let keys = record.chains.keys();
+    let len = keys.length();
+    let mut i = 0;
+    while (i < len) {
+        let chain_key = keys[i];
+        let chain_value = *record.chains.get(&chain_key);
+        let mut composite = chain_key;
+        composite.append_utf8(b":");
+        composite.append(chain_value);
+        if (dynamic_field::exists_<String>(roster_id, composite)) {
+            dynamic_field::remove<String, IdentityRecord>(roster_id, composite);
+        };
+        dynamic_field::add(roster_id, composite, *record);
+        i = i + 1;
+    };
+}
+
+/// Rotate Walrus blob id + Seal nonce. Caller must own the by_address
+/// record. Propagates to all three indexes.
+public fun set_walrus_blob(
+    roster: &mut Roster,
+    name_hash: vector<u8>,
+    blob_id: String,
+    seal_nonce: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let current: &IdentityRecord = dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(current.sui_address == sender, ENotOwner);
+    let mut updated: IdentityRecord = *current;
+    updated.walrus_blob_id = blob_id;
+    updated.seal_nonce = seal_nonce;
+    updated.updated_ms = clock.timestamp_ms();
+    rewrite_indexes(&mut roster.id, &updated, name_hash);
+}
+
+/// Replace dWallet caps (flips `verified` based on non-emptiness).
+/// Caller must own the by_address record.
+public fun set_dwallet_caps(
+    roster: &mut Roster,
+    name_hash: vector<u8>,
+    caps: vector<address>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let current: &IdentityRecord = dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(current.sui_address == sender, ENotOwner);
+    let mut updated: IdentityRecord = *current;
+    updated.dwallet_caps = caps;
+    updated.verified = !updated.dwallet_caps.is_empty();
+    updated.updated_ms = clock.timestamp_ms();
+    rewrite_indexes(&mut roster.id, &updated, name_hash);
+}
+
+/// Feint the identity — removes all three index copies + any
+/// cf_history store. Decrements the global count. Caller must own the
+/// by_address record.
+public fun revoke_identity(
+    roster: &mut Roster,
+    name_hash: vector<u8>,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let record: IdentityRecord = dynamic_field::remove<address, IdentityRecord>(&mut roster.id, sender);
+    assert!(record.sui_address == sender, ENotOwner);
+
+    if (dynamic_field::exists_<vector<u8>>(&roster.id, name_hash)) {
+        dynamic_field::remove<vector<u8>, IdentityRecord>(&mut roster.id, name_hash);
+    };
+
+    let keys = record.chains.keys();
+    let len = keys.length();
+    let mut i = 0;
+    while (i < len) {
+        let chain_key = keys[i];
+        let chain_value = *record.chains.get(&chain_key);
+        let mut composite = chain_key;
+        composite.append_utf8(b":");
+        composite.append(chain_value);
+        if (dynamic_field::exists_<String>(&roster.id, composite)) {
+            dynamic_field::remove<String, IdentityRecord>(&mut roster.id, composite);
+        };
+        i = i + 1;
+    };
+
+    let cf_key = CfHistoryKey { addr: sender };
+    if (dynamic_field::exists_<CfHistoryKey>(&roster.id, cf_key)) {
+        dynamic_field::remove<CfHistoryKey, CfHistory>(&mut roster.id, cf_key);
+    };
+
+    roster.count = roster.count - 1;
+}

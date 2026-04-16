@@ -55,6 +55,34 @@ async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown
   return bytes;
 }
 
+/**
+ * WaaP signs with deterministic ECDSA (Silence Labs MPC, RFC-6979 secp256k1).
+ * Same input bytes always produce the same signature, so when we hit the 1/256
+ * case where r or s loses its leading zero (63-byte raw sig → Sui rejects with
+ * "Invalid signature length: expected 64 bytes, got 63"), retrying the same tx
+ * is hopeless — the signature is deterministic and the tx will fail forever.
+ *
+ * Fix: append a real Move op to the PTB whose argument varies per build, so
+ * each attempt produces fresh tx bytes → fresh signature → ~255/256 odds of
+ * dodging the short-sig case per click. Splitting a tiny amount of MIST off
+ * gas and transferring it back to the sender does the job: it survives v1↔v2
+ * BCS round-trips (because it lives in the command list, not gasData), and
+ * the dust comes right back so cost is just the gas for the extra commands.
+ *
+ * Only meaningful for WaaP wallets, but harmless on every other wallet — we
+ * apply it unconditionally so we don't have to know the wallet at build time.
+ */
+function appendWaapDeterministicEcdsaJitter(
+  tx: InstanceType<typeof Transaction>,
+  senderAddress: string,
+): void {
+  // 1..1024 MIST — well below any meaningful threshold but > 256 (the size of
+  // the rejection space we need to step out of).
+  const dustAmount = 1n + BigInt(Math.floor(Math.random() * 1024));
+  const [dust] = tx.splitCoins(tx.gas, [tx.pure.u64(dustAmount)]);
+  tx.transferObjects([dust], tx.pure.address(senderAddress));
+}
+
 // ─── iUSD Treasury Fee ─────────────────────────────────────────────────
 
 /** iUSD treasury address — receives protocol fees. Developed as t2000.sui.
@@ -109,6 +137,7 @@ export function maybeAppendRoster(
   crossChain?: { btc?: string; eth?: string; sol?: string },
   walrusBlobId?: string,
   sealNonce?: number[],
+  dwalletCaps?: string[],
 ): boolean {
   // Roster is a mainnet-only Move package — silently skip on testnet hosts
   // so testnet PTBs don't reference nonexistent package IDs.
@@ -121,9 +150,14 @@ export function maybeAppendRoster(
   // Only SUI address goes on-chain; cross-chain addresses live in the Walrus blob
   const chains: [string, string][] = [['sui', addr]];
 
-  // Skip if unchanged since last write
+  // Caps drive the on-chain `verified` flag (non-empty → true). The debounce
+  // below keys on both the chain list AND the caps so a cap-population
+  // write isn't suppressed just because the chain list is unchanged.
+  const caps = (dwalletCaps ?? []).filter(c => typeof c === 'string' && c.startsWith('0x'));
+
+  // Skip if unchanged since last write (address list + cap list together)
   const rosterKey = `ski:roster:${addr}`;
-  const currentRoster = JSON.stringify(chains);
+  const currentRoster = JSON.stringify({ chains, caps });
   try { if (localStorage.getItem(rosterKey) === currentRoster) return false; } catch {}
 
   // keccak256(bare_name_bytes) — same hash as Thunder nameHash
@@ -140,7 +174,7 @@ export function maybeAppendRoster(
       tx.pure.vector('u8', nh),
       tx.pure.vector('string', chains.map(c => c[0])),
       tx.pure.vector('string', chains.map(c => c[1])),
-      tx.pure.vector('address', []), // dwallet_caps — TODO: populate from IKA state
+      tx.pure.vector('address', caps),
       tx.pure.string(walrusBlobId || ''),
       tx.pure.vector('u8', sealNonce || []),
       tx.object('0x6'),
@@ -162,7 +196,13 @@ export async function readRoster(name: string): Promise<Record<string, string> |
   if (!isMainnet()) return null;
   const bare = name.replace(/\.sui$/i, '').toLowerCase();
   const nh = keccak_256(new TextEncoder().encode(bare));
-  const nhB64 = btoa(String.fromCharCode(...nh));
+  // GraphQL `dynamicField(name: { type: "vector<u8>", bcs: … })` expects
+  // the BCS-encoded vector<u8> — ULEB128 length prefix + raw bytes. The
+  // hash is 32 bytes so the prefix fits in one byte (0x20).
+  const prefixed = new Uint8Array(nh.length + 1);
+  prefixed[0] = nh.length;
+  prefixed.set(nh, 1);
+  const nhB64 = btoa(String.fromCharCode(...prefixed));
   try {
     const res = await fetch('https://graphql.mainnet.sui.io/graphql', {
       method: 'POST',
@@ -226,6 +266,62 @@ export async function readRosterByAddress(address: string): Promise<RosterRecord
       for (const { key, value } of record.chains.contents) {
         chains[key] = value;
       }
+    }
+    return {
+      name: record.name ?? '',
+      sui_address: record.sui_address ?? '',
+      chains,
+      walrus_blob_id: record.walrus_blob_id ?? '',
+      seal_nonce: record.seal_nonce ?? [],
+      verified: record.verified ?? false,
+      dwallet_caps: record.dwallet_caps ?? [],
+      updated_ms: record.updated_ms ?? '0',
+    };
+  } catch { return null; }
+}
+
+/**
+ * Reverse-lookup the SUIAMI Roster by a chain:address key.
+ *
+ * Key format matches the Move contract's third index: `"<chain>:<addr>"`
+ * — e.g. `"sui:0xa84c…"`, `"btc:bc1q…"`, `"eth:0x…"`. The Sui-chain key
+ * works for every roster entry today because the default `set_identity`
+ * call always writes the sender's Sui address under the `sui` key. Other
+ * chains are only reverse-resolvable if the owner opted to write them
+ * plaintext on-chain (BTC/ETH/SOL normally live Seal-encrypted in the
+ * Walrus blob and are *not* indexed here).
+ *
+ * Returns the full IdentityRecord, or null if the key isn't registered.
+ */
+export async function readRosterByChain(chainKey: string): Promise<RosterRecord | null> {
+  if (!isMainnet()) return null;
+  const key = (chainKey || '').trim();
+  if (!key.includes(':')) return null;
+  // GraphQL dynamic_field(name: { type: "0x1::string::String", bcs: <utf-8 len-prefixed> })
+  // needs ULEB128 length prefix + raw UTF-8 bytes, BCS-encoded.
+  const utf8 = new TextEncoder().encode(key);
+  const lenPrefix: number[] = [];
+  let n = utf8.length;
+  while (n >= 0x80) { lenPrefix.push((n & 0x7f) | 0x80); n >>>= 7; }
+  lenPrefix.push(n & 0x7f);
+  const bcs = new Uint8Array(lenPrefix.length + utf8.length);
+  bcs.set(lenPrefix, 0);
+  bcs.set(utf8, lenPrefix.length);
+  const b64 = btoa(String.fromCharCode(...bcs));
+  try {
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${ROSTER_OBJ}") { dynamicField(name: { type: "0x1::string::String", bcs: "${b64}" }) { value { ... on MoveValue { json } } } } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const record = gql?.data?.object?.dynamicField?.value?.json;
+    if (!record) return null;
+    const chains: Record<string, string> = {};
+    if (record.chains?.contents) {
+      for (const { key: ck, value } of record.chains.contents) chains[ck] = value;
     }
     return {
       name: record.name ?? '',
@@ -871,6 +967,7 @@ export async function buildSetDefaultNsTx(rawAddress: string, domain: string): P
     ],
   });
   maybeAppendRoster(tx);
+  appendWaapDeterministicEcdsaJitter(tx, walletAddress);
   const bytes = await tx.build({ client: transport as never });
   return { bytes, tx };
 }
@@ -1639,9 +1736,19 @@ export async function buildKioskPurchaseTx(
  * tradeport_listings::buy_listing_without_transfer_policy which transfers
  * the NFT directly to the buyer.
  */
-// Two Tradeport deployments — listings created under either package
+// Tradeport deployments:
+//   V1 (0xff22…) — original regular listings. Upgraded in-place to 0xc99c…
+//     which adds the OB (order-book) variant. OB listings live in both the
+//     original listings Store AND the orderbook Store at 0x3af0… and must
+//     be bought via `buy_ob_listing_without_transfer_policy` (not the
+//     regular buy). The non-OB buy aborts with code 4 on OB listings.
+//   V2 (0xb42d…) — newer listings contract with `listings::buy`.
 const TRADEPORT_V1_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
 const TRADEPORT_V1_STORE = '0xf96f9363ac5a64c058bf7140723226804d74c0dab2dd27516fb441a180cd763b';
+const TRADEPORT_V1_STORE_ISV = 670935706;
+const TRADEPORT_OB_PKG = '0xc99caf110751c3c615c64a27c81bf5c829e39b21a32613b9e4f87ca69cb8ec38';
+const TRADEPORT_OB_STORE = '0x3af0a94360253c80fbabe73f6832be0a49ddfc0b8772ccd5335f568cbc356da1';
+const TRADEPORT_OB_STORE_ISV = 766744204;
 const TRADEPORT_V2_PKG = '0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027';
 const TRADEPORT_V2_STORE = '0x47cba0b6309a12ce39f9306e28b899ed4b3698bce4f4911fd0c58ff2329a2ff6';
 // Keep old aliases for existing code
@@ -1653,6 +1760,7 @@ const TRADEPORT_STORE = TRADEPORT_V1_STORE;
  * Chain: NFT → dynamic_field wrapper → SimpleListing
  */
 export async function resolveTradeportListingId(nftTokenId: string): Promise<string | null> {
+  // Primary: GraphQL owner-chain traversal (NFT → wrapper → SimpleListing)
   try {
     const res = await fetch(GQL_URL, {
       method: 'POST',
@@ -1663,9 +1771,73 @@ export async function resolveTradeportListingId(nftTokenId: string): Promise<str
     });
     type R = { data?: { object?: { owner?: { address?: { address?: string; asObject?: { owner?: { address?: { address?: string } } } } } } } };
     const json = await res.json() as R;
-    // grandparent = SimpleListing object ID
-    return json?.data?.object?.owner?.address?.asObject?.owner?.address?.address ?? null;
+    const gqlResult = json?.data?.object?.owner?.address?.asObject?.owner?.address?.address ?? null;
+    if (gqlResult) return gqlResult;
+  } catch { /* fall through to JSON-RPC backup */ }
+
+  // Backup: JSON-RPC two-hop owner traversal when GraphQL schema drifts.
+  // NFT owned by dynamic_field wrapper, wrapper owned by SimpleListing.
+  try {
+    const getOwner = async (objectId: string): Promise<string | null> => {
+      const res = await fetch('https://sui-rpc.publicnode.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getObject', params: [objectId, { showOwner: true }] }),
+      });
+      const json = await res.json() as { result?: { data?: { owner?: Record<string, string> } } };
+      return json?.result?.data?.owner?.ObjectOwner ?? null;
+    };
+    const wrapperId = await getOwner(nftTokenId);
+    if (!wrapperId) return null;
+    return await getOwner(wrapperId);
   } catch { return null; }
+}
+
+/**
+ * Resolve the Tradeport listing AND which buy flavor applies.
+ *
+ * Three flavors, three different move calls:
+ *   - `v1`   — `buy_listing_without_transfer_policy(store, nft_id, coin)`
+ *   - `v1ob` — `buy_ob_listing_without_transfer_policy(store, ob_store, nft_id, coin)`
+ *              OB (order-book) listings live in both the listings Store AND the
+ *              orderbook Store; the regular buy aborts on them with code 4.
+ *   - `v2`   — `listings::buy(store, listing_id, coin)` — V2 store is keyed by
+ *              Listing object ID, not NFT ID.
+ */
+export async function resolveTradeportListing(
+  nftTokenId: string,
+): Promise<{ id: string; kind: 'v1' | 'v1ob' | 'v2' } | null> {
+  const id = await resolveTradeportListingId(nftTokenId);
+  if (!id) return null;
+  // Probe the listing object's type to differentiate V1 vs V2
+  let type = '';
+  try {
+    const res = await fetch('https://sui-rpc.publicnode.com', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getObject', params: [id, { showType: true }] }),
+    });
+    const json = await res.json() as { result?: { data?: { type?: string } } };
+    type = json?.result?.data?.type ?? '';
+  } catch { return null; }
+  if (type.startsWith(TRADEPORT_V2_PKG)) return { id, kind: 'v2' };
+  if (!type.startsWith(TRADEPORT_V1_PKG)) return null;
+
+  // V1 listing. Check the orderbook Store for a dynamic field keyed by the
+  // SimpleListing ID — its presence means this is an OB listing.
+  try {
+    const bcs = btoa(String.fromCharCode(...new Uint8Array(id.slice(2).match(/.{2}/g)!.map((h) => parseInt(h, 16)))));
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address: "${TRADEPORT_OB_STORE}") { dynamicField(name: { type: "0x2::object::ID", bcs: "${bcs}" }) { value { ... on MoveValue { type { repr } } } } } }`,
+      }),
+    });
+    const json = await res.json() as { data?: { object?: { dynamicField?: unknown | null } } };
+    if (json?.data?.object?.dynamicField) return { id, kind: 'v1ob' };
+  } catch { /* fall through — treat as regular v1 */ }
+  return { id, kind: 'v1' };
 }
 
 export async function buildTradeportPurchaseTx(
@@ -1674,55 +1846,93 @@ export async function buildTradeportPurchaseTx(
   priceMist: string,
   /** If provided, setTargetAddress + setDefault in the same PTB */
   domainName?: string,
+  /** On-chain listing object ID from Tradeport API — skips on-chain resolution if provided */
+  knownListingId?: string,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
 
-  const price = BigInt(priceMist);
-  const fee = price * 300n / 10000n;
+  // Tradeport charges the buyer a 3% fee on top of the listing price.
+  const listingPrice = BigInt(priceMist);
+  const price = (listingPrice * 10300n) / 10000n;
 
-  // Resolve the on-chain Listing object ID (Store keys by Listing ID, not NFT ID)
-  const listingId = await resolveTradeportListingId(nftTokenId);
-  const buyId = listingId ?? nftTokenId; // fallback to nftTokenId for v1 legacy
+  // Resolve listing + kind deterministically. knownListingId may be a UUID
+  // from Tradeport's API — those aren't on-chain object IDs and must be ignored.
+  const validKnown = knownListingId?.startsWith('0x') ? knownListingId : null;
+  const resolved = await resolveTradeportListing(nftTokenId);
+  if (!resolved && !validKnown) {
+    throw new Error('Tradeport listing not found on-chain for this NFT');
+  }
+  const kind = resolved?.kind ?? 'v1';
 
-  // Race v1 and v2 — first successful build wins (avoids slow dry-run timeout)
-  const versions = [
-    { pkg: TRADEPORT_V1_PKG, store: TRADEPORT_V1_STORE, fn: 'tradeport_listings::buy_listing_without_transfer_policy' },
-    { pkg: TRADEPORT_V2_PKG, store: TRADEPORT_V2_STORE, fn: 'listings::buy' },
-  ];
+  const tx = new Transaction();
+  tx.setSender(walletAddress);
+  const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
+  const buyResult = addTradeportBuyCall(tx, kind, resolved?.id ?? validKnown!, nftTokenId, payment);
+  tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
 
-  const attempts = versions.map(async (v) => {
-    const tx = new Transaction();
-    tx.setSender(walletAddress);
-    // Tradeport buy expects EXACTLY the listing price — commission is deducted from seller's portion
-    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
-    const nft = tx.moveCall({
-      target: `${v.pkg}::${v.fn}`,
-      typeArguments: [SUINS_REG_TYPE],
-      arguments: [
-        tx.sharedObjectRef({ objectId: v.store, initialSharedVersion: 3377344, mutable: true }),
-        tx.pure.id(buyId),
-        payment,
-      ],
-    });
-    // buy consumes the entire coin — destroy the zero remainder
-    tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
-    // Set target address + default in the same PTB (single sign)
+  // Only the regular V1 buy returns an NFT handle usable for in-PTB record
+  // setup; OB and V2 auto-transfer the NFT inside the Move call.
+  if (kind === 'v1') {
     if (domainName) {
       const suinsClient = new SuinsClient({ client: transport as never, network: getSuinsNetwork() });
       const suinsTx = new SuinsTransaction(suinsClient, tx);
-      suinsTx.setTargetAddress({ nft, address: walletAddress });
+      suinsTx.setTargetAddress({ nft: buyResult!, address: walletAddress });
       suinsTx.setDefault(domainName.endsWith('.sui') ? domainName : `${domainName}.sui`);
     }
-    tx.transferObjects([nft], tx.pure.address(walletAddress));
-    return buildWithTx(tx, transport);
-  });
-
-  try {
-    return await Promise.any(attempts);
-  } catch (agg) {
-    throw new Error(`Tradeport purchase failed on both v1 and v2: ${agg}`);
+    tx.transferObjects([buyResult!], tx.pure.address(walletAddress));
   }
+
+  return buildWithTx(tx, transport);
+}
+
+/**
+ * Emit the correct Tradeport buy call for the listing's kind and return the
+ * move-call result (the NFT handle for v1; an empty result for v1ob/v2 since
+ * those variants auto-transfer the NFT inside Move).
+ */
+function addTradeportBuyCall(
+  tx: InstanceType<typeof Transaction>,
+  kind: 'v1' | 'v1ob' | 'v2',
+  listingId: string,
+  nftTokenId: string,
+  payment: ReturnType<InstanceType<typeof Transaction>['splitCoins']>,
+): ReturnType<InstanceType<typeof Transaction>['moveCall']> | null {
+  if (kind === 'v2') {
+    tx.moveCall({
+      target: `${TRADEPORT_V2_PKG}::listings::buy`,
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: TRADEPORT_V2_STORE, initialSharedVersion: 3377344, mutable: true }),
+        tx.pure.id(listingId),
+        payment,
+      ],
+    });
+    return null;
+  }
+  if (kind === 'v1ob') {
+    tx.moveCall({
+      target: `${TRADEPORT_OB_PKG}::tradeport_listings::buy_ob_listing_without_transfer_policy`,
+      typeArguments: [SUINS_REG_TYPE],
+      arguments: [
+        tx.sharedObjectRef({ objectId: TRADEPORT_V1_STORE, initialSharedVersion: TRADEPORT_V1_STORE_ISV, mutable: true }),
+        tx.sharedObjectRef({ objectId: TRADEPORT_OB_STORE, initialSharedVersion: TRADEPORT_OB_STORE_ISV, mutable: true }),
+        tx.pure.id(nftTokenId),
+        payment,
+      ],
+    });
+    return null;
+  }
+  // v1 regular
+  return tx.moveCall({
+    target: `${TRADEPORT_V1_PKG}::tradeport_listings::buy_listing_without_transfer_policy`,
+    typeArguments: [SUINS_REG_TYPE],
+    arguments: [
+      tx.sharedObjectRef({ objectId: TRADEPORT_V1_STORE, initialSharedVersion: TRADEPORT_V1_STORE_ISV, mutable: true }),
+      tx.pure.id(nftTokenId),
+      payment,
+    ],
+  });
 }
 
 /**
@@ -1733,13 +1943,12 @@ export async function buildTradeportPurchaseTx(
 export async function buildSwapAndPurchaseTx(
   rawAddress: string,
   purchase: { type: 'kiosk'; kioskId: string; nftId: string; priceMist: string }
-    | { type: 'tradeport'; nftTokenId: string; priceMist: string },
+    | { type: 'tradeport'; nftTokenId: string; priceMist: string; listingId?: string },
   selectedCoinType: string | null,  // coin type of selected balance (null = SUI)
   selectedBalance: number,          // USD value of selected coin (hint for estimates)
   outputCoinType: string | null,    // coin type of output selector (null = SUI)
   suiPrice: number,                 // current SUI price in USD
   selectedTokenPrice?: number,      // price per token of selected coin (e.g. XAUM price)
-  _tradeportV2?: boolean,           // internal: retry with Tradeport v2 on v1 MoveAbort
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1747,8 +1956,14 @@ export async function buildSwapAndPurchaseTx(
   tx.setSender(walletAddress);
 
   const SLIPPAGE_BPS = 200n; // 2% slippage tolerance
-  const priceMist = BigInt(purchase.priceMist);
-  // Tradeport commission is deducted from seller — buyer pays just the price
+  // Tradeport charges the buyer a 3% fee on top of the listing price
+  // (verified on-chain: Store.fee_bps = 300 and BuySimpleListingEvent.price
+  // < actual paid amount by ~3%). Splitting only the listing price aborts
+  // with code 4 (EInsufficientPayment).
+  const listingPrice = BigInt(purchase.priceMist);
+  const priceMist = purchase.type === 'tradeport'
+    ? (listingPrice * 10300n) / 10000n
+    : listingPrice;
   const totalSuiNeeded = priceMist;
 
   // Helper: calculate min output with slippage protection
@@ -1893,38 +2108,20 @@ export async function buildSwapAndPurchaseTx(
     });
     tx.transferObjects([nft], tx.pure.address(walletAddress));
   } else {
-    // Resolve on-chain Listing ID (Store keys by Listing ID, not NFT ID)
-    const listingId = await resolveTradeportListingId(purchase.nftTokenId);
-    const buyId = listingId ?? purchase.nftTokenId;
-    const price = BigInt(purchase.priceMist);
-    // Tradeport buy expects EXACTLY the listing price — commission deducted from seller
-    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
-    const tpPkg = _tradeportV2 ? TRADEPORT_V2_PKG : TRADEPORT_V1_PKG;
-    const tpStore = _tradeportV2 ? TRADEPORT_V2_STORE : TRADEPORT_V1_STORE;
-    const tpFn = _tradeportV2 ? 'listings::buy' : 'tradeport_listings::buy_listing_without_transfer_policy';
-    tx.moveCall({
-      target: `${tpPkg}::${tpFn}`,
-      typeArguments: [SUINS_REG_TYPE],
-      arguments: [
-        tx.sharedObjectRef({ objectId: tpStore, initialSharedVersion: 3377344, mutable: true }),
-        tx.pure.id(buyId),
-        payment,
-      ],
-    });
+    const knownLid = 'listingId' in purchase && purchase.listingId?.startsWith('0x') ? purchase.listingId : null;
+    const resolved = await resolveTradeportListing(purchase.nftTokenId);
+    if (!resolved && !knownLid) {
+      throw new Error('Tradeport listing not found on-chain for this NFT');
+    }
+    const kind = resolved?.kind ?? 'v1';
+    // priceMist above already includes the 3% Tradeport buyer fee
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(priceMist.toString())]);
+    addTradeportBuyCall(tx, kind, resolved?.id ?? knownLid!, purchase.nftTokenId, payment);
     // buy consumes entire coin — destroy zero remainder
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
   }
 
-  try {
-    return await buildWithTx(tx, transport);
-  } catch (err) {
-    // Tradeport v1 listing not found — retry with v2
-    if (!_tradeportV2 && purchase.type === 'tradeport' && String(err).includes('MoveAbort')) {
-      console.warn('[Tradeport] v1 failed, retrying with v2:', err instanceof Error ? err.message : err);
-      return buildSwapAndPurchaseTx(rawAddress, purchase, selectedCoinType, selectedBalance, outputCoinType, suiPrice, selectedTokenPrice, true);
-    }
-    throw err;
-  }
+  return await buildWithTx(tx, transport);
 }
 
 // ─── Volcarodon PSM + Tradeport chain ────────────────────────────────
@@ -1946,7 +2143,6 @@ export async function buildIusdBurnAndPurchaseTx(
     | { type: 'tradeport'; nftTokenId: string; priceMist: string },
   suiPrice: number,
   iusdBurnMist: bigint,
-  _tradeportV2?: boolean,
 ): Promise<Uint8Array> {
   const walletAddress = normalizeSuiAddress(rawAddress);
   const transport = gqlClient;
@@ -1956,7 +2152,16 @@ export async function buildIusdBurnAndPurchaseTx(
   const USDC_TYPE = suinsCfg().coins.USDC.type;
   const SLIPPAGE_BPS = 200n;
   const withSlippage = (expected: bigint) => expected * (10000n - SLIPPAGE_BPS) / 10000n;
-  const priceMist = BigInt(purchase.priceMist);
+  // Tradeport (both regular and OB variants) charges the buyer a 3% fee on
+  // top of the listing price — verified against the on-chain Store (fee_bps
+  // = 300) and recent successful buy events. Splitting just `priceMist`
+  // aborts with code 4 (EInsufficientPayment). Kiosk listings handle their
+  // royalty via TransferPolicy inside the purchase call, so we only add the
+  // fee for Tradeport.
+  const listingPrice = BigInt(purchase.priceMist);
+  const priceMist = purchase.type === 'tradeport'
+    ? (listingPrice * 10300n) / 10000n
+    : listingPrice;
 
   // Fetch all the balances we need for routing.
   const [suiCoins, usdcCoins, iusdCoins] = await Promise.all([
@@ -2054,34 +2259,16 @@ export async function buildIusdBurnAndPurchaseTx(
     });
     tx.transferObjects([nft], tx.pure.address(walletAddress));
   } else {
-    const listingId = await resolveTradeportListingId(purchase.nftTokenId);
-    const buyId = listingId ?? purchase.nftTokenId;
-    const price = BigInt(purchase.priceMist);
-    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(price.toString())]);
-    const tpPkg = _tradeportV2 ? TRADEPORT_V2_PKG : TRADEPORT_V1_PKG;
-    const tpStore = _tradeportV2 ? TRADEPORT_V2_STORE : TRADEPORT_V1_STORE;
-    const tpFn = _tradeportV2 ? 'listings::buy' : 'tradeport_listings::buy_listing_without_transfer_policy';
-    tx.moveCall({
-      target: `${tpPkg}::${tpFn}`,
-      typeArguments: [SUINS_REG_TYPE],
-      arguments: [
-        tx.sharedObjectRef({ objectId: tpStore, initialSharedVersion: 3377344, mutable: true }),
-        tx.pure.id(buyId),
-        payment,
-      ],
-    });
+    const resolved = await resolveTradeportListing(purchase.nftTokenId);
+    if (!resolved) {
+      throw new Error('Tradeport listing not found on-chain for this NFT');
+    }
+    const payment = tx.splitCoins(tx.gas, [tx.pure.u64(priceMist.toString())]);
+    addTradeportBuyCall(tx, resolved.kind, resolved.id, purchase.nftTokenId, payment);
     tx.moveCall({ target: '0x2::coin::destroy_zero', typeArguments: [SUI_TYPE], arguments: [payment] });
   }
 
-  try {
-    return await buildWithTx(tx, transport);
-  } catch (err) {
-    if (!_tradeportV2 && purchase.type === 'tradeport' && String(err).includes('MoveAbort')) {
-      console.warn('[Tradeport] v1 failed, retrying with v2:', err instanceof Error ? err.message : err);
-      return buildIusdBurnAndPurchaseTx(rawAddress, purchase, suiPrice, iusdBurnMist, true);
-    }
-    throw err;
-  }
+  return await buildWithTx(tx, transport);
 }
 
 // ─── Cold-start SUI → iUSD via DeepBook + Volcarodon PSM ────────────
@@ -2257,6 +2444,9 @@ export async function buildPostTradeConfigureTx(opts: {
   walrusBlobId?: string;    // reuse existing encrypted squid blob if available
   sealNonce?: number[];     // matching nonce for the blob
   writeRoster?: boolean;    // default true; set false to skip roster entry
+  /** DWalletCap object IDs owned by the buyer. Flips the roster
+   *  `verified` flag to true when non-empty. */
+  dwalletCaps?: string[];
 }): Promise<Uint8Array & { tx?: InstanceType<typeof Transaction> }> {
   const walletAddress = normalizeSuiAddress(opts.sender);
   const bareName = opts.domain.replace(/\.sui$/i, '').toLowerCase();
@@ -2286,6 +2476,7 @@ export async function buildPostTradeConfigureTx(opts: {
   const shouldWriteRoster = opts.writeRoster !== false && isMainnet();
   if (shouldWriteRoster) {
     const nameHash = Array.from(keccak_256(new TextEncoder().encode(bareName)));
+    const caps = (opts.dwalletCaps ?? []).filter(c => typeof c === 'string' && c.startsWith('0x'));
     tx.moveCall({
       package: ROSTER_PKG,
       module: 'roster',
@@ -2298,10 +2489,7 @@ export async function buildPostTradeConfigureTx(opts: {
         // BTC / ETH / SOL are in the Walrus blob, not here.
         tx.pure.vector('string', ['sui']),
         tx.pure.vector('string', [walletAddress]),
-        // dwallet_caps — empty for now; IKA cap ownership is intentionally
-        // not exposed in this entry so the squid dWallets aren't linkable
-        // to the name on-chain.
-        tx.pure.vector('address', []),
+        tx.pure.vector('address', caps),
         tx.pure.string(opts.walrusBlobId ?? ''),
         tx.pure.vector('u8', opts.sealNonce ?? []),
         tx.object('0x6'),
@@ -2313,6 +2501,7 @@ export async function buildPostTradeConfigureTx(opts: {
   // may already have a primary they want to keep (e.g. superteam.sui).
   // Making great.sui the new default is an explicit, separate action.
 
+  appendWaapDeterministicEcdsaJitter(tx, walletAddress);
   const bytes = await buildWithTx(tx, transport);
   const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };
   out.tx = tx;
@@ -2372,6 +2561,12 @@ export async function buildFullSuiamiWriteTx(opts: {
   entries: Array<{ domain: string; nftId?: string }>;
   walrusBlobId: string;
   sealNonce: number[];
+  /** DWalletCap object IDs owned by the sender. Non-empty flips the
+   *  roster's `verified` flag to true on-chain, which is what every
+   *  verified-tier gate (Chronicom, decrypt-as-a-service, agent
+   *  provisioning) reads from. Passed as `vector<address>` — Move
+   *  treats object IDs as addresses. */
+  dwalletCaps?: string[];
   /** If true and `nftId` is provided on an entry, chains a
    *  `setTargetAddress` call to repoint that name at the sender. */
   setTargetForNfts?: boolean;
@@ -2386,6 +2581,8 @@ export async function buildFullSuiamiWriteTx(opts: {
   const tx = new Transaction();
   tx.setSender(walletAddress);
   const suinsTx = new SuinsTransaction(suinsClient, tx);
+
+  const caps = (opts.dwalletCaps ?? []).filter(c => typeof c === 'string' && c.startsWith('0x'));
 
   for (const entry of opts.entries) {
     const bareName = entry.domain.replace(/\.sui$/i, '').toLowerCase();
@@ -2410,7 +2607,7 @@ export async function buildFullSuiamiWriteTx(opts: {
         tx.pure.vector('u8', nameHash),
         tx.pure.vector('string', ['sui']),
         tx.pure.vector('string', [walletAddress]),
-        tx.pure.vector('address', []),
+        tx.pure.vector('address', caps),
         tx.pure.string(opts.walrusBlobId),
         tx.pure.vector('u8', opts.sealNonce),
         tx.object('0x6'),

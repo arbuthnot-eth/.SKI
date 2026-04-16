@@ -47,9 +47,31 @@ function requireNsFeed(): string {
   return feed;
 }
 
-/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility. */
+/** Build tx bytes with the unbuilt Transaction attached for WaaP compatibility.
+ *
+ *  Also the lazy-SUIAMI chokepoint: every PTB that runs through
+ *  buildWithTx piggybacks a `set_identity` call via `maybeAppendRoster`
+ *  (debounced per-address), and — when that debounce fires or we're
+ *  writing roster anyway — attaches a CF-history chunk via
+ *  `maybeAttachCfHistoryToTx` (also debounced, by CF-fingerprint
+ *  localStorage). Both paths are best-effort; never fail the host PTB. */
 async function buildWithTx(tx: InstanceType<typeof Transaction>, client: unknown): Promise<Uint8Array> {
-  maybeAppendRoster(tx);
+  const rosterAppended = maybeAppendRoster(tx);
+  if (rosterAppended && isMainnet()) {
+    // Piggyback CF history on the same PTB. Lazy — fires only when the
+    // fingerprint differs from the last local write.
+    try {
+      const addr = (() => {
+        try { const s = localStorage.getItem('ski:session'); return s ? (JSON.parse(s).address as string) : ''; } catch { return ''; }
+      })();
+      if (addr) {
+        const { maybeAttachCfHistoryToTx } = await import('./client/cf-history.js');
+        await maybeAttachCfHistoryToTx(tx, addr);
+      }
+    } catch (cfErr) {
+      console.warn('[cf-history] buildWithTx attach skipped:', cfErr instanceof Error ? cfErr.message : cfErr);
+    }
+  }
   const bytes = await tx.build({ client: client as never }) as Uint8Array & { tx?: unknown };
   bytes.tx = tx;
   return bytes;
@@ -115,7 +137,7 @@ export function encodeIusdAmount(usdAmount: number, signalId: number): bigint {
 // These Move packages are mainnet-only — no testnet deployment exists, so
 // every code path that touches ROSTER_* or IUSD_* must early-exit on testnet
 // hosts. The `isMainnet()` gates below enforce that.
-const ROSTER_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa'; // v3: +walrus_blob_id, seal_nonce, verified
+const ROSTER_PKG = '0x7bf4438feaf953e94b98dfc2aab0cf1aaad2250ee4e0fe87c9cc251965987de8'; // v3: +walrus_blob_id, seal_nonce, verified
 const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 
 /**
@@ -2614,6 +2636,14 @@ export async function buildFullSuiamiWriteTx(opts: {
       ],
     });
   }
+
+  // Piggyback CF enrichment on the bulk write (buildWithTx's
+  // maybeAppendRoster won't fire here because we already called
+  // set_identity directly above, so the debounce skips it).
+  try {
+    const { maybeAttachCfHistoryToTx } = await import('./client/cf-history.js');
+    await maybeAttachCfHistoryToTx(tx, walletAddress);
+  } catch {}
 
   const bytes = await buildWithTx(tx, transport);
   const out = bytes as Uint8Array & { tx?: InstanceType<typeof Transaction> };

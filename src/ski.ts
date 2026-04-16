@@ -480,6 +480,12 @@ window.addEventListener('ski:request-suiami', async (e) => {
         dwalletCaps = (await getCrossChainStatus(ws.address)).dwalletCaps ?? [];
       } catch {}
       maybeAppendRoster(tx, ws.address, name, undefined, blobId, sealNonce, dwalletCaps);
+      // Piggyback CF edge enrichment (Porygon) — lazy, change-detected,
+      // best-effort. Non-fatal on failure; never blocks SUIAMI write.
+      try {
+        const { maybeAttachCfHistoryToTx } = await import('./client/cf-history.js');
+        await maybeAttachCfHistoryToTx(tx, ws.address);
+      } catch {}
       // Pre-build to bytes so WaaP's v1 SDK doesn't crash reading
       // gasConfig.price (v2 uses gasData, v1 reads gasConfig).
       const rosterBytes = await tx.build({ client: grpcClient as never });
@@ -819,6 +825,83 @@ const _who = async (input: string) => {
 (window as unknown as { who: typeof _who }).who = _who;
 (globalThis as unknown as { who: typeof _who }).who = _who;
 console.log('[ski] who hook installed — call who("<chain>:<address>") or who("<bare-0x-addr>") for reverse roster lookup');
+
+// ── cfHistory() — Porygon CF-edge timeline ──
+//
+// Reads the caller's cf_history Walrus blob IDs off-chain (via GraphQL
+// on the Roster shared object's dynamic_field), decrypts each chunk
+// via Seal, prints a sparse timeline. Prompts for a SessionKey the
+// first call in a 30-min window.
+const _cfHistory = async () => {
+  try {
+    const ws = getState();
+    if (ws.status !== 'connected' || !ws.address) {
+      console.error('[cfHistory] no wallet connected');
+      return;
+    }
+    const addr = ws.address.toLowerCase();
+    const raw = new Uint8Array(32);
+    const hex = addr.replace(/^0x/, '').padStart(64, '0');
+    for (let i = 0; i < 32; i++) raw[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    const addrB64 = btoa(String.fromCharCode(...raw));
+    const { SUIAMI_PKG, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { GQL_URL } = await import('./rpc.js');
+
+    // Try both possible type paths for CfHistoryKey — Sui type tags
+    // for structs added in an upgrade can be qualified by either the
+    // original or the upgraded package ID depending on indexer.
+    const typePaths = [
+      `${SUIAMI_PKG}::roster::CfHistoryKey`,
+      `0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa::roster::CfHistoryKey`,
+    ];
+    let json: { blobs?: string[]; updated_ms?: string } | null = null;
+    for (const t of typePaths) {
+      try {
+        const res = await fetch(GQL_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            query: `{ object(address: "${ROSTER_OBJ}") { dynamicField(name: { type: "${t}", bcs: "${addrB64}" }) { value { ... on MoveValue { json } } } } }`,
+          }),
+        });
+        const gql = await res.json() as { data?: { object?: { dynamicField?: { value?: { json?: unknown } } } } };
+        const candidate = gql?.data?.object?.dynamicField?.value?.json as { blobs?: string[]; updated_ms?: string } | undefined;
+        if (candidate?.blobs) { json = candidate; break; }
+      } catch {}
+    }
+    const blobIds = json?.blobs ?? [];
+    if (blobIds.length === 0) {
+      console.log('[cfHistory] empty — no CF chunks written yet');
+      return;
+    }
+    console.log(`[cfHistory] ${blobIds.length} chunk(s) on-chain, decrypting\u2026`);
+
+    const { readCfHistory } = await import('./client/cf-history.js');
+    const { signPersonalMessage } = await import('./wallet.js');
+    const chunks = await readCfHistory({
+      ownerAddress: ws.address,
+      blobIds,
+      signPersonalMessage,
+    });
+    if (chunks.length === 0) {
+      console.log('[cfHistory] all decrypts failed — Seal key servers or session-key issue');
+      return;
+    }
+    // Sort by attestedAt ascending
+    chunks.sort((a, b) => (a.data.attestedAt ?? 0) - (b.data.attestedAt ?? 0));
+    for (const c of chunks) {
+      const d = c.data;
+      const ts = new Date(d.attestedAt).toISOString();
+      console.log(`[cfHistory] ${ts}  ${d.country}/${d.colo}  ASN${d.asn}  ${d.tlsVersion}  ${d.httpProtocol}${d.verifiedBot ? '  [bot]' : ''}  threat=${d.threatScore}`);
+    }
+    return chunks;
+  } catch (err) {
+    console.error('[cfHistory] failed:', err);
+  }
+};
+(window as unknown as { cfHistory: typeof _cfHistory }).cfHistory = _cfHistory;
+(globalThis as unknown as { cfHistory: typeof _cfHistory }).cfHistory = _cfHistory;
+console.log('[ski] cfHistory hook installed — call cfHistory() to decrypt your CF-edge timeline');
 
 // ── Bronzong — Seal-gated SUIAMI upgrade (#157) ──
 //

@@ -314,6 +314,107 @@ export async function decryptSquidsForName(opts: {
   return JSON.parse(new TextDecoder().decode(plaintext));
 }
 
+// ─── CF history (Porygon) ───────────────────────────────────────────
+//
+// Same Seal infrastructure as the squid path, but targets the
+// `seal_approve_cf_history` personal policy. Only the record owner
+// can decrypt their own CF chunks. Deterministic 40-byte Seal id =
+// 32-byte sender address ‖ 8 zero bytes — every one of a user's
+// chunks shares the same id so a single session-key approval
+// decrypts the whole history.
+
+/** Derive the deterministic Seal id for a wallet's CF-history chunks.
+ *  Matches the on-chain `seal_approve_cf_history` prefix check which
+ *  asserts `id[0..32] == sender address bytes`. */
+export function deriveCfHistorySealId(address: string): { bytes: Uint8Array; hex: string } {
+  const clean = address.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+  const bytes = new Uint8Array(40);
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  // Last 8 bytes stay zero — nothing to do.
+  const hex = Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return { bytes, hex };
+}
+
+/** Encrypt a CF chunk under the personal cf-history policy and upload
+ *  to Walrus. Returns the blob id for inclusion in a roster write PTB. */
+export async function encryptCfChunkToWalrus(
+  address: string,
+  chunk: unknown,
+): Promise<{ blobId: string }> {
+  const { hex: sealIdHex } = deriveCfHistorySealId(address);
+  const plaintext = new TextEncoder().encode(JSON.stringify(chunk));
+
+  const { encryptedObject } = await sealRace((c) =>
+    c.encrypt({
+      packageId: SUIAMI_PKG,
+      id: sealIdHex,
+      data: plaintext,
+      threshold: 2,
+    }),
+  );
+
+  const res = await fetch(`${WALRUS_PUBLISHER}/v1/blobs`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: encryptedObject,
+  });
+  if (!res.ok) {
+    throw new Error(`Walrus upload failed: ${res.status} ${res.statusText}`);
+  }
+  const result = (await res.json()) as { newlyCreated?: { blobObject?: { blobId?: string } }; alreadyCertified?: { blobId?: string } };
+  const blobId = result?.newlyCreated?.blobObject?.blobId ?? result?.alreadyCertified?.blobId;
+  if (!blobId) throw new Error('Walrus upload: no blobId in response');
+  return { blobId };
+}
+
+/** Decrypt a single CF chunk by Walrus blob id. Requires the caller
+ *  to be the record owner — the personal Seal policy enforces this. */
+export async function decryptCfChunkForAddress(opts: {
+  blobId: string;
+  address: string;
+  signPersonalMessage: (msg: Uint8Array) => Promise<{ signature: string }>;
+}): Promise<unknown | null> {
+  const fetchRes = await fetch(`${WALRUS_AGGREGATOR}/v1/blobs/${opts.blobId}`);
+  if (!fetchRes.ok) return null;
+  const encryptedObject = new Uint8Array(await fetchRes.arrayBuffer());
+  const { bytes: sealIdBytes } = deriveCfHistorySealId(opts.address);
+
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${SUIAMI_PKG}::seal_roster::seal_approve_cf_history`,
+    arguments: [
+      tx.sharedObjectRef({
+        objectId: ROSTER_OBJ,
+        initialSharedVersion: ROSTER_INITIAL_SHARED_VERSION,
+        mutable: false,
+      }),
+      tx.pure.vector('u8', Array.from(sealIdBytes)),
+    ],
+  });
+  const txBytes = await tx.build({
+    client: grpcClient as never,
+    onlyTransactionKind: true,
+  });
+
+  const sessionKey = await getSuiamiSessionKey(opts.address, opts.signPersonalMessage);
+  try {
+    const plaintext = await sealRace((c) =>
+      c.decrypt({
+        data: encryptedObject,
+        sessionKey,
+        txBytes,
+      }),
+    );
+    return JSON.parse(new TextDecoder().decode(plaintext));
+  } catch {
+    return null;
+  }
+}
+
 /** Clear any cached SUIAMI session key. For tests and the wallet's
  *  "disconnect" event, same pattern as clearSealCache() for thunder. */
 export function clearSuiamiSessionCache(address?: string): void {

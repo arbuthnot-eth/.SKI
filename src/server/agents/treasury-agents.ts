@@ -7831,8 +7831,11 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const buyerAddr = normalizeSuiAddress(buyer);
     const transport = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
 
-    const price = BigInt(priceMist);
-    // Tradeport commission is deducted from seller — buyer pays just the price
+    const listingPriceMist = BigInt(priceMist);
+    // Tradeport charges the buyer a 3% fee on top of the listing price
+    // (Store.fee_bps = 300). Split-only-listing-price aborts the buy with
+    // code 4 (EInsufficientPayment).
+    const price = (listingPriceMist * 10300n) / 10000n;
     const totalNeeded = price;
 
     const TRADEPORT_V1_PKG = '0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab';
@@ -7862,8 +7865,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     const DB_SUI_USDC_ISV = 389750322;
     const DB_DEEP_TYPE = '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP';
 
-    // Resolve on-chain Listing ID (Store keys by Listing ID, not NFT ID)
-    let buyId = nftTokenId;
+    // Resolve the listing object AND its Tradeport version.
+    // V1 `buy_listing_without_transfer_policy` keys the store by NFT ID,
+    // V2 `listings::buy` keys by Listing object ID. Using the wrong key aborts
+    // in `dynamic_field::borrow_child_object` (code 1, EFieldDoesNotExist).
+    let listingObjectId: string | null = null;
+    let isV2 = false;
     try {
       const gqlRes = await fetch(GQL_URL, {
         method: 'POST',
@@ -7874,8 +7881,21 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
       });
       type R = { data?: { object?: { owner?: { address?: { asObject?: { owner?: { address?: { address?: string } } } } } } } };
       const gqlJson = await gqlRes.json() as R;
-      buyId = gqlJson?.data?.object?.owner?.address?.asObject?.owner?.address?.address ?? nftTokenId;
+      listingObjectId = gqlJson?.data?.object?.owner?.address?.asObject?.owner?.address?.address ?? null;
     } catch {}
+    if (listingObjectId) {
+      try {
+        const typeRes = await fetch('https://sui-rpc.publicnode.com', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sui_getObject', params: [listingObjectId, { showType: true }] }),
+        });
+        const typeJson = await typeRes.json() as { result?: { data?: { type?: string } } };
+        const t = typeJson?.result?.data?.type ?? '';
+        if (t.startsWith(TRADEPORT_V2_PKG)) isV2 = true;
+      } catch {}
+    }
+    const buyId = isV2 ? (listingObjectId ?? nftTokenId) : nftTokenId;
 
     const tx = new Transaction();
     tx.setSender(buyerAddr);
@@ -7895,23 +7915,12 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
     // (otherwise a pre-funded buyer would buy with "free" SUI
     // and leave the cache out-of-pocket).
     if (availSui >= totalNeeded && route !== 'iusd-redeem') {
-      // Simple: split from gas, buy — try v1 then v2
-      for (const v2 of [false, true]) {
-        try {
-          const t = new Transaction();
-          t.setSender(buyerAddr);
-          const payment = t.splitCoins(t.gas, [t.pure.u64(totalNeeded.toString())]);
-          addTradeportBuy(t, buyId, payment, v2);
-          const txBytes = await t.build({ client: transport as never });
-          return { txBase64: uint8ToBase64(txBytes), description: `Buy via SUI direct (${Number(totalNeeded) / 1e9} SUI)` };
-        } catch (err) {
-          if (!v2 && String(err).includes('MoveAbort')) {
-            console.warn('[Tradeport] v1 failed, retrying v2:', err instanceof Error ? err.message : err);
-            continue;
-          }
-          throw err;
-        }
-      }
+      const t = new Transaction();
+      t.setSender(buyerAddr);
+      const payment = t.splitCoins(t.gas, [t.pure.u64(totalNeeded.toString())]);
+      addTradeportBuy(t, buyId, payment, isV2);
+      const txBytes = await t.build({ client: transport as never });
+      return { txBase64: uint8ToBase64(txBytes), description: `Buy via SUI direct (${Number(totalNeeded) / 1e9} SUI)` };
     }
 
     if (route === 'usdc-swap' || route === 'iusd-redeem') {
@@ -8016,9 +8025,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             return { error: `Need ~${usdNeeded.toFixed(2)} iUSD (have ${(Number(realIusdBal)/1e9).toFixed(2)})` };
           }
 
-          let lastErr: unknown = null;
-          for (const v2 of [false, true]) {
-            try {
+          try {
               const swapTx = new Transaction();
               swapTx.setSender(buyerAddr);
               // Merge all iUSD coins into primary, split the swap amount
@@ -8060,19 +8067,15 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
               swapTx.transferObjects([iusdChange, deepChangeA, usdcChange, deepChangeB], swapTx.pure.address(buyerAddr));
               // 4) Split payment from gas + buy
               const payment = swapTx.splitCoins(swapTx.gas, [swapTx.pure.u64(totalNeeded.toString())]);
-              addTradeportBuy(swapTx, buyId, payment, v2);
+              addTradeportBuy(swapTx, buyId, payment, isV2);
               const txBytes = await swapTx.build({ client: transport as never });
               return {
                 txBase64: uint8ToBase64(txBytes),
-                description: `Direct swap ${(Number(iusdToSwapMist) / 1e9).toFixed(2)} iUSD → SUI + buy ${Number(totalNeeded) / 1e9} SUI listing via Tradeport ${v2 ? 'v2' : 'v1'} (no cache prefund)`,
+                description: `Direct swap ${(Number(iusdToSwapMist) / 1e9).toFixed(2)} iUSD → SUI + buy ${Number(totalNeeded) / 1e9} SUI listing via Tradeport ${isV2 ? 'v2' : 'v1'} (no cache prefund)`,
               };
             } catch (err) {
-              lastErr = err;
-              if (v2 || !String(err).includes('MoveAbort')) break;
-              console.warn('[Tradeport-direct-swap] v1 failed, retrying v2:', err instanceof Error ? err.message : err);
+              return { error: `Direct swap build failed: ${err instanceof Error ? err.message : String(err)}` };
             }
-          }
-          return { error: `Direct swap build failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` };
         }
 
         // Step 2: Build user TX — send iUSD (+ USDC top-up when
@@ -8123,14 +8126,9 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
           ? `${Number(iusdCapped) / 1e9} iUSD + ${Number(usdcTopUpMist) / 1e6} USDC`
           : `${Number(iusdCapped) / 1e9} iUSD`;
 
-        // Build iUSD+USDC payment + Tradeport buy. Listing/store
-        // layouts differ between v1 and v2 and we can't tell
-        // which one from the listing row alone — try v1 first,
-        // fall back to v2 on MoveAbort. A fresh Transaction per
-        // attempt avoids mutating the same handle twice.
-        let lastErr: unknown = null;
-        for (const v2 of [false, true]) {
-          try {
+        // Build iUSD+USDC payment + Tradeport buy. Version is resolved
+        // above from the listing object type — no v1/v2 retry needed.
+        try {
             const userTx = new Transaction();
             userTx.setSender(buyerAddr);
 
@@ -8161,20 +8159,16 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
             }
 
             const payment = userTx.splitCoins(userTx.gas, [userTx.pure.u64(totalNeeded.toString())]);
-            addTradeportBuy(userTx, buyId, payment, v2);
+            addTradeportBuy(userTx, buyId, payment, isV2);
 
             const txBytes = await userTx.build({ client: transport as never });
             return {
               txBase64: uint8ToBase64(txBytes),
-              description: `Send ${payLabel} to cache + buy ${Number(price) / 1e9} SUI listing via Tradeport ${v2 ? 'v2' : 'v1'} (pre-funded by ultron: ${prefundDigest})`,
+              description: `Send ${payLabel} to cache + buy ${Number(price) / 1e9} SUI listing via Tradeport ${isV2 ? 'v2' : 'v1'} (pre-funded by ultron: ${prefundDigest})`,
             };
           } catch (err) {
-            lastErr = err;
-            if (v2 || !String(err).includes('MoveAbort')) break;
-            console.warn('[Tradeport-iusd] v1 failed, retrying v2:', err instanceof Error ? err.message : err);
+            return { error: `Tradeport build failed: ${err instanceof Error ? err.message : String(err)}` };
           }
-        }
-        return { error: `Tradeport build failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` };
       }
 
       if (usdcCoins.length === 0 || realUsdcBal === 0n) {
@@ -8212,7 +8206,7 @@ export class TreasuryAgents extends Agent<Env, TreasuryAgentsState> {
 
       // Now purchase with gas (has original SUI + swapped SUI)
       const payment = tx.splitCoins(tx.gas, [tx.pure.u64(totalNeeded.toString())]);
-      addTradeportBuy(tx, buyId, payment);
+      addTradeportBuy(tx, buyId, payment, isV2);
 
       const txBytes = await tx.build({ client: transport as never });
       return { txBase64: uint8ToBase64(txBytes), description: `USDC→SUI swap + Tradeport buy (${Number(swapAmount) / 1e6} USDC → ${Number(shortfall) / 1e9} SUI)` };

@@ -455,34 +455,53 @@ export async function signPersonalMessage(message: Uint8Array): Promise<{
  *
  * Sui signature: flag(1) + r(32) + s(32) + pubkey(33) = 98 bytes.
  * WaaP occasionally produces 97-byte sigs when r or s is only 31 bytes
- * (leading zero stripped). We detect which component is short and zero-pad it.
+ * (leading zero stripped, since RFC-6979 ECDSA outputs the integers
+ * minimally-encoded). Sui's RPC rejects with "expected 64 bytes and got 63".
  *
- * Heuristic: try padding r first (prepend 0x00 before r). If the resulting
- * s would start with a byte > 0x7F that's unlikely for a valid s value of
- * a 256-bit curve, swap and pad s instead. In practice both r and s are
- * uniformly random so either pad position produces a valid-length sig —
- * the RPC will reject if we guessed wrong, so we just try r-pad (most common).
+ * We can't tell from the bytes alone which side is short, so we return
+ * BOTH candidate paddings and let the executor try them in order.
+ *
+ *   r-pad: [flag] [0x00] [shortSig 63] [pubkey]   ← short side was r
+ *   s-pad: [flag] [shortSig[0..32]] [0x00] [shortSig[32..63]] [pubkey]
+ *                                          ← short side was s (insert before s)
  */
-function _padSecp256k1Sig(sig: string): string {
+function _padShortEcdsaSigCandidates(sig: string): string[] {
   const raw = Uint8Array.from(atob(sig), c => c.charCodeAt(0));
   // secp256k1 flag=0x01, secp256r1 flag=0x02 — both have 33-byte compressed pubkey
-  if (raw.length !== 97 || (raw[0] !== 0x01 && raw[0] !== 0x02)) return sig;
-  // raw layout: [flag(1)] [raw_sig(63)] [pubkey(33)]
+  if (raw.length !== 97 || (raw[0] !== 0x01 && raw[0] !== 0x02)) return [sig];
   const flag = raw[0];
-  const rawSig = raw.subarray(1, 64);   // 63 bytes
+  const rawSig = raw.subarray(1, 64);   // 63 bytes (the short r||s)
   const pubkey = raw.subarray(64);       // 33 bytes
 
-  // Pad r (most common): r becomes 32 bytes, s stays 31→ no, total must be 64
-  // If raw_sig is 63 bytes = r(31) + s(32) → pad r
-  const fixed = new Uint8Array(98);
-  fixed[0] = flag;
-  // fixed[1] = 0x00 (pad byte for r, already zero)
-  fixed.set(rawSig, 2);    // 63 bytes at offset 2 → fills [2..64]
-  fixed.set(pubkey, 65);   // 33 bytes at offset 65 → fills [65..97]
+  const toB64 = (u: Uint8Array): string => {
+    let s = '';
+    for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  };
 
-  let b64 = '';
-  for (let i = 0; i < fixed.length; i++) b64 += String.fromCharCode(fixed[i]);
-  return btoa(b64);
+  // Candidate A — r was short: prepend 0x00 to rawSig (treat all 63 as s + r-low)
+  // Layout: [flag][0x00][rawSig 63][pubkey 33]
+  // After pad: r = 0x00 || rawSig[0..31] (32 bytes), s = rawSig[31..63] (32 bytes)
+  const rPad = new Uint8Array(98);
+  rPad[0] = flag;
+  rPad.set(rawSig, 2);
+  rPad.set(pubkey, 65);
+
+  // Candidate B — s was short: r is rawSig[0..32] (32 bytes), insert 0x00 before s
+  // Layout: [flag][rawSig[0..32]][0x00][rawSig[32..63]][pubkey]
+  const sPad = new Uint8Array(98);
+  sPad[0] = flag;
+  sPad.set(rawSig.subarray(0, 32), 1);   // r (32 bytes) → [1..33]
+  // sPad[33] = 0x00 (already zero) → s leading pad
+  sPad.set(rawSig.subarray(32, 63), 34); // s low 31 bytes → [34..65]
+  sPad.set(pubkey, 65);
+
+  return [toB64(rPad), toB64(sPad)];
+}
+
+/** True when a wallet error message looks like a short-ECDSA-sig rejection from Sui. */
+function _isShortSigError(msg: string): boolean {
+  return /expected 64 bytes.*got 63|got 63.*expected 64|signature.*length|invalid signature/i.test(msg);
 }
 
 // ─── Execute signed tx via gRPC → JSON-RPC fallback ─────────────────
@@ -543,6 +562,39 @@ export async function signAndExecuteTransaction(transaction: unknown): Promise<{
           return { digest: r.digest || '', effects: r.effects };
         } catch (waapErr: unknown) {
           const msg = waapErr instanceof Error ? waapErr.message : String(waapErr);
+
+          // Short-ECDSA-sig fallback: WaaP secp256k1/r1 occasionally drops a
+          // leading zero from r or s, producing a 63-byte raw sig. Sui rejects
+          // with "expected 64 bytes and got 63". Re-sign in sign-only mode,
+          // pad the candidate sigs, execute via our own transport.
+          if (_isShortSigError(msg)) {
+            console.warn('[.SKI] WaaP short-ECDSA-sig detected — falling back to sign-only + pad + execute.', msg);
+            try {
+              const signFeat = wallet.features['sui:signTransaction'] as {
+                signTransaction: (input: { transaction: unknown; account: WalletAccount; chain: string }) => Promise<{ bytes: string; signature: string }>;
+              } | undefined;
+              if (!signFeat) throw waapErr;
+              const signed = await signFeat.signTransaction({
+                transaction: transaction instanceof Uint8Array ? augmentBytes(transaction) : transaction,
+                account, chain,
+              });
+              // Use the bytes WaaP returned (= bytes WaaP actually signed),
+              // not the bytes we sent — the iframe may have re-serialized.
+              const txBytes = Uint8Array.from(atob(signed.bytes), c => c.charCodeAt(0));
+              const candidates = _padShortEcdsaSigCandidates(signed.signature);
+              let lastErr: unknown = waapErr;
+              for (const sig of candidates) {
+                try {
+                  return await raceExecuteTransaction(txBytes, [sig]);
+                } catch (e) { lastErr = e; }
+              }
+              throw lastErr;
+            } catch (fallbackErr) {
+              console.error('[.SKI] WaaP short-sig fallback failed.', fallbackErr);
+              throw fallbackErr;
+            }
+          }
+
           // Surface WaaP-specific errors with actionable context
           if (msg.includes('Invalid') && msg.includes('signature')) {
             console.error('[.SKI] WaaP signing failed — likely a WaaP server-side session issue.', msg);

@@ -4544,8 +4544,10 @@ async function fetchAndShowNsPrice(label: string) {
       if (nsTradeportListing) _cache.tp = nsTradeportListing;
       sessionStorage.setItem('ski:ns-resolve', JSON.stringify(_cache));
     } catch {}
-    // Save resolved label to localStorage (not on every keystroke — only after resolution)
-    try { if (nsPriceFetchFor) localStorage.setItem('ski:ns-label', nsPriceFetchFor); } catch {}
+    // Save resolved label to localStorage — but only if it still matches the
+    // current input. Prevents stale intermediate fetches (e.g. "crow") from
+    // clobbering the label the user actually typed (e.g. "crowd").
+    try { if (nsPriceFetchFor && nsPriceFetchFor === nsLabel) localStorage.setItem('ski:ns-label', nsPriceFetchFor); } catch {}
     if (sr) _maybeDiscoverRealOwner(sr);
     // Clear stale amount if name isn't actionable (no mint, no listing to buy)
     const actionable = nsAvail === 'available' || nsAvail === 'grace' || nsKioskListing || nsTradeportListing;
@@ -7351,7 +7353,7 @@ function renderSkiMenu() {
       // Build purchase descriptor
       const purchase = nsKioskListing
         ? { type: 'kiosk' as const, kioskId: nsKioskListing.kioskId, nftId: nsKioskListing.nftId, priceMist: nsKioskListing.priceMist }
-        : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist };
+        : { type: 'tradeport' as const, nftTokenId: nsTradeportListing!.nftTokenId, priceMist: nsTradeportListing!.priceMist, listingId: nsTradeportListing!.listingId };
 
       if (btn) btn.textContent = 'TRADE';
       const selTokenPrice = getTokenPrice(selectedCoinSymbol ?? '') ?? undefined;
@@ -9215,7 +9217,7 @@ function renderSkiMenu() {
         if (nsKioskListing) {
           purchaseTx = await buildKioskPurchaseTx(ws2.address, nsKioskListing.kioskId, nsKioskListing.nftId, nsKioskListing.priceMist, domain);
         } else {
-          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist, domain);
+          purchaseTx = await buildTradeportPurchaseTx(ws2.address, nsTradeportListing!.nftTokenId, nsTradeportListing!.priceMist, domain, nsTradeportListing!.listingId);
         }
         if (btn) btn.textContent = '\u270f';
         const { digest } = await signAndExecuteTransaction(purchaseTx);
@@ -9305,7 +9307,7 @@ function renderSkiMenu() {
         try {
           const tx = await buildExecuteShadeOrderTx(ws2.address, existingOrder);
           if (btn) btn.textContent = '\u270f';
-          const { digest } = await signAndExecuteTransaction(tx);
+          const { digest, effects: shadeEff } = await signAndExecuteTransaction(tx);
           // Remove shade order — it's consumed
           removeShadeOrder(ws2.address, existingOrder.objectId);
           nsShadeOrder = null;
@@ -9326,7 +9328,7 @@ function renderSkiMenu() {
           _preRumbledNames.add(label.toLowerCase());
           try { localStorage.setItem('ski:pre-rumbled', JSON.stringify([..._preRumbledNames])); } catch {}
           window.dispatchEvent(new CustomEvent('ski:name-acquired', { detail: { name: label } }));
-          showToast(`${domain} registered \u2713 ${digest ? digest.slice(0, 8) + '\u2026' : ''}`);
+          showMintToast(domain, digest, shadeEff);
           if (ws2.address) try { localStorage.removeItem(`ski:balances:${ws2.address}`); } catch {}
           refreshPortfolio(true);
         } catch (err) {
@@ -9395,13 +9397,15 @@ function renderSkiMenu() {
       if (signingCancelled) throw new Error('cancelled');
       if (btn) btn.textContent = '\u270f';
       let digest: string;
+      let regEffects: unknown;
       if (result.sponsorAddress) {
-        // Sponsored tx: user signs, then get sponsor sig, then submit both
-        const { digest: d } = await signAndExecuteSponsoredTx(result.txBytes);
+        const { digest: d, effects: e } = await signAndExecuteSponsoredTx(result.txBytes);
         digest = d;
+        regEffects = e;
       } else {
-        const { digest: d } = await signAndExecuteTransaction(result.txBytes);
+        const { digest: d, effects: e } = await signAndExecuteTransaction(result.txBytes);
         digest = d;
+        regEffects = e;
       }
       if (signingCancelled) throw new Error('cancelled');
       // Update NS row: blue square status + show tx digest
@@ -9417,7 +9421,7 @@ function renderSkiMenu() {
       updateSkiDot('blue-square', app.suinsName);
       nsOwnedFetchedFor = ''; // force re-fetch of owned domains list
       _fetchOwnedDomains();
-      showToast(`${domain} registered ✓ ${digest ? digest.slice(0, 8) + '…' : ''}`);
+      showMintToast(domain, digest, regEffects);
       if (ws2.address) try { localStorage.removeItem(`ski:balances:${ws2.address}`); } catch {}
       refreshPortfolio(true);
     } catch (err) {
@@ -10866,7 +10870,7 @@ function bindEvents() {
           const _bal = Math.max(0, totalUsd);
           const _balLabel = _bal >= 1 ? Math.round(_bal).toLocaleString() : _bal.toFixed(2);
           const balHtml = `<span class="ski-idle-card-bal"><span class="ski-idle-card-bal-icon">$</span><span class="ski-idle-card-bal-whole">${_balLabel}</span></span> `;
-          const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd.svg" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
+          const iusdBadge = _suiamiVerifyHtml ? ' <img src="/assets/iusd-256.png" class="ski-idle-card-iusd" width="16" height="16" alt="iUSD">' : '';
           const _atBtn = `<button class="ski-idle-card-at" id="ski-idle-thunder-at" type="button" title=""><svg width="22" height="22" viewBox="0 0 20 20"><rect x="2" y="2" width="16" height="16" rx="3" fill="#4da2ff" stroke="white" stroke-width="1.8"/></svg></button>`;
           const _recallBtn = `<button class="ski-idle-card-recall" id="ski-idle-recall-vaults" type="button" title="Recall all unclaimed vaults">\u21A9</button>`;
           card.innerHTML = `${_atBtn}<span class="ski-idle-card-name" title="Populate input">${esc(primaryName)}</span>${balHtml}${iusdBadge}${badgeHtml ? ` <span class="ski-idle-card-badges">${badgeHtml}</span>` : ''}${_recallBtn}`;
@@ -11074,7 +11078,13 @@ function bindEvents() {
           if (clearBtn) clearBtn.style.display = 'none';
         }
       });
-      _idleNsInput?.addEventListener('blur', _unfreezeGif);
+      _idleNsInput?.addEventListener('blur', () => {
+        _unfreezeGif();
+        const val = _idleNsInput!.value.trim().toLowerCase().replace(/\.sui$/, '');
+        if (val && val.length >= 3 && isValidNsLabel(val)) {
+          setTimeout(() => _updateIdleCard(val), 150);
+        }
+      });
 
       const _idleThunderInputEl = _idleOverlay.querySelector('#ski-idle-thunder') as HTMLInputElement | null;
       const _thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row') as HTMLElement | null;
@@ -11540,8 +11550,8 @@ function bindEvents() {
         nsExpirationMs = 0;
         nsNftOwner = null;
         _updateIdleStatus();
-        // Card updates on resolution, not keystrokes — only reset when input is cleared
-        if (!val) _updateIdleCard('');
+        _cardCacheKey = '';
+        _updateIdleCard(val || '');
         _renderThunderComposePreview();
         // Debounce fetch to avoid SuiNS rate limits
         if (_idleDebounce) clearTimeout(_idleDebounce);
@@ -11717,20 +11727,48 @@ function bindEvents() {
               const USDC_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
               const PSM_RESERVE_ID = '0x62fcd184ef68d7267e4cf45f8af5ff7f23511c4741f26674875e691389ca264c';
               const addrN = (await import('@mysten/sui/utils')).normalizeSuiAddress(ws.address);
-              const rpcBody = (id: number, method: string, params: any[]) =>
-                JSON.stringify({ jsonrpc: '2.0', id, method, params });
-              const [suiRes, usdcRes, iusdRes, reserveRes] = await Promise.all([
-                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(1, 'suix_getBalance', [addrN, '0x2::sui::SUI']) }),
-                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(2, 'suix_getBalance', [addrN, USDC_TYPE]) }),
-                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(3, 'suix_getBalance', [addrN, IUSD_TYPE_UI]) }),
-                fetch('https://sui-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: rpcBody(4, 'sui_getObject', [PSM_RESERVE_ID, { showContent: true }]) }),
-              ]);
-              const suiBal = BigInt(((await suiRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
-              const usdcBal = BigInt(((await usdcRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
-              const iusdBal = BigInt(((await iusdRes.json()) as { result?: { totalBalance?: string } }).result?.totalBalance ?? '0');
-              const reserveFields = ((await reserveRes.json()) as { result?: { data?: { content?: { fields?: { s_balance?: string; fee_bps?: string } } } } }).result?.data?.content?.fields;
-              const reserveUsdc = BigInt(reserveFields?.s_balance ?? '0');
-              const psmFeeBps = BigInt(reserveFields?.fee_bps ?? '50');
+              // Race multiple public RPC endpoints per call so a rate-limited or
+              // flaky publicnode can't falsely report a zero SUI balance — which
+              // used to route the buy into the PSM iUSD path even when the
+              // user had plenty of SUI, producing "PSM reserve too small" for
+              // trades that should have paid straight from gas.
+              const rpcEndpoints = [
+                'https://sui-rpc.publicnode.com',
+                'https://sui-mainnet-endpoint.blockvision.org',
+                'https://rpc.ankr.com/sui',
+              ];
+              const raceRpc = async (method: string, params: unknown[]): Promise<any> => {
+                const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+                const attempts = rpcEndpoints.map(async (url) => {
+                  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+                  if (!res.ok) throw new Error(`${url} ${res.status}`);
+                  const j = await res.json();
+                  if (j?.error || j?.result == null) throw new Error(`${url} rpc error`);
+                  return j.result;
+                });
+                return await Promise.any(attempts);
+              };
+              let suiBal = 0n, usdcBal = 0n, iusdBal = 0n, reserveUsdc = 0n, psmFeeBps = 50n;
+              try {
+                const [suiR, usdcR, iusdR, resvR] = await Promise.all([
+                  raceRpc('suix_getBalance', [addrN, '0x2::sui::SUI']),
+                  raceRpc('suix_getBalance', [addrN, USDC_TYPE]),
+                  raceRpc('suix_getBalance', [addrN, IUSD_TYPE_UI]),
+                  raceRpc('sui_getObject', [PSM_RESERVE_ID, { showContent: true }]),
+                ]);
+                suiBal = BigInt((suiR as { totalBalance?: string })?.totalBalance ?? '0');
+                usdcBal = BigInt((usdcR as { totalBalance?: string })?.totalBalance ?? '0');
+                iusdBal = BigInt((iusdR as { totalBalance?: string })?.totalBalance ?? '0');
+                const reserveFields = (resvR as { data?: { content?: { fields?: { s_balance?: string; fee_bps?: string } } } })?.data?.content?.fields;
+                reserveUsdc = BigInt(reserveFields?.s_balance ?? '0');
+                psmFeeBps = BigInt(reserveFields?.fee_bps ?? '50');
+              } catch (e) {
+                // All RPC endpoints failed. Rather than silently routing into
+                // the iUSD branch (which would fail with a confusing "PSM
+                // reserve" toast), bail out and ask the user to retry.
+                showToast('RPC unavailable — try again in a moment');
+                return;
+              }
 
               // Compute SUI shortfall, then USDC needed to swap to cover it.
               const priceMistBig = BigInt(priceMistStr);
@@ -11768,6 +11806,9 @@ function bindEvents() {
               nsAvail = 'owned'; nsTargetAddress = ws.address; nsLastDigest = digest ?? '';
               nsKioskListing = null; nsTradeportListing = null;
               app.suinsName = app.suinsName || domain;
+              // Persist the traded name so a hard refresh lands back on this
+              // card instead of going blank or snapping to the wallet primary.
+              try { localStorage.setItem('ski:ns-label', label); } catch {}
               showToast(`\u{1F6CD}\u{FE0F} ${domain} traded for ${totalSui.toFixed(2)} SUI (~$${priceUsd.toFixed(2)}) \u2713`);
               _updateIdleStatus();
               setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
@@ -11843,7 +11884,11 @@ function bindEvents() {
               }
             } finally {
               _idleActionBtn!.disabled = false;
-              _idleActionBtn!.textContent = 'TRADE';
+              // Re-evaluate the button based on current state instead of
+              // pinning it to 'TRADE' — after a successful purchase
+              // `nsAvail === 'owned'` and the listings are cleared, so the
+              // mode handler will swap it to SUIAMI automatically.
+              _updateSendBtnMode();
             }
             return;
           }
@@ -11916,13 +11961,22 @@ function bindEvents() {
               const regResult = await buildRegisterSplashNsTx(ws.address, `${label}.sui`, freshPrice, true, preferred);
               if (regResult?.txBytes) {
                 const _isWaaP = /waap/i.test(getState().walletName || '');
-                const { digest } = (!_isWaaP && regResult.sponsorAddress)
+                const { digest, effects: tradeEff } = (!_isWaaP && regResult.sponsorAddress)
                   ? await signAndExecuteSponsoredTx(regResult.txBytes)
                   : await signAndExecuteTransaction(regResult.txBytes);
                 nsAvail = 'owned';
+                nsTargetAddress = ws.address;
                 app.suinsName = app.suinsName || `${label}.sui`;
-                showToast(`\u{1F4DB} ${label}.sui registered \u2713`);
+                suinsCache[ws.address] = app.suinsName;
+                try { localStorage.setItem(`ski:suins:${ws.address}`, app.suinsName); } catch {}
+                updateSkiDot('blue-square', app.suinsName);
+                _patchNsPrice();
+                _patchNsStatus();
+                nsOwnedFetchedFor = '';
+                _fetchOwnedDomains();
                 _updateIdleStatus();
+                _updateIdleCard(label);
+                showMintToast(`${label}.sui`, digest, tradeEff);
                 setTimeout(() => refreshPortfolio(true), PORTFOLIO_REFRESH_MED_MS);
               } else {
                 showToast('Could not build registration transaction');
@@ -12073,11 +12127,18 @@ function bindEvents() {
                       try {
                         const regResult = await buildRegisterSplashNsTx(ws.address!, `${label}.sui`, undefined, true, 'NS');
                         if (regResult) {
-                          await signAndExecuteTransaction(regResult instanceof Uint8Array ? regResult : regResult);
-                          showToast(`\u2728 ${label}.sui minted!`);
-                          _idleActionBtn!.textContent = 'Minted';
-                          _idleActionBtn!.disabled = true;
+                          const { digest: questDigest, effects: questEff } = await signAndExecuteTransaction(regResult instanceof Uint8Array ? regResult : regResult);
+                          showMintToast(`${label}.sui`, questDigest, questEff);
                           nsAvail = 'owned';
+                          nsTargetAddress = ws.address!;
+                          app.suinsName = app.suinsName || `${label}.sui`;
+                          suinsCache[ws.address!] = app.suinsName;
+                          try { localStorage.setItem(`ski:suins:${ws.address!}`, app.suinsName); } catch {}
+                          updateSkiDot('blue-square', app.suinsName);
+                          _patchNsPrice();
+                          _patchNsStatus();
+                          nsOwnedFetchedFor = '';
+                          _fetchOwnedDomains();
                           _updateIdleStatus();
                           _updateIdleCard(label);
                           _preRumbledNames.add(label.toLowerCase());
@@ -13042,8 +13103,8 @@ function bindEvents() {
         const statusEl = _idleOverlay?.querySelector('#ski-idle-status') as HTMLElement | null;
         if (statusEl) statusEl.style.opacity = '0.3';
         try {
-          const { tx: setDefaultTx } = await buildSetDefaultNsTx(ws.address, domain);
-          const result = await signAndExecuteTransaction(setDefaultTx);
+          const { bytes: setDefaultBytes } = await buildSetDefaultNsTx(ws.address, domain);
+          const result = await signAndExecuteTransaction(setDefaultBytes);
           if (!result.digest) throw new Error('Transaction returned no digest');
           const eff = result.effects as Record<string, unknown> | undefined;
           const st = eff?.status as { status?: string; error?: string } | undefined;
@@ -16882,6 +16943,92 @@ function bindEvents() {
       _audioToggle.title = 'Unmute \u2192 BASMR';
       _audioToggle.textContent = '\u{1F507}';
       _idleOverlay?.appendChild(_audioToggle);
+
+      // Session countdown clock — sits next to the mute button, ticks down
+      // from the .SKI sign-in signature's `expiresAt`. Hidden when there's
+      // no active session (signed out / visitor mode). Updates once per
+      // second so the last hour reads MM:SS in real time, and drops back
+      // to days/hours formatting above the one-hour mark.
+      const _sessionClock = document.createElement('button');
+      _sessionClock.type = 'button';
+      _sessionClock.className = 'ski-idle-session-clock';
+      _sessionClock.textContent = '--:--';
+      _sessionClock.title = 'Click to re-sign Seal session';
+      _sessionClock.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (_sessionClock.classList.contains('ski-idle-session-clock--busy')) return;
+        _sessionClock.classList.add('ski-idle-session-clock--busy');
+        const prevText = _sessionClock.textContent;
+        _sessionClock.textContent = '...';
+        try {
+          const { refreshSealSession } = await import('./client/thunder-stack.js');
+          const ok = await refreshSealSession();
+          if (!ok) _sessionClock.textContent = prevText ?? '--:--';
+        } catch {
+          _sessionClock.textContent = prevText ?? '--:--';
+        } finally {
+          _sessionClock.classList.remove('ski-idle-session-clock--busy');
+          _tickSessionClock();
+        }
+      });
+      _idleOverlay?.appendChild(_sessionClock);
+      // The "30-minute signature" users see is the Seal session key that
+      // gates Thunder/SUIAMI decrypt, minted via wallet-signed personal
+      // message and cached at `ski:seal-sk:v4:<addr>` with a fixed 30-min
+      // TTL. Expiry = creationTimeMs + ttlMin * 60_000. Pick the longest
+      // remaining across all addresses in case the user has multiple
+      // cached session keys (rare but cheap to handle).
+      const _readSessionExpiry = (): number => {
+        let best = 0;
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k || !k.startsWith('ski:seal-sk:v4:')) continue;
+            try {
+              const raw = localStorage.getItem(k);
+              if (!raw) continue;
+              const v = JSON.parse(raw) as { creationTimeMs?: number; ttlMin?: number };
+              if (typeof v?.creationTimeMs === 'number' && typeof v?.ttlMin === 'number') {
+                const exp = v.creationTimeMs + v.ttlMin * 60_000;
+                if (exp > best) best = exp;
+              }
+            } catch { /* skip malformed entry */ }
+          }
+        } catch { /* storage unavailable */ }
+        return best;
+      };
+      const _fmtSessionLeft = (ms: number): string => {
+        if (ms <= 0) return '0:00';
+        const sec = Math.floor(ms / 1000);
+        if (sec < 3600) {
+          const m = Math.floor(sec / 60);
+          const s = sec % 60;
+          return `${m}:${String(s).padStart(2, '0')}`;
+        }
+        const hr = Math.floor(sec / 3600);
+        if (hr < 24) return `${hr}h ${Math.floor((sec % 3600) / 60)}m`;
+        return `${Math.floor(hr / 24)}d ${hr % 24}h`;
+      };
+      const _tickSessionClock = () => {
+        const expiresAt = _readSessionExpiry();
+        const ms = expiresAt ? expiresAt - Date.now() : 0;
+        // Always keep the bubble visible (ski-clock motif). If no session or
+        // expired, show dashes so the element still reads as a clock.
+        _sessionClock.hidden = false;
+        if (ms > 0) {
+          _sessionClock.textContent = _fmtSessionLeft(ms);
+          _sessionClock.title = `.SKI session expires ${new Date(expiresAt).toLocaleString()}`;
+          _sessionClock.classList.toggle('ski-idle-session-clock--warn', ms < 60 * 60 * 1000 && ms >= 5 * 60 * 1000);
+          _sessionClock.classList.toggle('ski-idle-session-clock--crit', ms < 5 * 60 * 1000);
+        } else {
+          _sessionClock.textContent = '--:--';
+          _sessionClock.title = 'No active .SKI session';
+          _sessionClock.classList.remove('ski-idle-session-clock--warn');
+          _sessionClock.classList.remove('ski-idle-session-clock--crit');
+        }
+      };
+      _tickSessionClock();
+      setInterval(_tickSessionClock, 1000);
       _audioToggle.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!_idleVideo) return;

@@ -204,3 +204,66 @@ public fun record_updated_ms(record: &IdentityRecord): u64 { record.updated_ms }
 public fun record_walrus_blob_id(record: &IdentityRecord): &String { &record.walrus_blob_id }
 public fun record_seal_nonce(record: &IdentityRecord): &vector<u8> { &record.seal_nonce }
 public fun record_verified(record: &IdentityRecord): bool { record.verified }
+
+// ─── CF edge history (Porygon) ──────────────────────────────────────
+//
+// Append-only log of Seal-sealed Walrus blob IDs, one per CF fingerprint
+// change. Stored as a separate dynamic field keyed by wallet address so
+// the additive upgrade doesn't touch IdentityRecord's BCS shape. Client
+// does change detection before appending (typical user: 1-3 lifetime
+// entries).
+
+/// Dynamic-field key for per-address CF history store.
+public struct CfHistoryKey has copy, drop, store { addr: address }
+
+/// CF-history container. `blobs` is oldest-first.
+public struct CfHistory has store, drop {
+    blobs: vector<String>,
+    updated_ms: u64,
+}
+
+/// Append a Walrus blob ID to the caller's CF history. Creates the
+/// history store on first write. Asserts the caller has a roster
+/// record (prevents anonymous writes from consuming storage).
+public fun append_cf_history(
+    roster: &mut Roster,
+    blob_id: String,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let key = CfHistoryKey { addr: sender };
+    if (dynamic_field::exists_<CfHistoryKey>(&roster.id, key)) {
+        let history: &mut CfHistory = dynamic_field::borrow_mut(&mut roster.id, key);
+        history.blobs.push_back(blob_id);
+        history.updated_ms = clock.timestamp_ms();
+    } else {
+        let mut blobs = vector::empty<String>();
+        blobs.push_back(blob_id);
+        dynamic_field::add(&mut roster.id, key, CfHistory {
+            blobs,
+            updated_ms: clock.timestamp_ms(),
+        });
+    };
+}
+
+/// Read the caller's or any address's CF history blob IDs.
+public fun cf_history(roster: &Roster, addr: address): &vector<String> {
+    let key = CfHistoryKey { addr };
+    let h: &CfHistory = dynamic_field::borrow(&roster.id, key);
+    &h.blobs
+}
+
+/// Last-updated timestamp of the CF history store.
+public fun cf_history_updated_ms(roster: &Roster, addr: address): u64 {
+    let key = CfHistoryKey { addr };
+    let h: &CfHistory = dynamic_field::borrow(&roster.id, key);
+    h.updated_ms
+}
+
+/// Does this address have any CF history? Checked by Seal policy.
+public fun has_cf_history(roster: &Roster, addr: address): bool {
+    let key = CfHistoryKey { addr };
+    dynamic_field::exists_<CfHistoryKey>(&roster.id, key)
+}

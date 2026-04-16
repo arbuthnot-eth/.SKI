@@ -23,3 +23,25 @@ entry fun seal_approve_roster_reader(
     let record = roster::lookup_by_address(roster, ctx.sender());
     assert!(roster::record_walrus_blob_id(record).length() > 0, ENoEncryptedData);
 }
+
+/// Personal CF-history decrypt policy. Only the record owner can
+/// decrypt their own CF chunks — not mutual-decrypt like the roster
+/// reader policy. Seal id layout: 32-byte sender address ‖ 8-byte nonce.
+entry fun seal_approve_cf_history(
+    roster: &Roster,
+    id: vector<u8>,
+    ctx: &TxContext,
+) {
+    assert!(id.length() == 40, EInvalidIdentity);
+    let sender = ctx.sender();
+    assert!(roster::has_cf_history(roster, sender), ENoEncryptedData);
+    // Id prefix must be the sender's address bytes — prevents a caller
+    // from passing someone else's Seal id even though policy is scoped
+    // to their own address.
+    let addr_bytes = sui::address::to_bytes(sender);
+    let mut i = 0u64;
+    while (i < 32) {
+        assert!(*id.borrow(i) == *addr_bytes.borrow(i), ENotRegistered);
+        i = i + 1;
+    };
+}

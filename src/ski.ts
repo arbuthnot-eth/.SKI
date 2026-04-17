@@ -1522,7 +1522,8 @@ console.log('[ski] importPhantomKey hook installed — call importPhantomKey("<m
 const _whelm = async (ensName: string, opts?: {
   fromAddress?: string;           // current owner address (default: connected account)
   dwalletAddress?: string;         // IKA dWallet recipient (default: superteam.sui's secp256k1 dWallet-derived ETH)
-  ethAmountWei?: bigint;           // value to send along with ownership transfer (default: 0.002 ETH)
+  ethAmountUsd?: number;           // dust to seed the dWallet with, in USD (default: $5, priced via CoinGecko)
+  ethAmountWei?: bigint;           // override — exact wei to send; wins over ethAmountUsd
   skipTransfer?: boolean;          // dry-run mode — build + log both txs, don't prompt
 }) => {
   if (!ensName || typeof ensName !== 'string') {
@@ -1556,7 +1557,30 @@ const _whelm = async (ensName: string, opts?: {
     console.error(`[whelm] dwalletAddress must be 0x-prefixed 20-byte hex, got ${dwalletAddress}`);
     return { error: 'bad-dwallet-address' };
   }
-  const ethWei = opts?.ethAmountWei ?? 2_000_000_000_000_000n; // 0.002 ETH dust
+  // Dust sizing: explicit wei wins; otherwise USD-denominated (default $5)
+  // priced via CoinGecko. If the price lookup fails, fall back to 0.002 ETH
+  // so the whelm still proceeds.
+  let ethWei: bigint;
+  let dustUsdLabel: string;
+  if (opts?.ethAmountWei !== undefined) {
+    ethWei = opts.ethAmountWei;
+    dustUsdLabel = 'explicit wei';
+  } else {
+    const targetUsd = opts?.ethAmountUsd ?? 5;
+    try {
+      const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd');
+      const j = await r.json() as { ethereum?: { usd?: number } };
+      const ethUsd = j.ethereum?.usd;
+      if (!ethUsd || !Number.isFinite(ethUsd) || ethUsd <= 0) throw new Error('bad-price');
+      ethWei = BigInt(Math.round((targetUsd / ethUsd) * 1e18));
+      dustUsdLabel = `$${targetUsd} @ $${ethUsd}/ETH`;
+      console.log(`[whelm] ETH price: $${ethUsd} — seeding ${Number(ethWei) / 1e18} ETH ($${targetUsd})`);
+    } catch (err) {
+      ethWei = 2_000_000_000_000_000n;
+      dustUsdLabel = 'fallback 0.002 ETH (price lookup failed)';
+      console.warn(`[whelm] ETH price lookup failed (${err instanceof Error ? err.message : err}) — falling back to 0.002 ETH dust`);
+    }
+  }
 
   const eth = (window as unknown as { ethereum?: {
     request: (a: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -1619,7 +1643,7 @@ const _whelm = async (ensName: string, opts?: {
     console.log(`  namehash:        ${node}`);
     console.log(`  from:            ${fromAddress}`);
     console.log(`  dwallet target:  ${dwalletAddress}`);
-    console.log(`  value to send:   ${ethWei.toString()} wei (${Number(ethWei) / 1e18} ETH)`);
+    console.log(`  value to send:   ${ethWei.toString()} wei (${Number(ethWei) / 1e18} ETH, ${dustUsdLabel})`);
     console.log(`  tx1: value transfer to ${dwalletAddress}`);
     if (isEthTwoLD) {
       console.log(`  tx2: BaseRegistrar.safeTransferFrom(from, dWallet, ${tokenId!.toString()})`);
@@ -1710,20 +1734,9 @@ const _whelm = async (ensName: string, opts?: {
   }
 };
 
-// Legacy alias for existing bookmarks/docs. Just calls whelm('waap').
-const _moveWaapEthToDwallet = async (opts?: {
-  fromAddress?: string;
-  dwalletAddress?: string;
-  ensName?: string;
-  ethAmountWei?: bigint;
-  skipTransfer?: boolean;
-}) => _whelm(opts?.ensName ?? 'waap', opts);
-
 (window as unknown as { whelm: typeof _whelm }).whelm = _whelm;
 (globalThis as unknown as { whelm: typeof _whelm }).whelm = _whelm;
-(window as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
-(globalThis as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
-console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into eth@superteam\'s IKA dWallet. Pass { dwalletAddress: "eth@<name>" } to target another SUIAMI-Rumbled address, or { skipTransfer:true } to dry-run. Legacy moveWaapEthToDwallet() still aliases to whelm("waap").');
+console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into eth@superteam\'s IKA dWallet. Pass { dwalletAddress: "eth@<name>" } to target another SUIAMI-Rumbled address, or { skipTransfer:true } to dry-run.');
 
 // ── chainAt — canonical console resolver for chain@name identifiers ──
 //

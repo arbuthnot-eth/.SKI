@@ -70,7 +70,7 @@ Old address `0x04354d56…3902` was printed to terminal during generation. Rotat
 
 ### 🔴 High
 - **Ultron rumble** (imported-key ed25519 DKG) — SDK supports it, but ceremony needs the raw key in-browser. Blocker: we don't have the key locally.
-- **`moveWaapEthToDwallet()` in Phantom** — user action. Still blocks Zen Headbutt.
+- **`whelm("waap")` in Phantom** — user action. Still blocks Zen Headbutt.
 
 ### 🟡 Medium
 - **Pokedex skill auto-comment on releases** — not done.

@@ -46,7 +46,7 @@ Blocks Zen Headbutt entirely.
 
 ```js
 // Phantom connected as waap.eth owner (0x9e82…3314), sui.ski console:
-moveWaapEthToDwallet()
+whelm('waap')
 ```
 
 Two tx prompts: 0.002 ETH value transfer + `ENS.setOwner(waap.eth, 0xCE3e9733…1763)`. Post-run, superteam.sui's IKA secp256k1 dWallet owns waap.eth; all future Ethereum ops are PTB+IKA signed. Details: `project_ens_waap_extension.md`.

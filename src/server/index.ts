@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { ultronKeypair } from './ultron-key.js';
+import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
 import { createZkLoginApp } from './zklogin-proxy.js';
@@ -2966,24 +2966,8 @@ app.post('/api/cache/pre-rumble', async (c) => {
 
 // ── Squid stats — geo-mapped pre-rumble counter (private) ───────────
 app.get('/api/cache/squid-stats', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 500);
-  // Auth: must sign a recent timestamp (within 60s)
-  const sig = c.req.header('x-ultron-sig');
-  const ts = c.req.header('x-ultron-ts');
-  if (!sig || !ts) return c.json({ error: 'Unauthorized' }, 401);
-  const age = Math.abs(Date.now() - Number(ts));
-  if (age > 60_000) return c.json({ error: 'Timestamp expired' }, 401);
-  try {
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
-    const keypair = Ed25519Keypair.fromSecretKey(key);
-    const msgBytes = new TextEncoder().encode(`squid-stats:${ts}`);
-    const expected = await keypair.sign(msgBytes);
-    const { toBase64 } = await import('@mysten/sui/utils');
-    if (toBase64(expected) !== sig) return c.json({ error: 'Invalid signature' }, 403);
-  } catch {
-    return c.json({ error: 'Auth failed' }, 403);
-  }
+  const denied = await requireUltronSig(c, 'squid-stats');
+  if (denied) return denied;
   try {
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/?squid-stats', {
       headers: { 'x-partykit-room': 'treasury' },
@@ -3709,7 +3693,10 @@ app.post('/api/cache/force-dispatch-sol', async (c) => {
 });
 
 // Snorunt Lv.30 — debug endpoint to see what _watchSolDeposits sees.
+// Ultron-sig gated (leaks internal watcher state).
 app.post('/api/cache/debug-sol-watch', async (c) => {
+  const denied = await requireUltronSig(c, 'debug-sol-watch');
+  if (denied) return denied;
   try {
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/debug-sol-watch', {
       method: 'POST',
@@ -3726,7 +3713,10 @@ app.post('/api/cache/debug-sol-watch', async (c) => {
 // Snorunt Lv.30 — reset the sol-watcher's last-processed cursor.
 // One-off fix for deposits stuck in pending because the old filter
 // logic excluded a single sig instead of walking forward from it.
+// Ultron-sig gated (mutates internal watcher state).
 app.post('/api/cache/reset-sol-cursor', async (c) => {
+  const denied = await requireUltronSig(c, 'reset-sol-cursor');
+  if (denied) return denied;
   try {
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/reset-sol-cursor', {
       method: 'POST',
@@ -3812,8 +3802,12 @@ app.post('/api/cache/send-iusd-v2', async (c) => {
   }
 });
 
-// Debug mint endpoint.
+// Debug mint endpoint — ultron-sig gated. Mints iUSD to an arbitrary
+// recipient, so anyone who could call it unauthenticated could drain
+// the mint authority. Locked on Probopass Lv.45.
 app.post('/api/cache/debug-mint', async (c) => {
+  const denied = await requireUltronSig(c, 'debug-mint');
+  if (denied) return denied;
   try {
     const body = await c.req.json() as { usdCents: number; recipient?: string; pkg?: string };
     const res = await authedTreasuryStub(c).fetch(new Request('https://treasury-do/debug-mint', {

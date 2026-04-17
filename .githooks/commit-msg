@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Enforces the Pokemon-move commit pattern per
+# memory/feedback_every_commit_is_a_move.md. Every commit maps to a
+# Pokemon + move, OR is one of the known exempt kinds (merge, revert,
+# release automation, fixup/squash).
+
+set -u
+
+msg_file="$1"
+first_line=$(head -1 "$msg_file")
+
+# Strip leading "# " comment lines if somehow injected
+first_line="${first_line#"${first_line%%[![:space:]]*}"}"
+
+# Exempt kinds — keep the hook pragmatic, don't stop tooling commits
+if [[ "$first_line" =~ ^(Merge|Revert|Squashed|fixup!|squash!|chore\(release\)|Release\ ) ]]; then
+    exit 0
+fi
+
+# Accepted patterns (loose — enough to force intent, not pedantic):
+#   "Pokemon Move — description"
+#   "Pokemon Move Combo — description"
+#   "Pokemon — description"       (single-word Pokemon, move implied)
+#   "Pokemon evolved — Form 🔩 (#NNN)"
+# The em-dash or double-hyphen separator is the anchor.
+if [[ "$first_line" =~ ^[A-Z][a-zA-Z]+([[:space:]][A-Za-z+][A-Za-z+]*)*[[:space:]](—|--)[[:space:]] ]]; then
+    exit 0
+fi
+
+if [[ "$first_line" =~ ^[A-Z][a-zA-Z]+[[:space:]]evolved[[:space:]] ]]; then
+    exit 0
+fi
+
+# Soft fallback — allow commits that open with a capitalized word and
+# are at least 12 chars long. Blocks empty / boilerplate messages but
+# keeps typos + odd phrasing escapable. The hook is a nudge, not a
+# gatekeeper.
+if [[ "$first_line" =~ ^[A-Z][a-zA-Z]+.{12,} ]]; then
+    # Warn but allow — user sees the nudge without being blocked.
+    printf 'commit-msg: heads up, title does not match the Pokemon-move pattern.\n' >&2
+    printf '  See memory/feedback_every_commit_is_a_move.md\n' >&2
+    printf '  Got: %s\n' "$first_line" >&2
+    exit 0
+fi
+
+printf '\n' >&2
+printf '✗ commit-msg: first line must follow the Pokemon-move pattern\n' >&2
+printf '\n' >&2
+printf '  Expected: "Pokemon Move — description"\n' >&2
+printf '  Or:       "Pokemon evolved — Form 🔩 (#NNN)"\n' >&2
+printf '  Or:       "chore(release): vX.Y.Z …"\n' >&2
+printf '\n' >&2
+printf '  Got: %s\n' "$first_line" >&2
+printf '\n' >&2
+printf '  See memory/feedback_every_commit_is_a_move.md\n' >&2
+exit 1

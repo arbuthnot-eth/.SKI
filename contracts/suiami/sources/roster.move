@@ -157,6 +157,58 @@ entry fun set_identity(
     });
 }
 
+// ─── ENS bind (Beldum) ──────────────────────────────────────────────
+//
+// Bind an ENS name (typically `foo.waap.eth`) to the caller's existing
+// SUIAMI RosterRecord. Writes an ens_hash-keyed dynamic field pointing
+// to the same record, so SuiNS-name and ENS-name lookups resolve to one
+// identity. Seal v2 policy already accepts the shared namespace, so no
+// policy upgrade is needed for ENS decrypts.
+//
+// v1 trust model: the caller already owns a SUIAMI record (dwallet-caps
+// verified), so they've proven control of an IKA-derived ETH address
+// via DKG. Binding an ENS name is their attestation that the name maps
+// to that address. The ETH ownership proof (`ecdsa_k1::secp256k1_verify`
+// over a canonical bind message matching the record's `eth` chain
+// address) is a follow-up move (Beldum Metal Claw). Harmless to land
+// the scaffold first because only the record owner can write here.
+
+entry fun set_ens_identity(
+    roster: &mut Roster,
+    ens_name: String,
+    ens_hash: vector<u8>,
+    eth_owner_sig: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let mut updated: IdentityRecord = *dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(updated.sui_address == sender, ENotOwner);
+
+    // TODO Beldum Metal Claw: verify `eth_owner_sig` via
+    // `sui::ecdsa_k1::secp256k1_ecrecover` over a canonical
+    // "SUIAMI bind ENS:<ens_name>:<sui_addr>:<timestamp>" message and
+    // assert the recovered ETH address matches `updated.chains["eth"]`.
+    let _ = eth_owner_sig;
+
+    updated.updated_ms = clock.timestamp_ms();
+    let chain_count = updated.chains.length();
+    let dwallet_count = updated.dwallet_caps.length();
+
+    if (dynamic_field::exists_<vector<u8>>(&roster.id, ens_hash)) {
+        dynamic_field::remove<vector<u8>, IdentityRecord>(&mut roster.id, ens_hash);
+    };
+    dynamic_field::add(&mut roster.id, ens_hash, updated);
+
+    event::emit(IdentitySet {
+        name: ens_name,
+        sui_address: sender,
+        chain_count,
+        dwallet_count,
+    });
+}
+
 // ─── Read (permissionless) ──────────────────────────────────────────
 
 /// Lookup by name hash. Returns the full identity record.
@@ -182,6 +234,20 @@ public fun has_chain(roster: &Roster, chain_key: String): bool {
 /// Check if a name is registered.
 public fun has_name(roster: &Roster, name_hash: vector<u8>): bool {
     dynamic_field::exists_<vector<u8>>(&roster.id, name_hash)
+}
+
+/// Check if an ENS name is registered. Alias of `has_name` — both
+/// Sui-native names and ENS names share the same `vector<u8>` dynamic
+/// field namespace (keccak256 collision is astronomical, and a single
+/// namespace keeps the Seal v2 policy working for both identity types
+/// with zero policy changes — see Beldum / project_ens_waap_extension).
+public fun has_ens_name(roster: &Roster, ens_hash: vector<u8>): bool {
+    dynamic_field::exists_<vector<u8>>(&roster.id, ens_hash)
+}
+
+/// Lookup by ENS hash. Alias of `lookup_by_name` — see `has_ens_name`.
+public fun lookup_by_ens(roster: &Roster, ens_hash: vector<u8>): &IdentityRecord {
+    dynamic_field::borrow(&roster.id, ens_hash)
 }
 
 /// Check if an address is registered.

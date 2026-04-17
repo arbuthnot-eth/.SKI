@@ -444,20 +444,34 @@ function showCopyableToast(display: string, fullText: string, durationMs = 8000,
 
   let copied = false;
   let removed = false;
+  let revertTimer: ReturnType<typeof setTimeout> | null = null;
+  const initialHintText = persistent ? 'click to dismiss' : 'click to copy';
   const remove = () => {
     if (removed) return;
     removed = true;
+    if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), TOAST_ANIMATION_MS);
   };
   const _autoTimer = persistent ? null : setTimeout(remove, 4500);
+  const revertToInitial = () => {
+    copied = false;
+    revertTimer = null;
+    hint.textContent = initialHintText;
+    hint.style.color = '';
+  };
   toast.addEventListener('click', () => {
-    if (persistent && !copied) { copied = true; remove(); return; }
-    if (copied) { if (_autoTimer) clearTimeout(_autoTimer); remove(); return; }
+    if (copied) {
+      if (_autoTimer) clearTimeout(_autoTimer);
+      if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
+      remove();
+      return;
+    }
     copied = true;
     navigator.clipboard.writeText(fullText).catch(() => {});
-    hint.textContent = '\u2713 Copied — click again to dismiss';
+    hint.textContent = '\u2713 Copied \u2014 click again within 3s to dismiss';
     hint.style.color = '#4ade80';
+    revertTimer = setTimeout(revertToInitial, 3000);
   });
 }
 
@@ -521,13 +535,26 @@ function showMintToast(name: string, digest: string, effects?: unknown) {
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), TOAST_ANIMATION_MS);
   };
+  let revertTimer: ReturnType<typeof setTimeout> | null = null;
+  const revertToInitial = () => {
+    copied = false;
+    revertTimer = null;
+    hint.textContent = 'click to copy';
+    hint.style.color = '';
+    hint.style.opacity = '';
+  };
   toast.addEventListener('click', () => {
-    if (copied) { remove(); return; }
+    if (copied) {
+      if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
+      remove();
+      return;
+    }
     copied = true;
     navigator.clipboard.writeText(full).catch(() => {});
-    hint.textContent = '\u2713 Copied — click to dismiss';
+    hint.textContent = '\u2713 Copied \u2014 click again within 3s to dismiss';
     hint.style.color = '#4ade80';
     hint.style.opacity = '1';
+    revertTimer = setTimeout(revertToInitial, 3000);
   });
 }
 
@@ -16999,9 +17026,9 @@ function bindEvents() {
       // to days/hours formatting above the one-hour mark.
       const _sessionClock = document.createElement('button');
       _sessionClock.type = 'button';
-      _sessionClock.className = 'ski-idle-session-clock';
-      _sessionClock.textContent = '--:--';
-      _sessionClock.title = 'Click to re-sign Seal session';
+      _sessionClock.className = 'ski-idle-session-clock ski-idle-session-clock--empty';
+      _sessionClock.textContent = '\u{1F991}';
+      _sessionClock.title = 'Click to sign a SUIAMI session';
       _sessionClock.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (_sessionClock.classList.contains('ski-idle-session-clock--busy')) return;
@@ -17011,9 +17038,9 @@ function bindEvents() {
         try {
           const { refreshSealSession } = await import('./client/thunder-stack.js');
           const ok = await refreshSealSession();
-          if (!ok) _sessionClock.textContent = prevText ?? '--:--';
+          if (!ok) _sessionClock.textContent = prevText ?? '\u{1F991}';
         } catch {
-          _sessionClock.textContent = prevText ?? '--:--';
+          _sessionClock.textContent = prevText ?? '\u{1F991}';
         } finally {
           _sessionClock.classList.remove('ski-idle-session-clock--busy');
           _tickSessionClock();
@@ -17066,11 +17093,16 @@ function bindEvents() {
         if (ms > 0) {
           _sessionClock.textContent = _fmtSessionLeft(ms);
           _sessionClock.title = `.SKI session expires ${new Date(expiresAt).toLocaleString()}`;
-          _sessionClock.classList.toggle('ski-idle-session-clock--warn', ms < 60 * 60 * 1000 && ms >= 5 * 60 * 1000);
+          _sessionClock.classList.remove('ski-idle-session-clock--empty');
+          const isWarn = ms < 10 * 60 * 1000;
+          _sessionClock.classList.toggle('ski-idle-session-clock--fresh', !isWarn);
+          _sessionClock.classList.toggle('ski-idle-session-clock--warn', isWarn);
           _sessionClock.classList.toggle('ski-idle-session-clock--crit', ms < 5 * 60 * 1000);
         } else {
-          _sessionClock.textContent = '--:--';
-          _sessionClock.title = 'No active .SKI session';
+          _sessionClock.textContent = '\u{1F991}';
+          _sessionClock.title = 'No active SUIAMI session \u2014 click to sign';
+          _sessionClock.classList.add('ski-idle-session-clock--empty');
+          _sessionClock.classList.remove('ski-idle-session-clock--fresh');
           _sessionClock.classList.remove('ski-idle-session-clock--warn');
           _sessionClock.classList.remove('ski-idle-session-clock--crit');
         }

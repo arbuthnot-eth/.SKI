@@ -3018,18 +3018,38 @@ body {
   opacity: 0.65;
 }
 .ski-idle-session-clock[hidden] { display: none !important; }
+.ski-idle-session-clock--fresh {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.4);
+}
 .ski-idle-session-clock--warn {
-  color: #facc15;
-  border-color: rgba(250, 204, 21, 0.4);
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.45);
 }
 .ski-idle-session-clock--crit {
-  color: #f87171;
-  border-color: rgba(248, 113, 113, 0.5);
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.6);
   animation: ski-idle-session-clock-pulse 1s ease-in-out infinite;
+}
+.ski-idle-session-clock--empty {
+  color: rgba(255, 255, 255, 0.4);
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.3);
+  font-size: 0.95rem;
+  animation: ski-idle-session-clock-ghost 2.4s ease-in-out infinite;
+}
+.ski-idle-session-clock--empty:hover {
+  color: rgba(255, 255, 255, 0.85);
+  border-color: rgba(255, 255, 255, 0.35);
+  animation: none;
 }
 @keyframes ski-idle-session-clock-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+@keyframes ski-idle-session-clock-ghost {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.7; }
 }
 .ski-idle-iusd-btn {
   all: unset;

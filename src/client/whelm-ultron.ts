@@ -104,7 +104,7 @@ export async function whelmUltronFlow(toast: (m: string, isHtml?: boolean, persi
     }
     const result = await callWhelm(false, toast);
     if (result.error) {
-        toast(`Whelm failed: ${result.error}`);
+        toast(`Whelm failed: ${result.error}`, false, true);
         return;
     }
     if (result.execError) {
@@ -115,6 +115,6 @@ export async function whelmUltronFlow(toast: (m: string, isHtml?: boolean, persi
         const link = `<a href="https://suiscan.xyz/mainnet/tx/${result.digest}" target="_blank" rel="noopener">${result.digest.slice(0, 10)}\u2026</a>`;
         toast(`Whelmed \u2014 ${link}`, true, true);
     } else {
-        toast('Whelm submitted; no digest returned');
+        toast('Whelm submitted; no digest returned', false, true);
     }
 }

@@ -930,8 +930,9 @@ const _sendPrism = async (
       console.error('[prism] no wallet connected');
       return;
     }
-    const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
+    const { sendThunder, lookupRecipientAddress, makeThunderGroupId } = await import('./client/thunder.js');
     const { buildPrismAttachments } = await import('./client/prism.js');
+    const { signPersonalMessage } = await import('./wallet.js');
     const recipientAddress = recipientNameOrAddr.startsWith('0x')
       ? recipientNameOrAddr
       : (await lookupRecipientAddress(recipientNameOrAddr));
@@ -939,7 +940,12 @@ const _sendPrism = async (
       console.error('[prism] could not resolve recipient', recipientNameOrAddr);
       return;
     }
-    const files = buildPrismAttachments(spec, payload);
+    const stormId = makeThunderGroupId(ws.address, recipientAddress);
+    const files = await buildPrismAttachments(
+      { ...spec, stormId, senderAddress: ws.address },
+      payload,
+      signPersonalMessage,
+    );
     console.log('[prism] sending', { recipient: recipientAddress, manifest: JSON.parse(new TextDecoder().decode(files[0].data)) });
     const res = await sendThunder({
       senderAddress: ws.address,

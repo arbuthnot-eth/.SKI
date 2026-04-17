@@ -22,3 +22,7 @@ drafts/
 
 # Private decision logs (raw discussion transcripts, not for publication)
 .decisions/
+
+# Rust build artifacts
+target/
+Cargo.lock.bak

@@ -29,9 +29,12 @@
 
 use quasar_lang::prelude::*;
 
-// Placeholder program ID — replaced in Z2 (Thunder Shock) with the
-// address of a freshly-generated keypair at keys/prism_vault-keypair.json.
-declare_id!("11111111111111111111111111111111");
+mod state;
+pub use state::*;
+
+// Program ID from keys/prism_vault-keypair.json. Not vanity — mint a
+// replacement before mainnet-beta deploy (Z10 Sky Attack) if desired.
+declare_id!("wx2Q9nM8n1vamXpYeP7mwrEdzwzwNadZdKCHVTFPkjp");
 
 #[program]
 mod prism_vault {

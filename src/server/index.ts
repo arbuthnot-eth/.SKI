@@ -2917,22 +2917,27 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
       { type: SUI_T, label: 'SUI' },
     ];
 
-    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    // Use JSON-RPC for the coin inventory — GraphQL filter shape varies
+    // by release and has returned empty results in the whelm path even
+    // when balances are present (2026-04-17). JSON-RPC suix_getCoins is
+    // schema-stable and consistent with the rest of the treasury path.
+    const RPC = 'https://sui-rpc.publicnode.com';
     async function listCoins(coinType: string): Promise<Array<{ objectId: string; version: string; digest: string; balance: bigint }>> {
-      const r = await fetch(GQL, {
+      const r = await fetch(RPC, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          query: `query($a:SuiAddress!,$t:String!){address(address:$a){objects(filter:{type:$t},first:100){nodes{address version digest contents{json}}}}}`,
-          variables: { a: oldUltron, t: `0x2::coin::Coin<${coinType}>` },
+          jsonrpc: '2.0', id: 1, method: 'suix_getCoins',
+          params: [oldUltron, coinType, null, 200],
         }),
       });
-      const j = await r.json() as { data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } } };
-      return (j?.data?.address?.objects?.nodes ?? []).map((o) => ({
-        objectId: o.address,
+      const j = await r.json() as { result?: { data?: Array<{ coinObjectId: string; version: string; digest: string; balance: string }> } };
+      const arr = j?.result?.data ?? [];
+      return arr.map((o) => ({
+        objectId: o.coinObjectId,
         version: String(o.version),
         digest: o.digest,
-        balance: BigInt(o.contents?.json?.balance ?? '0'),
+        balance: BigInt(o.balance),
       }));
     }
 

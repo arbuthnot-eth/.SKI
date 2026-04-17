@@ -26,6 +26,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "bun test",
     "prepublishOnly": "tsc"
   },
   "keywords": [

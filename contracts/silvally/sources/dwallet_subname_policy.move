@@ -205,3 +205,20 @@ public fun remaining(policy: &SubnamePolicy): u64 {
 }
 public fun expiration_ms(policy: &SubnamePolicy): u64 { policy.expiration_ms }
 public fun owner_cap_id(policy: &SubnamePolicy): ID { policy.owner_cap_id }
+public fun policy_id(policy: &SubnamePolicy): ID { policy.id.to_inner() }
+
+// ------------------------------------------------------------------
+// Package-internal quota adjustments (for jackets composed on top)
+// ------------------------------------------------------------------
+
+/// Reclaim a slot — called by steel_jacket when a delegated subname is
+/// pruned after expiry, freeing quota for the next member. Kept as
+/// `public(package)` so only sibling jacket modules inside `ski` can
+/// call it; external callers can't forge quota refunds.
+public(package) fun reclaim_quota(policy: &mut SubnamePolicy, n: u64) {
+    if (n >= policy.issued_count) {
+        policy.issued_count = 0;
+    } else {
+        policy.issued_count = policy.issued_count - n;
+    }
+}

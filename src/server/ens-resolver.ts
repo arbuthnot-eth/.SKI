@@ -116,7 +116,13 @@ function decodeRecord(rec: any): RosterRecord | null {
   };
 }
 
-async function lookupRoster(bareLabel: string): Promise<RosterRecord | null> {
+// Edge-cache TTL for roster lookups. Records change rarely (register,
+// revoke, mutate), so 60s absorbs the hot path for fintech resolvers
+// hitting the same label thousands of times without staling so long
+// that revocations linger.
+const ROSTER_CACHE_TTL_SEC = 60;
+
+async function lookupRosterUncached(bareLabel: string): Promise<RosterRecord | null> {
   const ensName = `${bareLabel}.${WAAP_ETH_LABEL}.${WAAP_ETH_TLD}`;
   const ensHash = keccak_256(new TextEncoder().encode(ensName));
   const nameHash = keccak_256(new TextEncoder().encode(bareLabel));
@@ -135,6 +141,27 @@ async function lookupRoster(bareLabel: string): Promise<RosterRecord | null> {
   // Fallback: raw vector<u8> name_hash (Sui-name side, gated by SuiNS
   // NFT ownership via set_identity — can't be hijacked).
   return decodeRecord(await queryDf('vector<u8>', nameHash));
+}
+
+// Cache wrapper for lookupRoster. Uses caches.default so every CF
+// colo serves a fresh copy; coordinating across colos via KV isn't
+// worth the latency hit for a 60s window.
+async function lookupRoster(bareLabel: string): Promise<RosterRecord | null> {
+  const key = new Request(`https://cache.internal/ens-resolver/roster/${bareLabel}`);
+  const cache = caches.default;
+  const hit = await cache.match(key);
+  if (hit) {
+    const body = await hit.text();
+    return body === 'null' ? null : (JSON.parse(body) as RosterRecord);
+  }
+  const fresh = await lookupRosterUncached(bareLabel);
+  await cache.put(
+    key,
+    new Response(fresh ? JSON.stringify(fresh) : 'null', {
+      headers: { 'cache-control': `public, max-age=${ROSTER_CACHE_TTL_SEC}` },
+    }),
+  );
+  return fresh;
 }
 
 // ─── IKA dWallet pubkey → Solana base58 address ─────────────────────
@@ -173,7 +200,23 @@ function base58(bytes: Uint8Array): string {
   return out;
 }
 
+// dWallet pubkeys are immutable post-DKG — cache aggressively.
+// 1h TTL is plenty; the only "change" would be a user rumbling a new
+// dWallet which creates a *new* cap id, so stale entries are harmless.
+const DWALLET_CACHE_TTL_SEC = 3600;
+
 async function resolveSolFromCaps(caps: string[]): Promise<string | null> {
+  if (caps.length === 0) return null;
+  const cache = caches.default;
+  // Deterministic key across caps set (order-insensitive).
+  const keyStr = [...caps].sort().join('|');
+  const cacheKey = new Request(`https://cache.internal/ens-resolver/sol-caps/${encodeURIComponent(keyStr)}`);
+  const hit = await cache.match(cacheKey);
+  if (hit) {
+    const body = await hit.text();
+    return body === 'null' ? null : body;
+  }
+
   // dWalletCap points at a DWallet; curve=2 is ed25519 (Solana). Race
   // caps in parallel; first curve=2 wins.
   const results = await Promise.all(caps.map(async (capId) => {
@@ -189,7 +232,14 @@ async function resolveSolFromCaps(caps: string[]): Promise<string | null> {
     if (!dw || dw.curve !== 2) return null;
     return base58(dw.pubkey);
   }));
-  return results.find(Boolean) ?? null;
+  const sol = results.find(Boolean) ?? null;
+  await cache.put(
+    cacheKey,
+    new Response(sol ?? 'null', {
+      headers: { 'cache-control': `public, max-age=${DWALLET_CACHE_TTL_SEC}` },
+    }),
+  );
+  return sol;
 }
 
 // ─── Gateway signature ──────────────────────────────────────────────

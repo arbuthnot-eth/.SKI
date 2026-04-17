@@ -930,8 +930,9 @@ const _sendPrism = async (
       console.error('[prism] no wallet connected');
       return;
     }
-    const { sendThunder, lookupRecipientAddress } = await import('./client/thunder.js');
+    const { sendThunder, lookupRecipientAddress, makeThunderGroupId } = await import('./client/thunder.js');
     const { buildPrismAttachments } = await import('./client/prism.js');
+    const { signPersonalMessage } = await import('./wallet.js');
     const recipientAddress = recipientNameOrAddr.startsWith('0x')
       ? recipientNameOrAddr
       : (await lookupRecipientAddress(recipientNameOrAddr));
@@ -939,7 +940,12 @@ const _sendPrism = async (
       console.error('[prism] could not resolve recipient', recipientNameOrAddr);
       return;
     }
-    const files = buildPrismAttachments(spec, payload);
+    const stormId = makeThunderGroupId(ws.address, recipientAddress);
+    const files = await buildPrismAttachments(
+      { ...spec, stormId, senderAddress: ws.address },
+      payload,
+      signPersonalMessage,
+    );
     console.log('[prism] sending', { recipient: recipientAddress, manifest: JSON.parse(new TextDecoder().decode(files[0].data)) });
     const res = await sendThunder({
       senderAddress: ws.address,
@@ -1133,7 +1139,24 @@ const _fetchSquidsForName = async (nameOrDomain: string) => {
     });
     const gqlJson = await gqlRes.json() as any;
     const record = gqlJson?.data?.object?.dynamicField?.value?.json;
-    const walrusBlobId: string = record?.walrus_blob_id ?? '';
+    let walrusBlobId: string = record?.walrus_blob_id ?? '';
+    // Dual-key drift fallback: some roster entries wrote the blob only
+    // to the address-keyed dynamic field, not the name-keyed one. If the
+    // name lookup comes back empty, pivot to the connected address's
+    // entry — the Seal identity is name-scoped so decrypt still works
+    // as long as the caller owns the name (policy unchanged).
+    if (!walrusBlobId) {
+      try {
+        const { readRosterByAddress } = await import('./suins.js');
+        const byAddr = await readRosterByAddress(ws.address);
+        if (byAddr?.walrus_blob_id && byAddr.name === bare) {
+          walrusBlobId = byAddr.walrus_blob_id;
+          console.log(`[fetchSquids] fell back to address-keyed blob: ${walrusBlobId}`);
+        }
+      } catch (fallbackErr) {
+        console.warn('[fetchSquids] address-keyed fallback failed:', fallbackErr);
+      }
+    }
     if (!walrusBlobId) {
       console.error(`[fetchSquids] ${bare}.sui has no walrus_blob_id on-chain`);
       showToast(`${bare}.sui \u2014 no encrypted squids on-chain`);
@@ -1167,6 +1190,313 @@ const _fetchSquidsForName = async (nameOrDomain: string) => {
 (window as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
 (globalThis as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
 console.log('[ski] fetchSquidsForName hook installed — call fetchSquidsForName("<name>") to decrypt cross-chain squids for any SUIAMI-registered name (requires own SUIAMI entry)');
+
+// ── Beldum Take Down — ENS subname bind (#167) ──
+//
+// Bind `<label>.waap.eth` to the connected wallet's existing SUIAMI
+// record. Writes an `ens_hash`-keyed dynamic field pointing at the
+// same IdentityRecord the Sui side already knows about, so ENS-side
+// resolvers (CCIP-read gateway, coming in Iron Defense) can serve
+// the same chain addresses for either handle.
+//
+// v1 trust model: the caller already holds the SUIAMI record, so the
+// Sui-wallet signature IS the ownership proof for the bind call.
+// Metal Claw will add an ecdsa_k1_ecrecover check over a canonical
+// EIP-191 bind message signed by the user's IKA-derived ETH key —
+// harmless to land the write path first since only the record owner
+// can invoke.
+const _ensIssue = async (label: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[ensIssue] not connected'); return { error: 'not connected' };
+  }
+  const bare = (label || '').replace(/\.waap\.eth$/i, '').toLowerCase().trim();
+  if (!bare || /[^a-z0-9-]/.test(bare)) {
+    console.error('[ensIssue] invalid label; use a-z, 0-9, hyphens only'); return { error: 'bad-label' };
+  }
+  const ensName = `${bare}.waap.eth`;
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const ensHash = Array.from(keccak_256(new TextEncoder().encode(ensName)));
+
+    // Pre-flight: reject if ens_hash is already bound (v5 on-chain
+    // check would abort anyway with EEnsNameTaken; checking client-
+    // side gives a clearer error before the user spends gas).
+    const gqlQ = `{ object(address:"${ROSTER_OBJ}"){ dynamicField(name:{ type:"0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa::roster::EnsHashKey", bcs:"${btoa(String.fromCharCode(32, ...ensHash))}" }){ value{ ...on MoveValue{ json } } } } }`;
+    const pre = await fetch('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: gqlQ }),
+    }).then(r => r.json()).catch(() => null) as any;
+    const taken = pre?.data?.object?.dynamicField?.value?.json;
+    if (taken) {
+      const owner = taken.sui_address ?? 'unknown';
+      const err = `${ensName} already bound to ${owner} — owner must revoke_ens_identity first`;
+      console.error('[ensIssue]', err);
+      showToast(err);
+      return { error: 'taken', owner };
+    }
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::set_ens_identity`,
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.string(ensName),
+        tx.pure.vector('u8', ensHash),
+        // Placeholder ETH owner sig (v1 doesn't verify; Metal Claw will).
+        tx.pure.vector('u8', []),
+        tx.object('0x6'), // Clock
+      ],
+    });
+
+    showToast(`\u26a1 Binding ${ensName} to SUIAMI\u2026`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[ensIssue] bound ${ensName} — digest: ${digest}`);
+    showToast(`\u2713 ${ensName} bound to SUIAMI`);
+    return { ok: true, ensName, digest };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[ensIssue] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`ENS bind failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+(window as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
+(globalThis as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
+console.log('[ski] ensIssue hook installed — call ensIssue("alice") to bind alice.waap.eth to your SUIAMI record (Beldum #167)');
+
+// ── Beldum Metal Claw prep — Phantom key → IKA dWallet parse/derive ──
+//
+// Accepts either a BIP-39 mnemonic (12/24 words) or a 32-byte hex
+// private key, derives the secp256k1 public key + ETH address
+// client-side via viem, and returns what's needed to feed into the
+// IKA imported-key DKG flow. The private key never leaves the
+// browser; the mnemonic is zero'd from memory after derivation.
+//
+// For mnemonics, default derivation path is Ethereum's
+// `m/44'/60'/0'/0/0` (matches Phantom, MetaMask, Rainbow, Trust).
+// Callers can pass a different path or index to hunt for the
+// account that matches a specific ETH address.
+//
+// NOTE: this is the parse/verify step only. The actual IKA
+// `requestImportedKeyDWalletVerification` ceremony hooks a separate
+// (coming) entry in `src/client/ika.ts::importSecp256k1DWallet` —
+// which calls `prepareImportedKeyDWalletVerification(ikaClient,
+// Curve.SECP256K1, bytesToHash, senderAddress, userShareKeys,
+// privateKey)` then builds the PTB. Landing parse first so you can
+// validate that brando's seed derives to 0x9e825c8DB5758A7B888d281b83e28792233A3314
+// before committing to the full MPC import.
+const _importPhantomKey = async (
+  input: string,
+  opts?: { path?: string; index?: number; expectAddress?: string },
+) => {
+  if (!input || typeof input !== 'string') {
+    console.error('[importPhantomKey] expected mnemonic or hex priv key as first arg');
+    return { error: 'no-input' };
+  }
+  const trimmed = input.trim();
+  try {
+    const { privateKeyToAccount, mnemonicToAccount } = await import('viem/accounts');
+    let priv: `0x${string}`;
+    let address: `0x${string}`;
+    let mode: 'mnemonic' | 'hex';
+
+    if (/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
+      mode = 'hex';
+      priv = trimmed as `0x${string}`;
+      address = privateKeyToAccount(priv).address;
+    } else if (trimmed.split(/\s+/).length >= 12) {
+      mode = 'mnemonic';
+      const words = trimmed.split(/\s+/).length;
+      if (words !== 12 && words !== 15 && words !== 18 && words !== 21 && words !== 24) {
+        console.error(`[importPhantomKey] mnemonic must be 12/15/18/21/24 words, got ${words}`);
+        return { error: 'bad-word-count' };
+      }
+      const index = opts?.index ?? 0;
+      const path = opts?.path ?? `m/44'/60'/0'/0/${index}`;
+      const acct = mnemonicToAccount(trimmed, { path: path as `m/${string}` });
+      address = acct.address;
+      // viem 2.x: account.getHdKey().privateKey gives the raw 32 bytes.
+      const hd = (acct as any).getHdKey?.();
+      if (!hd?.privateKey) {
+        console.error('[importPhantomKey] could not extract private key from derived account');
+        return { error: 'derivation-failed' };
+      }
+      priv = ('0x' + Array.from(hd.privateKey as Uint8Array)
+        .map(b => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`;
+    } else {
+      console.error('[importPhantomKey] input must be a BIP-39 mnemonic (12+ words) or a 0x-prefixed 32-byte hex private key');
+      return { error: 'bad-input' };
+    }
+
+    console.log(`[importPhantomKey] mode=${mode}, derived address: ${address}`);
+    if (opts?.expectAddress) {
+      const expected = opts.expectAddress.toLowerCase();
+      const actual = address.toLowerCase();
+      if (expected !== actual) {
+        console.error(`[importPhantomKey] ADDRESS MISMATCH — expected ${expected}, got ${actual}`);
+        console.error('  For mnemonics, try a different index: importPhantomKey("<phrase>", { index: 1 })');
+        // Zero the priv bytes before returning.
+        (priv as unknown) = undefined;
+        return { error: 'address-mismatch', expected, derived: address };
+      }
+      console.log(`[importPhantomKey] \u2713 matches expected address ${expected}`);
+    }
+
+    // TODO Beldum Metal Claw: wire to ika.ts
+    //   const { importSecp256k1DWallet } = await import('./client/ika.js');
+    //   const result = await importSecp256k1DWallet({
+    //     privateKeyHex: priv,
+    //     bytesToHash: new TextEncoder().encode(`SUIAMI import ${address} @ ${Date.now()}`),
+    //   });
+    //   Then assert result.ethAddress === address, write dwalletCap to roster.
+    console.log('[importPhantomKey] IKA ceremony not yet wired — parse/derive verified only.');
+    console.log(`  Ready to import: address=${address}, mode=${mode}`);
+    console.log('  Next: confirm above, then run the ika.ts import flow (commit pending).');
+
+    return { ok: true, mode, address, priv: '0x<redacted>' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[importPhantomKey] failed:', err);
+    return { error: msg };
+  }
+};
+(window as unknown as { importPhantomKey: typeof _importPhantomKey }).importPhantomKey = _importPhantomKey;
+(globalThis as unknown as { importPhantomKey: typeof _importPhantomKey }).importPhantomKey = _importPhantomKey;
+console.log('[ski] importPhantomKey hook installed — call importPhantomKey("<mnemonic|0xhex>", { expectAddress:"0x9e82..." }) to verify your waap.eth seed before the IKA import ceremony (Beldum Metal Claw, #167)');
+
+// ── Beldum Relocate — transfer waap.eth to a SUIAMI-verified IKA dWallet ──
+//
+// Two-tx flow, both prompted through Phantom's ETH provider
+// (`window.ethereum`). Reads the current ENS registry owner, prompts
+// Phantom to connect, confirms the connected account == expected
+// waap.eth owner, then fires:
+//
+//   tx1: value transfer — funds the IKA dWallet with ~0.002 ETH
+//         for subsequent deploy + setResolver gas.
+//   tx2: ENS.setOwner(namehash('waap.eth'), dwalletAddr) — transfers
+//         the ENS registry ownership to the IKA dWallet.
+//
+// After tx2 confirms, every future waap.eth operation (resolver
+// deploy, setResolver, subname issuance) is PTB-signed through
+// IKA — the Phantom seed that currently controls `0x9e82…3314`
+// goes dormant. No key import, no hot key migration.
+//
+// Defaults are tuned for the waap.eth → superteam.sui IKA dWallet
+// transfer brando flagged; callers can override for any other
+// SUIAMI-verified dWallet target.
+const _moveWaapEthToDwallet = async (opts?: {
+  fromAddress?: string;           // who currently owns waap.eth (default: 0x9e82...3314)
+  dwalletAddress?: string;         // where to send it (default: superteam.sui's secp256k1 dWallet-derived ETH)
+  ensName?: string;                // bare name, no .eth (default: "waap")
+  ethAmountWei?: bigint;           // value to send along with ownership transfer (default: 0.002 ETH)
+  skipTransfer?: boolean;          // dry-run mode — build + log both txs, don't prompt
+}) => {
+  const fromAddress = (opts?.fromAddress ?? '0x9e825c8DB5758A7B888d281b83e28792233A3314').toLowerCase();
+  const dwalletAddress = opts?.dwalletAddress ?? '0xCE3e9733aB9e78aB6e9F13B7FC6aC5a45D711763';
+  const ensName = opts?.ensName ?? 'waap';
+  const ethWei = opts?.ethAmountWei ?? 2_000_000_000_000_000n; // 0.002 ETH
+
+  const eth = (window as any).ethereum;
+  if (!eth) {
+    console.error('[moveWaapEth] no window.ethereum — is Phantom (or MetaMask) installed and unlocked?');
+    return { error: 'no-provider' };
+  }
+
+  try {
+    const { encodeFunctionData, namehash, toHex } = await import('viem');
+    const node = namehash(`${ensName}.eth`);
+    const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e' as const;
+
+    // setOwner(bytes32 node, address owner) — selector 0x5b0fc9c3
+    const setOwnerData = encodeFunctionData({
+      abi: [{ name: 'setOwner', type: 'function', inputs: [
+        { name: 'node', type: 'bytes32' },
+        { name: 'owner', type: 'address' },
+      ], outputs: [] }],
+      functionName: 'setOwner',
+      args: [node, dwalletAddress as `0x${string}`],
+    });
+
+    console.log(`[moveWaapEth] plan:`);
+    console.log(`  ens name:        ${ensName}.eth`);
+    console.log(`  namehash:        ${node}`);
+    console.log(`  from:            ${fromAddress}`);
+    console.log(`  dwallet target:  ${dwalletAddress}`);
+    console.log(`  value to send:   ${ethWei.toString()} wei (${Number(ethWei) / 1e18} ETH)`);
+    console.log(`  tx1: value transfer to ${dwalletAddress}`);
+    console.log(`  tx2: ENS.setOwner(${node.slice(0, 10)}…, ${dwalletAddress})`);
+    console.log(`  tx2 calldata:    ${setOwnerData}`);
+
+    if (opts?.skipTransfer) {
+      console.log('[moveWaapEth] skipTransfer=true — stopping before prompts');
+      return { ok: true, dryRun: true, setOwnerData };
+    }
+
+    // Connect + verify chain + verify sender
+    const accounts = await eth.request({ method: 'eth_requestAccounts' }) as string[];
+    const connected = (accounts[0] || '').toLowerCase();
+    if (connected !== fromAddress) {
+      const msg = `Phantom connected as ${connected}, need ${fromAddress}. Switch accounts in Phantom and retry.`;
+      console.error('[moveWaapEth]', msg);
+      showToast(msg);
+      return { error: 'wrong-account', connected, expected: fromAddress };
+    }
+    const chainId = await eth.request({ method: 'eth_chainId' }) as string;
+    if (chainId !== '0x1') {
+      const msg = `Phantom on chain ${chainId}; need 0x1 (Ethereum mainnet). Switch network and retry.`;
+      console.error('[moveWaapEth]', msg);
+      showToast(msg);
+      return { error: 'wrong-chain', chainId };
+    }
+
+    showToast(`\u26a1 Phantom: sign tx 1 of 2 — sending ${Number(ethWei) / 1e18} ETH to dWallet\u2026`);
+    console.log('[moveWaapEth] submitting tx1 (value transfer)...');
+    const tx1 = await eth.request({
+      method: 'eth_sendTransaction',
+      params: [{
+        from: fromAddress,
+        to: dwalletAddress,
+        value: toHex(ethWei),
+      }],
+    }) as string;
+    console.log(`[moveWaapEth] tx1 submitted: ${tx1}`);
+    showToast(`\u2713 tx 1 submitted: ${tx1.slice(0, 10)}\u2026 — sign tx 2 (setOwner) next`);
+
+    showToast(`\u26a1 Phantom: sign tx 2 of 2 — ENS.setOwner(${ensName}.eth, dWallet)\u2026`);
+    console.log('[moveWaapEth] submitting tx2 (ENS setOwner)...');
+    const tx2 = await eth.request({
+      method: 'eth_sendTransaction',
+      params: [{
+        from: fromAddress,
+        to: ENS_REGISTRY,
+        data: setOwnerData,
+      }],
+    }) as string;
+    console.log(`[moveWaapEth] tx2 submitted: ${tx2}`);
+    showToast(`\u2713 ${ensName}.eth transfer submitted: ${tx2.slice(0, 10)}\u2026`);
+    console.log(`[moveWaapEth] done. Once both mine, ${dwalletAddress} owns ${ensName}.eth.`);
+    console.log(`  Verify: https://app.ens.domains/${ensName}.eth`);
+    console.log(`  Etherscan: https://etherscan.io/tx/${tx2}`);
+    return { ok: true, tx1, tx2, dwalletAddress };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[moveWaapEth] failed:', err);
+    if (!msg.toLowerCase().includes('user reject') && !msg.toLowerCase().includes('user denied')) {
+      showToast(`moveWaapEth failed: ${msg.slice(0, 120)}`);
+    }
+    return { error: msg };
+  }
+};
+(window as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
+(globalThis as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
+console.log('[ski] moveWaapEthToDwallet hook installed — call moveWaapEthToDwallet() to transfer waap.eth to superteam.sui\'s IKA dWallet via Phantom ETH (Beldum Relocate, #167). Pass { skipTransfer:true } to dry-run.');
 
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron

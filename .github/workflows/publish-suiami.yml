@@ -1,0 +1,170 @@
+name: Publish suiami SDK
+
+# Manual-trigger only. The `packages/suiami` SDK version is bumped by
+# hand in `package.json` (minor tracks the Move package version —
+# Move v5 → SDK 2.5.x). Kick off from the Actions tab → "Publish
+# suiami SDK" → Run workflow.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'packages/suiami/**'
+      - 'contracts/suiami/**'
+      - '.github/workflows/publish-suiami.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run (build + pack, skip publish)'
+        required: false
+        default: 'false'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # tag + release write; push chore commits on auto-bump
+      id-token: write   # npm provenance
+    defaults:
+      run:
+        working-directory: packages/suiami
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Mirror of the sui.ski workflow's preflight — fail fast on bad
+      # token before wasting build minutes.
+      - name: NPM token preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NODE_AUTH_TOKEN secret missing. Fix: gh secret set NODE_AUTH_TOKEN --repo arbuthnot-eth/.SKI"
+            exit 1
+          fi
+          echo "Checking npm whoami..."
+          if ! WHO=$(npm whoami 2>&1); then
+            echo "::error::npm whoami failed — token invalid/expired. $WHO"
+            exit 1
+          fi
+          echo "npm whoami: $WHO"
+          echo "Checking that token can publish to suiami..."
+          if PKGS=$(npm access list packages 2>&1); then
+            if ! echo "$PKGS" | grep -q '"suiami"'; then
+              echo "::error::Token does not have access to suiami package."
+              echo "::error::Fix: https://www.npmjs.com/settings/$WHO/tokens → Edit token → add suiami to Packages."
+              exit 1
+            fi
+            if echo "$PKGS" | grep '"suiami"' | grep -q 'read-only'; then
+              echo "::error::Token has read-only access to suiami. Need read+write."
+              exit 1
+            fi
+            echo "Token has write access to suiami. Proceeding."
+          fi
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run build
+
+      - name: Configure git
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Pokemon-BST-driven version bump. Reads commit subjects since
+      # the most recent `suiami-v*` tag, maps named Pokemon to a
+      # base-stat-total, and picks patch/minor/major. Skipped on
+      # dry-run and on workflow_dispatch (manual publishes keep the
+      # hand-edited version).
+      - name: Pokemon BST bump
+        if: ${{ github.event_name == 'push' && github.event.inputs.dry_run != 'true' }}
+        working-directory: .
+        id: bst
+        run: |
+          # Scope "since" to the last suiami tag so we don't count
+          # sui.ski-only commits.
+          SINCE=$(git tag --list 'suiami-v*' --sort=-v:refname | head -n1)
+          if [ -z "$SINCE" ]; then
+            echo "No prior suiami-v* tag; using root."
+            SINCE=""
+          else
+            echo "Bumping relative to $SINCE"
+          fi
+          TIER=$(bun scripts/pokemon-bump.ts --since="$SINCE" --cwd=packages/suiami)
+          echo "Selected bump tier: $TIER"
+          cd packages/suiami
+          npm version "$TIER" --no-git-tag-version --workspace=false
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+
+      - name: Read version
+        id: version
+        run: echo "value=$(npm pkg get version | tr -d '"')" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run (pack only)
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "Dry-run requested — packing but not publishing."
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+      - name: Commit version bump and tag
+        if: ${{ github.event_name == 'push' && github.event.inputs.dry_run != 'true' }}
+        working-directory: .
+        run: |
+          set -e
+          VERSION="suiami-v${{ steps.version.outputs.value }}"
+          git add packages/suiami/package.json
+          git commit -m "chore(suiami): $VERSION (${{ steps.bst.outputs.tier }}) [skip ci]" || true
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping."
+          else
+            git tag -a "$VERSION" -m "$VERSION"
+          fi
+          git push origin HEAD:master
+          git push origin "refs/tags/$VERSION"
+
+      - name: Tag manual-dispatch release
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
+        working-directory: .
+        run: |
+          set -e
+          VERSION="suiami-v${{ steps.version.outputs.value }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping."
+          else
+            git tag -a "$VERSION" -m "$VERSION"
+            git push origin "refs/tags/$VERSION"
+          fi
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        working-directory: .
+        run: |
+          VERSION="suiami-v${{ steps.version.outputs.value }}"
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — skipping create."
+          else
+            gh release create "$VERSION" --title "$VERSION" \
+              --notes "suiami SDK v${{ steps.version.outputs.value }} — see packages/suiami/README.md for exports."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

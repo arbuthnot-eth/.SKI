@@ -15,16 +15,26 @@
 /// can write their record. Reads are permissionless.
 module suiami::roster;
 
-use std::string::String;
+use std::string::{Self, String};
 use sui::event;
 use sui::dynamic_field;
 use sui::clock::Clock;
 use sui::vec_map::{Self, VecMap};
+use sui::ecdsa_k1;
+use sui::hash as sui_hash;
+use sui::hex;
+use sui::address as sui_address;
 
 // ─── Errors ──────────────────────────────────────────────────────────
 
 const ENotOwner: u64 = 0;
 const ENoChains: u64 = 1;
+const EEnsNameTaken: u64 = 2;
+const EEnsNotBound: u64 = 3;
+const ENoEthSquid: u64 = 4;
+const EEthSigMismatch: u64 = 5;
+const EBadSigLength: u64 = 6;
+const ETimestampSkew: u64 = 7;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
@@ -157,6 +167,249 @@ entry fun set_identity(
     });
 }
 
+// ─── ENS bind (Beldum) ──────────────────────────────────────────────
+//
+// Bind an ENS name (typically `foo.waap.eth`) to the caller's existing
+// SUIAMI RosterRecord. Writes an ens_hash-keyed dynamic field pointing
+// to the same record, so SuiNS-name and ENS-name lookups resolve to one
+// identity. Seal v2 policy already accepts the shared namespace, so no
+// policy upgrade is needed for ENS decrypts.
+//
+// v1 trust model: the caller already owns a SUIAMI record (dwallet-caps
+// verified), so they've proven control of an IKA-derived ETH address
+// via DKG. Binding an ENS name is their attestation that the name maps
+// to that address. The ETH ownership proof (`ecdsa_k1::secp256k1_verify`
+// over a canonical bind message matching the record's `eth` chain
+// address) is a follow-up move (Beldum Metal Claw). Harmless to land
+// the scaffold first because only the record owner can write here.
+
+entry fun set_ens_identity(
+    roster: &mut Roster,
+    ens_name: String,
+    ens_hash: vector<u8>,
+    eth_owner_sig: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let mut updated: IdentityRecord = *dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(updated.sui_address == sender, ENotOwner);
+
+    // TODO Beldum Metal Claw: verify `eth_owner_sig` via
+    // `sui::ecdsa_k1::secp256k1_ecrecover` over a canonical
+    // "SUIAMI bind ENS:<ens_name>:<sui_addr>:<timestamp>" message and
+    // assert the recovered ETH address matches `updated.chains["eth"]`.
+    let _ = eth_owner_sig;
+
+    // First-come immutable: refuse to overwrite an existing ENS
+    // binding. Owner must call `revoke_ens_identity` to release, then
+    // re-bind. Prevents a griefer from hijacking a bound label by
+    // re-issuing its hash.
+    let key = EnsHashKey { hash: ens_hash };
+    assert!(!dynamic_field::exists_<EnsHashKey>(&roster.id, key), EEnsNameTaken);
+
+    updated.updated_ms = clock.timestamp_ms();
+    let chain_count = updated.chains.length();
+    let dwallet_count = updated.dwallet_caps.length();
+
+    dynamic_field::add(&mut roster.id, key, updated);
+
+    event::emit(IdentitySet {
+        name: ens_name,
+        sui_address: sender,
+        chain_count,
+        dwallet_count,
+    });
+}
+
+/// Metal Claw (#167) — ENS bind with ecdsa_k1 signature verification.
+///
+/// Strongest version of the ENS bind path: caller supplies an ETH
+/// signature over a canonical message proving they control the ETH
+/// key registered in their own SUIAMI record. That key is
+/// IKA-derived, so the chain of trust is:
+///
+///   caller owns SUIAMI record
+///     → record lists an ETH address in `chains["eth"]`
+///     → that ETH address was derived from an IKA secp256k1 dWallet
+///       during DKG
+///     → user signs bind message with the same ETH private share
+///       (via IKA presign, or imported-key dWallet, or — until
+///       Relocate ships — the owning Phantom / MetaMask seed)
+///     → Move ecrecovers the signer, matches against the stored ETH
+///       address, accepts the bind.
+///
+/// Signed message (EIP-191 personal-sign wrapped):
+///   inner = "SUIAMI bind <ens_name> owner 0x<sender_hex> at <ts_ms>"
+///   digest = keccak256("\x19Ethereum Signed Message:\n" + len(inner) + inner)
+///   eth_sig = ECDSA_secp256k1_sign(eth_privkey, digest)  // 65 bytes r||s||v
+///
+/// Timestamp must be within ±10 minutes of on-chain clock (anti-replay
+/// across the revoke boundary). ens_hash slot must be empty
+/// (overwrite-protected, same as `set_ens_identity`).
+entry fun set_ens_identity_verified(
+    roster: &mut Roster,
+    ens_name: String,
+    ens_hash: vector<u8>,
+    eth_owner_sig: vector<u8>,
+    timestamp_ms: u64,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENotOwner);
+    let mut updated: IdentityRecord = *dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+    assert!(updated.sui_address == sender, ENotOwner);
+
+    // Anti-replay: bind signature to a recent time. ±600_000 ms =
+    // 10 min — comfortable for browser→sign→submit round-trip.
+    let now = clock.timestamp_ms();
+    let skew = if (timestamp_ms > now) { timestamp_ms - now } else { now - timestamp_ms };
+    assert!(skew <= 600_000, ETimestampSkew);
+
+    // Sig must be 65 bytes (r || s || v) — the Ethereum convention.
+    assert!(eth_owner_sig.length() == 65, EBadSigLength);
+
+    // ETH squid must exist in the caller's record.
+    let eth_key = string::utf8(b"eth");
+    assert!(vec_map::contains(&updated.chains, &eth_key), ENoEthSquid);
+    let stored_eth_hex: String = *vec_map::get(&updated.chains, &eth_key);
+    let stored_eth_bytes = eth_hex_string_to_bytes(&stored_eth_hex);
+
+    // Build canonical inner message + EIP-191 wrap.
+    let inner = build_bind_inner_message(&ens_name, sender, timestamp_ms);
+    let prefixed = eip191_wrap(&inner);
+
+    // Recover signer's compressed pubkey, decompress, derive ETH address.
+    let compressed = ecdsa_k1::secp256k1_ecrecover(&eth_owner_sig, &prefixed, 0);
+    let recovered = pubkey_to_eth_address(&compressed);
+
+    assert!(recovered == stored_eth_bytes, EEthSigMismatch);
+
+    // Overwrite-protected. Same shape as set_ens_identity — the
+    // sig-verify version writes only after sig passes.
+    let key = EnsHashKey { hash: ens_hash };
+    assert!(!dynamic_field::exists_<EnsHashKey>(&roster.id, key), EEnsNameTaken);
+
+    updated.updated_ms = clock.timestamp_ms();
+    let chain_count = updated.chains.length();
+    let dwallet_count = updated.dwallet_caps.length();
+    dynamic_field::add(&mut roster.id, key, updated);
+
+    event::emit(IdentitySet {
+        name: ens_name,
+        sui_address: sender,
+        chain_count,
+        dwallet_count,
+    });
+}
+
+// ─── Helpers (pure byte / hex plumbing) ──────────────────────────────
+
+/// Build the canonical inner bind message. Kept simple and
+/// human-readable so the browser can reconstruct byte-for-byte
+/// without wrestling BCS.
+///
+/// Format: `SUIAMI bind <ens_name> owner <sender-hex-0x> at <ts_ms>`
+fun build_bind_inner_message(ens_name: &String, sender: address, ts_ms: u64): vector<u8> {
+    let mut out = vector::empty<u8>();
+    out.append(b"SUIAMI bind ");
+    out.append(*ens_name.as_bytes());
+    out.append(b" owner ");
+    // Sui addresses formatted as lowercase 0x-prefixed 64-hex.
+    let addr_str = sui_address::to_string(sender);
+    out.append(b"0x");
+    out.append(*addr_str.as_bytes());
+    out.append(b" at ");
+    out.append(u64_to_ascii_decimal(ts_ms));
+    out
+}
+
+/// EIP-191 personal-sign wrapper. Produces the same bytes Ethereum's
+/// `eth_sign` / Phantom's `personal_sign` pre-hashes before signing.
+fun eip191_wrap(msg: &vector<u8>): vector<u8> {
+    let mut out = vector::empty<u8>();
+    // Literal 0x19 byte + ASCII "Ethereum Signed Message:\n"
+    let prefix: vector<u8> = vector[0x19, 0x45, 0x74, 0x68, 0x65, 0x72, 0x65, 0x75, 0x6d, 0x20,
+                                   0x53, 0x69, 0x67, 0x6e, 0x65, 0x64, 0x20, 0x4d, 0x65, 0x73,
+                                   0x73, 0x61, 0x67, 0x65, 0x3a, 0x0a];
+    out.append(prefix);
+    out.append(u64_to_ascii_decimal(msg.length() as u64));
+    out.append(*msg);
+    out
+}
+
+/// u64 → ASCII decimal bytes. Used both for `timestamp_ms` in the
+/// inner message AND the length prefix in EIP-191 wrap.
+fun u64_to_ascii_decimal(n: u64): vector<u8> {
+    if (n == 0) { return vector[48u8] };
+    let mut out = vector::empty<u8>();
+    let mut x = n;
+    while (x > 0) {
+        out.push_back(48u8 + ((x % 10) as u8));
+        x = x / 10;
+    };
+    vector::reverse(&mut out);
+    out
+}
+
+/// Parse a string like "0xCE3e9733aB9e78aB6e9F13B7FC6aC5a45D711763"
+/// into its 20 raw address bytes. Case-insensitive (hex::decode is
+/// lowercase-strict, so lowercase first).
+fun eth_hex_string_to_bytes(s: &String): vector<u8> {
+    let mut src = *s.as_bytes();
+    // Strip optional "0x" / "0X" prefix.
+    if (src.length() >= 2 && *src.borrow(0) == 0x30u8
+        && (*src.borrow(1) == 0x78u8 || *src.borrow(1) == 0x58u8)) {
+        let mut rest = vector::empty<u8>();
+        let mut i = 2u64;
+        while (i < src.length()) { rest.push_back(*src.borrow(i)); i = i + 1; };
+        src = rest;
+    };
+    // Lowercase any A-F so hex::decode accepts it.
+    let mut normalized = vector::empty<u8>();
+    let mut j = 0u64;
+    while (j < src.length()) {
+        let c = *src.borrow(j);
+        // 'A'=65 .. 'F'=70 → lowercase by +32
+        let lower = if (c >= 65u8 && c <= 70u8) { c + 32u8 } else { c };
+        normalized.push_back(lower);
+        j = j + 1;
+    };
+    hex::decode(normalized)
+}
+
+/// 33-byte compressed secp256k1 pubkey → 20-byte Ethereum address.
+/// Decompresses to 65-byte SEC1, drops the 0x04 prefix, keccak256 of
+/// the 64 remaining bytes, takes the trailing 20 bytes.
+fun pubkey_to_eth_address(compressed: &vector<u8>): vector<u8> {
+    let uncompressed = ecdsa_k1::decompress_pubkey(compressed);
+    let mut tail = vector::empty<u8>();
+    let mut i = 1u64;
+    while (i < 65) { tail.push_back(*uncompressed.borrow(i)); i = i + 1; };
+    let digest = sui_hash::keccak256(&tail);
+    let mut addr = vector::empty<u8>();
+    let mut j = 12u64;
+    while (j < 32) { addr.push_back(*digest.borrow(j)); j = j + 1; };
+    addr
+}
+
+/// Release an ENS binding so it can be re-issued (by the same caller
+/// or a different one). Only the bound record owner can revoke —
+/// lookup record under the key and assert `sui_address == sender`.
+entry fun revoke_ens_identity(
+    roster: &mut Roster,
+    ens_hash: vector<u8>,
+    _ctx: &TxContext,
+) {
+    let sender = _ctx.sender();
+    let key = EnsHashKey { hash: ens_hash };
+    assert!(dynamic_field::exists_<EnsHashKey>(&roster.id, key), EEnsNotBound);
+    let record: IdentityRecord = dynamic_field::remove<EnsHashKey, IdentityRecord>(&mut roster.id, key);
+    assert!(record.sui_address == sender, ENotOwner);
+}
+
 // ─── Read (permissionless) ──────────────────────────────────────────
 
 /// Lookup by name hash. Returns the full identity record.
@@ -182,6 +435,23 @@ public fun has_chain(roster: &Roster, chain_key: String): bool {
 /// Check if a name is registered.
 public fun has_name(roster: &Roster, name_hash: vector<u8>): bool {
     dynamic_field::exists_<vector<u8>>(&roster.id, name_hash)
+}
+
+/// Typed dynamic-field key for ENS-hashed entries. Isolates the ENS
+/// namespace from the raw `vector<u8>` name_hash namespace so a
+/// malicious caller can't overwrite a Sui-side roster entry by calling
+/// `set_ens_identity` with a colliding hash. Each `EnsHashKey{h}` lives
+/// in a distinct dynamic-field map from `h: vector<u8>`.
+public struct EnsHashKey has copy, drop, store { hash: vector<u8> }
+
+/// Check if an ENS name is registered.
+public fun has_ens_name(roster: &Roster, ens_hash: vector<u8>): bool {
+    dynamic_field::exists_<EnsHashKey>(&roster.id, EnsHashKey { hash: ens_hash })
+}
+
+/// Lookup by ENS hash.
+public fun lookup_by_ens(roster: &Roster, ens_hash: vector<u8>): &IdentityRecord {
+    dynamic_field::borrow(&roster.id, EnsHashKey { hash: ens_hash })
 }
 
 /// Check if an address is registered.

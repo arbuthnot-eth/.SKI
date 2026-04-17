@@ -22,3 +22,9 @@ drafts/
 
 # Private decision logs (raw discussion transcripts, not for publication)
 .decisions/
+
+# Rust build artifacts
+target/
+Cargo.lock.bak
+keys/*.json
+contracts/prism_vault/Cargo.lock

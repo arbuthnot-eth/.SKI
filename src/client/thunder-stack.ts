@@ -1072,7 +1072,7 @@ async function encryptWithRetry(
 // helper does detection + dedup only. Broadcast / claim handlers live
 // outside thunder-stack.
 const _prismSeen = new Set<string>();
-async function _emitPrismEvents(messages: DecryptedMessage[]): Promise<void> {
+async function _emitPrismEvents(messages: DecryptedMessage[], stormId?: string): Promise<void> {
   if (!Array.isArray(messages) || messages.length === 0) return;
   let prismMod: typeof import('./prism.js') | null = null;
   for (const dm of messages) {
@@ -1082,7 +1082,13 @@ async function _emitPrismEvents(messages: DecryptedMessage[]): Promise<void> {
       try { prismMod = await import('./prism.js'); } catch { return; }
     }
     if (!prismMod.isPrism(dm)) continue;
-    const parsed = await prismMod.extractPrismFromMessage(dm);
+    // Thread-binding context lets prism.ts reject manifests that were
+    // lifted from a different storm or Thunder (replay protection).
+    const parsed = await prismMod.extractPrismFromMessage(dm, {
+      stormId,
+      thunderId: dm.messageId,
+      senderAddress: dm.senderAddress,
+    });
     if (!parsed) continue;
     // Skip self-authored Prisms — the sender is on the receive feed too.
     if (_address && dm.senderAddress &&
@@ -1094,8 +1100,11 @@ async function _emitPrismEvents(messages: DecryptedMessage[]): Promise<void> {
         detail: {
           prismId: parsed.manifest.prismId,
           manifest: parsed.manifest,
-          messageId: dm.messageId,
+          stormId,
+          thunderId: dm.messageId,
           senderAddress: dm.senderAddress,
+          verified: parsed.verified,
+          verifyReason: parsed.verifyReason,
           hasPayload: parsed.payloadHandle !== null,
           resolvePayload: parsed.payloadHandle
             ? (() => parsed.payloadHandle!.data())
@@ -1193,7 +1202,7 @@ export async function getThunders(opts: {
         // can act without extra user setup. Kept best-effort; if the
         // prism module isn't loaded, this path silently no-ops.
         if (typeof window !== 'undefined') {
-          void _emitPrismEvents(sdkResult.messages).catch(() => {});
+          void _emitPrismEvents(sdkResult.messages, groupId).catch(() => {});
         }
         return { messages: sdkMessages, hasNext: sdkResult.hasNext };
       }
@@ -1265,7 +1274,8 @@ export async function getThunders(opts: {
 
   // Prism auto-detect on the fallback SDK path too.
   if (typeof window !== 'undefined') {
-    void _emitPrismEvents(result.messages).catch(() => {});
+    const fallbackStormId = 'uuid' in opts.groupRef ? opts.groupRef.uuid : undefined;
+    void _emitPrismEvents(result.messages, fallbackStormId).catch(() => {});
   }
 
   return {

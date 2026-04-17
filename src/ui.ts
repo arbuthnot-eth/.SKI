@@ -6326,6 +6326,7 @@ function _skiSettingsHtml(): string {
           <span class="wk-settings-value">${ws.walletName || 'Unknown'}</span>
         </div>
       </div>
+      ${_skiAdminGroupHtml()}
       <div class="wk-settings-group">
         <span class="wk-settings-group-label">About</span>
         <div class="wk-settings-row">
@@ -6334,6 +6335,26 @@ function _skiSettingsHtml(): string {
         </div>
       </div>
     </div>`;
+}
+
+// Client-side mirror of ADMIN_ADDRESSES in src/client/whelm-ultron.ts
+// — server still enforces the real check.
+const _SKI_ADMIN_ADDRS = new Set([
+  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
+  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
+  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
+]);
+function _skiAdminGroupHtml(): string {
+  const ws = getState();
+  if (!ws.address || !_SKI_ADMIN_ADDRS.has(ws.address.toLowerCase())) return '';
+  return `
+      <div class="wk-settings-group">
+        <span class="wk-settings-group-label">Admin</span>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Ultron</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron" type="button" title="Sweep fungibles from old Ultron into the new dWallet">Whelm Ultron</button>
+        </div>
+      </div>`;
 }
 
 function menuLockin() {
@@ -7079,6 +7100,25 @@ function renderSkiMenu() {
   document.getElementById('wk-settings-back')?.addEventListener('click', () => {
     skiSettingsOpen = false;
     document.querySelector('.wk-dd-slider')?.classList.remove('wk-dd-slider--settings');
+  });
+
+  // Admin — Whelm Ultron (only present when connected as an admin address)
+  document.getElementById('wk-whelm-ultron')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Signing\u2026';
+    try {
+      const { whelmUltronFlow } = await import('./client/whelm-ultron.js');
+      await whelmUltronFlow(showToast);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Whelm Ultron error: ${msg}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
   });
 
   // Treasury slide-in

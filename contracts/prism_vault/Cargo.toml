@@ -1,0 +1,27 @@
+[package]
+name = "prism_vault"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Solana-side consumer for Prism cross-chain sealed manifests"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+alloc = []
+client = []
+debug = []
+
+[dependencies]
+quasar-lang = { git = "https://github.com/blueshift-gg/quasar", branch = "master" }
+quasar-pod = { git = "https://github.com/blueshift-gg/quasar", branch = "master" }
+
+[dev-dependencies]
+quasar-svm = { git = "https://github.com/blueshift-gg/quasar-svm", branch = "master" }
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+opt-level = 3

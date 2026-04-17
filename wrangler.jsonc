@@ -128,5 +128,27 @@
   // query + one tx per expired IOU. No-op when nothing has expired.
   "triggers": {
     "crons": ["*/10 * * * *"]
+  },
+
+  // Smart Placement routes invocations to the colo closest to the
+  // backends the Worker calls most often (Sui fullnode, GraphQL,
+  // Walrus aggregators). Reduces round-trip latency on the CCIP-read
+  // hot path without needing a co-located KV store.
+  "placement": { "mode": "smart" },
+
+  // Rate limiter for the CCIP-read gateway. 60 req/min per source IP
+  // cap keeps a DoS burst from spending our signer time + upstream
+  // Sui quota, while leaving plenty of headroom for legitimate
+  // fintech resolvers (PayPal et al. batch requests, but not at this
+  // rate from one IP).
+  "unsafe": {
+    "bindings": [
+      {
+        "name": "ENS_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1001",
+        "simple": { "limit": 60, "period": 60 }
+      }
+    ]
   }
 }

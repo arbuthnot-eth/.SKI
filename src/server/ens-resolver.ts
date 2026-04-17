@@ -305,6 +305,22 @@ function encodeTextResult(value: string): Uint8Array {
 // ─── Main handler ───────────────────────────────────────────────────
 
 export async function handleEnsCcipRead(c: Context): Promise<Response> {
+  // Rate limit per source IP. 60 req/min window — a single fintech
+  // batch rarely hits this; a DoS burst gets a 429 before we spend
+  // signer time or upstream Sui quota.
+  const rateLimiter = (c.env as any).ENS_RATE_LIMITER as
+    | { limit: (opts: { key: string }) => Promise<{ success: boolean }> }
+    | undefined;
+  if (rateLimiter) {
+    const ip = c.req.header('cf-connecting-ip')
+      ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+      ?? 'unknown';
+    const { success } = await rateLimiter.limit({ key: ip });
+    if (!success) {
+      return c.json({ error: 'rate limit exceeded' }, 429);
+    }
+  }
+
   const sender = c.req.param('sender') as `0x${string}`;
   const dataParam = c.req.param('data') ?? '';
   const data = hexToBytes(dataParam.replace(/\.json$/, '') as `0x${string}`);

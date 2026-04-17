@@ -13,9 +13,9 @@
 // roster on Sui before submitting.
 //
 // Moves tracked in GitHub issue #164 (Zapdos):
-//   Z1 Charge       — this scaffold (you are here)
+//   Z1 Charge        — scaffold
 //   Z2 Thunder Shock — VaultConfig + Nullifier state
-//   Z3 Light Screen  — init_config
+//   Z3 Light Screen  — init_config + set_config  (you are here)
 //   Z4 Signal Beam   — ed25519 sig verify via ix sysvar
 //   Z5 Double Team   — manifest parser + nullifier PDA
 //   Z6 Thunderbolt   — claim_transfer
@@ -29,24 +29,35 @@
 
 use quasar_lang::prelude::*;
 
+mod instructions;
 mod state;
+pub use instructions::*;
 pub use state::*;
 
-// Program ID from keys/prism_vault-keypair.json. Not vanity — mint a
-// replacement before mainnet-beta deploy (Z10 Sky Attack) if desired.
+// Program ID from keys/prism_vault-keypair.json. Replaceable pre-Z10.
 declare_id!("wx2Q9nM8n1vamXpYeP7mwrEdzwzwNadZdKCHVTFPkjp");
 
 #[program]
 mod prism_vault {
     use super::*;
 
-    /// Scaffold-only placeholder instruction. Replaced by real handlers
-    /// in Z3 (init_config), Z6 (claim_transfer), Z7 (claim_swap).
+    /// One-shot config init. Payer becomes admin.
     #[instruction(discriminator = 0)]
-    pub fn ping(_ctx: Ctx<Ping>) -> Result<(), ProgramError> {
-        Ok(())
+    pub fn init_config(
+        ctx: Ctx<InitConfig>,
+        admin: Address,
+        fee_bps: u16,
+        fee_vault: Address,
+    ) -> Result<(), ProgramError> {
+        ctx.accounts.init(admin, fee_bps, fee_vault, &ctx.bumps)
     }
-}
 
-#[derive(Accounts)]
-pub struct Ping {}
+    /// Admin-only fee update.
+    #[instruction(discriminator = 3)]
+    pub fn set_config(ctx: Ctx<SetConfig>, fee_bps: u16) -> Result<(), ProgramError> {
+        ctx.accounts.set(fee_bps)
+    }
+
+    // discriminator = 1 reserved for claim_transfer (Z6 Thunderbolt)
+    // discriminator = 2 reserved for claim_swap (Z7 Drill Peck)
+}

@@ -101,6 +101,10 @@ import wasmModule from '../wasm/dwallet_mpc_wasm_bg.wasm';
 
 interface Env {
   SHADE_KEEPER_PRIVATE_KEY?: string;
+  ULTRON_PRIVATE_KEY?: string;
+  // Future agents drop their own signing-key env names here — the
+  // reEncryptForNewOwner ceremony is parameterized on env names, so
+  // this type only needs the union kept honest.
 }
 
 interface UltronSigningState {
@@ -245,10 +249,113 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
         });
       }
     }
+    // Regigigas rumble — dry-run plan only in this commit.
+    // Parameterized from day one so future agents (t2000s, chronicoms)
+    // reuse the same ceremony by passing different env var names.
+    if (url.pathname.endsWith('/reencrypt-plan') || url.searchParams.has('reencrypt-plan')) {
+      try {
+        const body = await request.json().catch(() => ({})) as {
+          fromEnvName?: string;
+          toEnvName?: string;
+          curve?: 'ed25519' | 'secp256k1';
+          dwalletId?: string;
+          encryptedShareId?: string;
+        };
+        const result = await this._planReEncryptForNewOwner({
+          fromEnvName: body.fromEnvName ?? 'SHADE_KEEPER_PRIVATE_KEY',
+          toEnvName: body.toEnvName ?? 'ULTRON_PRIVATE_KEY',
+          curve: body.curve ?? 'ed25519',
+          dwalletId: body.dwalletId ?? ULTRON_DWALLETS[body.curve ?? 'ed25519'].dwalletId,
+          encryptedShareId: body.encryptedShareId ?? ULTRON_DWALLETS[body.curve ?? 'ed25519'].encryptedShareId,
+        });
+        return new Response(JSON.stringify(result), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        return new Response(JSON.stringify({ ok: false, error }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
     return new Response(JSON.stringify({ error: 'Unknown route' }), {
       status: 404,
       headers: { 'content-type': 'application/json' },
     });
+  }
+
+  /**
+   * Regigigas rumble — PLAN PHASE ONLY (no on-chain writes).
+   *
+   * Given the old and new env var names for signing secrets, validate
+   * that a re-encrypt-for-new-owner ceremony can proceed for the given
+   * dWallet. Resolves both keys, derives both addresses + encryption
+   * keys, and returns a plan that the execute phase (layered in later
+   * commits) will consume.
+   *
+   * Parameterized so any agent — not just Ultron — can rumble by
+   * passing its own env names and DWalletCap spec.
+   */
+  private async _planReEncryptForNewOwner(params: {
+    fromEnvName: string;
+    toEnvName: string;
+    curve: 'ed25519' | 'secp256k1';
+    dwalletId: string;
+    encryptedShareId: string;
+  }): Promise<{
+    ok: boolean;
+    error?: string;
+    fromAddress?: string;
+    toAddress?: string;
+    fromPubKeyHex?: string;
+    toPubKeyHex?: string;
+    dwalletId: string;
+    encryptedShareId: string;
+    curve: 'ed25519' | 'secp256k1';
+  }> {
+    const env = this.env as Record<string, string | undefined>;
+    const fromSecret = env[params.fromEnvName];
+    const toSecret = env[params.toEnvName];
+    if (!fromSecret) {
+      return { ok: false, error: `missing env: ${params.fromEnvName}`, dwalletId: params.dwalletId, encryptedShareId: params.encryptedShareId, curve: params.curve };
+    }
+    if (!toSecret) {
+      return { ok: false, error: `missing env: ${params.toEnvName}`, dwalletId: params.dwalletId, encryptedShareId: params.encryptedShareId, curve: params.curve };
+    }
+    let fromAddress: string;
+    let toAddress: string;
+    try {
+      fromAddress = Ed25519Keypair.fromSecretKey(fromSecret).getPublicKey().toSuiAddress();
+      toAddress = Ed25519Keypair.fromSecretKey(toSecret).getPublicKey().toSuiAddress();
+    } catch (err) {
+      return { ok: false, error: `key parse: ${err instanceof Error ? err.message : String(err)}`, dwalletId: params.dwalletId, encryptedShareId: params.encryptedShareId, curve: params.curve };
+    }
+    if (fromAddress === toAddress) {
+      return { ok: false, error: 'from and to derive to the same address — nothing to re-encrypt', fromAddress, toAddress, dwalletId: params.dwalletId, encryptedShareId: params.encryptedShareId, curve: params.curve };
+    }
+    // Derive both sides' UserShareEncryptionKeys so we know the WASM
+    // path is healthy before the execute phase tries to decrypt. Failing
+    // early here is cheaper than a partial ceremony later.
+    ensureWasmReady();
+    const fromSeed = await deriveUltronSeed(fromSecret, fromAddress, params.curve);
+    const toSeed = await deriveUltronSeed(toSecret, toAddress, params.curve);
+    const curveEnum = params.curve === 'ed25519' ? Curve.ED25519 : Curve.SECP256K1;
+    const fromKeys = await UserShareEncryptionKeys.fromRootSeedKey(fromSeed, curveEnum);
+    const toKeys = await UserShareEncryptionKeys.fromRootSeedKey(toSeed, curveEnum);
+    const fromPub = (fromKeys as unknown as { encryptionKeyBytes?: Uint8Array }).encryptionKeyBytes;
+    const toPub = (toKeys as unknown as { encryptionKeyBytes?: Uint8Array }).encryptionKeyBytes;
+    const toHex = (b?: Uint8Array) => b ? Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('') : '';
+    return {
+      ok: true,
+      fromAddress,
+      toAddress,
+      fromPubKeyHex: toHex(fromPub),
+      toPubKeyHex: toHex(toPub),
+      dwalletId: params.dwalletId,
+      encryptedShareId: params.encryptedShareId,
+      curve: params.curve,
+    };
   }
 
   /**

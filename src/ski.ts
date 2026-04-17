@@ -1742,6 +1742,292 @@ const _chainAt = async (identifier: string): Promise<string> => {
 (globalThis as unknown as { chainAt: typeof _chainAt }).chainAt = _chainAt;
 console.log('[ski] chainAt hook installed — await chainAt("eth@superteam") / chainAt("sol@ultron") / chainAt("sui@brando") to resolve any chain@name identifier via the SUIAMI roster.');
 
+// ── v6 hooks: privatize / publicize / guest / purgeGuest ──
+//
+// These call the v6 roster entries shipped at SUIAMI_PKG_LATEST.
+// privatize/publicize manage the PublicChains whitelist that
+// determines what the ENS / CCIP-read resolver exposes. guest binds
+// a time-bound subname address; purgeGuest revokes early; reap is a
+// permissionless storage rebate sweep.
+
+function parseTtl(ttl: string | number): number {
+  if (typeof ttl === 'number') return ttl;
+  const m = ttl.trim().match(/^(\d+)\s*(ms|s|m|h|d)?$/i);
+  if (!m) throw new Error(`bad TTL: ${ttl} (use "7d", "24h", "30m", "60s", or raw ms)`);
+  const n = Number(m[1]);
+  const unit = (m[2] || 'ms').toLowerCase();
+  return unit === 'd' ? n * 86_400_000
+    : unit === 'h' ? n * 3_600_000
+    : unit === 'm' ? n * 60_000
+    : unit === 's' ? n * 1_000
+    : n;
+}
+
+// Split "pay.brando" / "pay.brando.sui" / "pay.brando.waap.eth" into
+// { label, parentName, parentHash, parentNamespace }.
+async function parseGuestPath(pathLike: string): Promise<{
+  label: string;
+  parentName: string;
+  parentHash: number[];
+  parentNamespace: 'sui' | 'ens';
+}> {
+  const { keccak_256 } = await import('@noble/hashes/sha3.js');
+  const clean = pathLike.trim().toLowerCase();
+  const parts = clean.replace(/\.sui$/, '').split('.');
+  if (parts.length < 2) throw new Error(`guest path must be <label>.<parent> (got ${pathLike})`);
+  const label = parts[0];
+  const isEns = clean.endsWith('.eth');
+  if (isEns) {
+    const parentName = parts.slice(1).join('.') + (clean.endsWith('.eth') ? '' : '.eth');
+    const withSuffix = parentName.endsWith('.eth') ? parentName : `${parentName}.eth`;
+    const parentHash = Array.from(keccak_256(new TextEncoder().encode(withSuffix)));
+    return { label, parentName: withSuffix, parentHash, parentNamespace: 'ens' };
+  }
+  // Sui namespace: parent is just the second label (e.g. "brando").
+  const parentName = parts.slice(1).join('.');
+  const parentHash = Array.from(keccak_256(new TextEncoder().encode(parentName)));
+  return { label, parentName, parentHash, parentNamespace: 'sui' };
+}
+
+const _privatize = async (...chainKeys: string[]) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[privatize] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::set_public_chains`,
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.vector('string', chainKeys),
+        tx.object('0x6'),
+      ],
+    });
+    showToast(`\u26a1 Privatizing chains: ${chainKeys.join(', ') || '(all)'}\u2026`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[privatize] whitelist set — digest: ${digest}`);
+    showToast(`\u2713 Public chains updated`);
+    return { ok: true, digest, chainKeys };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[privatize] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`privatize failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+
+const _publicize = async (...chainKeys: string[]) => {
+  // Same Move call (set_public_chains) — semantically "these are the
+  // chains to expose." Separate verb so console UX matches intent.
+  return _privatize(...chainKeys);
+};
+
+const _publicizeAll = async () => {
+  // Clear the whitelist → revert to v5 default (expose everything in chains).
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[publicizeAll] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::clear_public_chains`,
+      arguments: [tx.object(ROSTER_OBJ)],
+    });
+    showToast(`\u26a1 Clearing public-chains whitelist\u2026`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[publicizeAll] whitelist cleared — digest: ${digest}`);
+    showToast(`\u2713 Back to v5 default (all chains public via ENS)`);
+    return { ok: true, digest };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[publicizeAll] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`publicizeAll failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+
+const _guest = async (
+  pathLike: string,
+  target: string,
+  ttl: string | number = '7d',
+  opts?: { chain?: string; delegate?: string },
+) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[guest] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    // chain@name target resolution
+    let resolvedTarget = target;
+    let inferredChain = opts?.chain;
+    if (/@/.test(target)) {
+      const { resolveChainAddr } = await import('./client/chain-at.js');
+      const r = await resolveChainAddr(target);
+      if (!r.ok || !r.address) {
+        console.error(`[guest] resolve ${target} failed: ${r.error}`);
+        return { error: 'resolve-failed', identifier: target, detail: r.error };
+      }
+      resolvedTarget = r.address;
+      inferredChain = inferredChain ?? r.chain;
+    }
+    const chain = inferredChain ?? (resolvedTarget.startsWith('0x') ? 'eth' : 'sol');
+
+    const { label, parentName, parentHash, parentNamespace } = await parseGuestPath(pathLike);
+    const ttlMs = parseTtl(ttl);
+
+    const labelBytes = Array.from(new TextEncoder().encode(label));
+    const delegateArg = opts?.delegate
+      ? tx_option_some_address(opts.delegate)
+      : { kind: 'none' as const };
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::bind_guest`,
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.vector('u8', parentHash),
+        tx.pure.vector('u8', labelBytes),
+        tx.pure.string(resolvedTarget),
+        tx.pure.string(chain),
+        tx.pure.u64(ttlMs),
+        delegateArg.kind === 'some'
+          ? tx.pure.option('address', delegateArg.value)
+          : tx.pure.option('address', null),
+        tx.object('0x6'),
+      ],
+    });
+
+    showToast(`\u26a1 Binding ${label}.${parentName} → ${resolvedTarget.slice(0, 10)}\u2026 (${ttl})`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[guest] bound ${label}.${parentName} (${parentNamespace} namespace) → ${resolvedTarget}`);
+    console.log(`  chain: ${chain}, ttl: ${ttlMs}ms (${ttl}), delegate: ${opts?.delegate || '(none)'}`);
+    console.log(`  digest: ${digest}`);
+    showToast(`\u2713 Guest bound for ${ttl}`);
+    return { ok: true, digest, label, parentName, target: resolvedTarget, chain, ttlMs };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[guest] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`guest failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+
+// Tiny typed discriminator for optional address args. Keeps the
+// bind_guest call readable without tripping on Option pure encoding.
+function tx_option_some_address(addr: string): { kind: 'some'; value: `0x${string}` } {
+  if (!/^0x[0-9a-fA-F]{1,64}$/.test(addr)) throw new Error(`bad delegate address: ${addr}`);
+  return { kind: 'some', value: addr as `0x${string}` };
+}
+
+const _purgeGuest = async (pathLike: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[purgeGuest] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const { label, parentName, parentHash } = await parseGuestPath(pathLike);
+    const labelBytes = Array.from(new TextEncoder().encode(label));
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::revoke_guest`,
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.vector('u8', parentHash),
+        tx.pure.vector('u8', labelBytes),
+      ],
+    });
+    showToast(`\u26a1 Purging ${label}.${parentName}\u2026`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[purgeGuest] revoked ${label}.${parentName} — digest: ${digest}`);
+    showToast(`\u2713 Guest purged`);
+    return { ok: true, digest, label, parentName };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[purgeGuest] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`purgeGuest failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+
+const _reapGuest = async (pathLike: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[reapGuest] not connected'); return { error: 'not-connected' };
+  }
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const { label, parentName, parentHash } = await parseGuestPath(pathLike);
+    const labelBytes = Array.from(new TextEncoder().encode(label));
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::reap_guest`,
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.vector('u8', parentHash),
+        tx.pure.vector('u8', labelBytes),
+        tx.object('0x6'),
+      ],
+    });
+    showToast(`\u26a1 Reaping expired ${label}.${parentName}\u2026`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[reapGuest] reaped ${label}.${parentName} — digest: ${digest}`);
+    showToast(`\u2713 Storage rebate claimed`);
+    return { ok: true, digest, label, parentName };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[reapGuest] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`reapGuest failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+
+(window as unknown as { privatize: typeof _privatize }).privatize = _privatize;
+(window as unknown as { publicize: typeof _publicize }).publicize = _publicize;
+(window as unknown as { publicizeAll: typeof _publicizeAll }).publicizeAll = _publicizeAll;
+(window as unknown as { guest: typeof _guest }).guest = _guest;
+(window as unknown as { purgeGuest: typeof _purgeGuest }).purgeGuest = _purgeGuest;
+(window as unknown as { reapGuest: typeof _reapGuest }).reapGuest = _reapGuest;
+(globalThis as unknown as { privatize: typeof _privatize }).privatize = _privatize;
+(globalThis as unknown as { publicize: typeof _publicize }).publicize = _publicize;
+(globalThis as unknown as { publicizeAll: typeof _publicizeAll }).publicizeAll = _publicizeAll;
+(globalThis as unknown as { guest: typeof _guest }).guest = _guest;
+(globalThis as unknown as { purgeGuest: typeof _purgeGuest }).purgeGuest = _purgeGuest;
+(globalThis as unknown as { reapGuest: typeof _reapGuest }).reapGuest = _reapGuest;
+console.log('[ski] v6 hooks installed — privatize("tron","btc") / publicize("eth","sol") / publicizeAll() / guest("pay.brando","eth@merchant","7d") / purgeGuest("pay.brando") / reapGuest("expired.brando")');
+
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
 // from window.rumbleUltron). Admin-gated via the same signed-message

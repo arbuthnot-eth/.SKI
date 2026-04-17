@@ -39,8 +39,12 @@
   <div class="row"><span class="label">Admin wallet</span><span class="val" id="admin">(not connected)</span></div>
   <div class="row" style="gap:0.5rem;">
     <button id="connect">Connect wallet</button>
-    <button id="preview" disabled>Preview plan</button>
-    <button id="execute" class="danger" disabled>Whelm Ultron</button>
+    <button id="preview" style="display:none;">Preview plan</button>
+    <button id="execute" class="danger" style="display:none;">Whelm Ultron</button>
+  </div>
+  <div class="row" id="authRow" style="display:none;">
+    <span class="label">Authorization</span>
+    <span class="val" id="authMsg"></span>
   </div>
 </div>
 
@@ -61,6 +65,13 @@
 
 <script type="module">
 const NEW_ULTRON = '0x9872c1f5edf4daffbdcf5f577567ce997a00db9d63a8a8fac4feb8b135b285f7';
+// Mirrors src/server/index.ts ADMIN_ADDRESSES. UI gate only — the
+// server enforces the real check via signed-message + allowlist.
+const ADMIN_ADDRESSES = new Set([
+  '0x3db42086e9271787046859d60af7933fa7ea70148df37c9fd693195533eabb57',
+  '0x2b3524ebf158c4b01f482c6d687d8ba0d922deaec04c3b495926d73cb0a7ee28',
+  '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057',
+]);
 document.getElementById('target').textContent = NEW_ULTRON;
 
 let adminAddress = null;
@@ -80,8 +91,17 @@ document.getElementById('connect').onclick = async () => {
     adminAddress = res?.accounts?.[0]?.address || res?.publicKey?.toSuiAddress?.() || res?.address;
     if (!adminAddress) throw new Error('No address from wallet');
     document.getElementById('admin').textContent = adminAddress;
-    document.getElementById('preview').disabled = false;
-    document.getElementById('execute').disabled = false;
+    const isAdmin = ADMIN_ADDRESSES.has(adminAddress.toLowerCase());
+    const authRow = document.getElementById('authRow');
+    const authMsg = document.getElementById('authMsg');
+    if (isAdmin) {
+      document.getElementById('preview').style.display = '';
+      document.getElementById('execute').style.display = '';
+      authRow.style.display = 'none';
+    } else {
+      authRow.style.display = '';
+      authMsg.innerHTML = '<span class="pill err">not on admin allowlist</span>';
+    }
   } catch (err) {
     alert(`Connect failed: ${err?.message || err}`);
   }

@@ -5400,6 +5400,25 @@ a.ski-idle-bubble-name:hover {
   font-size: 0.72rem;
 }
 
+.wk-settings-button {
+  font-size: 0.78rem;
+  background: rgba(90, 30, 30, 0.55);
+  color: #ffb3b3;
+  border: 1px solid rgba(200, 80, 80, 0.4);
+  border-radius: 5px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.wk-settings-button:hover {
+  background: rgba(138, 45, 45, 0.8);
+  color: #fff;
+}
+.wk-settings-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .wk-popout-name-badge {
   display: flex;
   align-items: center;

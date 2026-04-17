@@ -1224,6 +1224,23 @@ const _ensIssue = async (label: string) => {
 
     const ensHash = Array.from(keccak_256(new TextEncoder().encode(ensName)));
 
+    // Pre-flight: reject if ens_hash is already bound (v5 on-chain
+    // check would abort anyway with EEnsNameTaken; checking client-
+    // side gives a clearer error before the user spends gas).
+    const gqlQ = `{ object(address:"${ROSTER_OBJ}"){ dynamicField(name:{ type:"0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa::roster::EnsHashKey", bcs:"${btoa(String.fromCharCode(32, ...ensHash))}" }){ value{ ...on MoveValue{ json } } } } }`;
+    const pre = await fetch('https://graphql.mainnet.sui.io/graphql', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: gqlQ }),
+    }).then(r => r.json()).catch(() => null) as any;
+    const taken = pre?.data?.object?.dynamicField?.value?.json;
+    if (taken) {
+      const owner = taken.sui_address ?? 'unknown';
+      const err = `${ensName} already bound to ${owner} — owner must revoke_ens_identity first`;
+      console.error('[ensIssue]', err);
+      showToast(err);
+      return { error: 'taken', owner };
+    }
+
     const tx = new Transaction();
     tx.setSender(normalizeSuiAddress(ws.address));
     tx.moveCall({

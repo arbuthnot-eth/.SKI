@@ -65,7 +65,7 @@ export const SUIAMI_PKG = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8a
 // added in upgrades (`_v2`, etc.) MUST be called at the latest
 // published-at or Seal returns `FunctionNotFound`. Bump this on every
 // SUIAMI upgrade (Published.toml → published-at).
-export const SUIAMI_PKG_LATEST = '0xd45d05c1eab370680b91331084d8d4f5a3606378497f295655e591723d381c81';
+export const SUIAMI_PKG_LATEST = '0xea0b948522bf759ccde5fb10b74bae99b8929495926a53678c9d4cbd0fd4f202';
 export const ROSTER_OBJ = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';
 export const ROSTER_INITIAL_SHARED_VERSION = 839068132;
 
@@ -296,11 +296,13 @@ export async function decryptSquidsForName(opts: {
   const { bytes: sealIdBytes } = deriveSuiamiSealId(opts.name);
 
   const tx = new Transaction();
-  // v2 policy: `id` first per Seal convention; name-hash-keyed identity
-  // check (v1 compared id prefix to sender_address, which never matched
-  // the name-hash prefix the encrypt path uses).
+  // v3 policy: `id` first per Seal convention. Tries name_hash
+  // namespace first, falls through to typed EnsHashKey namespace so
+  // either Sui-name or ENS-name-keyed encrypts decrypt safely. v2 is
+  // still supported on-chain (compatible upgrade) but v3 is strictly
+  // better: v2 alone won't find ENS-bound blobs written after v5.
   tx.moveCall({
-    target: `${SUIAMI_PKG_LATEST}::seal_roster::seal_approve_roster_reader_v2`,
+    target: `${SUIAMI_PKG_LATEST}::seal_roster::seal_approve_roster_reader_v3`,
     arguments: [
       tx.pure.vector('u8', Array.from(sealIdBytes)),
       tx.sharedObjectRef({

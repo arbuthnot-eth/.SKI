@@ -88,30 +88,53 @@ type RosterRecord = {
   dwallet_caps: string[];
 };
 
+// SUIAMI original-id; dynamic-field type strings reference the original
+// package per Sui's type resolution (upgrades preserve original id for
+// type namespacing).
+const SUIAMI_ORIGINAL_ID = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+
+async function queryDf(typeStr: string, bcs: Uint8Array): Promise<any> {
+  const b64 = btoa(String.fromCharCode(...bcs));
+  const q = `{ object(address:"${SUIAMI_ROSTER_OBJ}"){ dynamicField(name:{type:"${typeStr}",bcs:"${b64}"}){ value{ ...on MoveValue{ json } } } } }`;
+  const r = await fetch(SUI_GQL_URL, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: q }),
+  });
+  const j = await r.json() as any;
+  return j?.data?.object?.dynamicField?.value?.json ?? null;
+}
+
+function decodeRecord(rec: any): RosterRecord | null {
+  if (!rec) return null;
+  const chains: Record<string, string> = {};
+  for (const { key, value } of rec.chains?.contents ?? []) chains[key] = value;
+  return {
+    name: rec.name ?? '',
+    sui_address: rec.sui_address ?? '',
+    chains,
+    dwallet_caps: rec.dwallet_caps ?? [],
+  };
+}
+
 async function lookupRoster(bareLabel: string): Promise<RosterRecord | null> {
   const ensName = `${bareLabel}.${WAAP_ETH_LABEL}.${WAAP_ETH_TLD}`;
   const ensHash = keccak_256(new TextEncoder().encode(ensName));
   const nameHash = keccak_256(new TextEncoder().encode(bareLabel));
-  for (const hash of [ensHash, nameHash]) {
-    const b64 = btoa(String.fromCharCode(...hash));
-    const q = `{ object(address:"${SUIAMI_ROSTER_OBJ}"){ dynamicField(name:{type:"vector<u8>",bcs:"${b64}"}){ value{ ...on MoveValue{ json } } } } }`;
-    const r = await fetch(SUI_GQL_URL, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: q }),
-    });
-    const j = await r.json() as any;
-    const rec = j?.data?.object?.dynamicField?.value?.json;
-    if (!rec) continue;
-    const chains: Record<string, string> = {};
-    for (const { key, value } of rec.chains?.contents ?? []) chains[key] = value;
-    return {
-      name: rec.name ?? '',
-      sui_address: rec.sui_address ?? '',
-      chains,
-      dwallet_caps: rec.dwallet_caps ?? [],
-    };
-  }
-  return null;
+
+  // ENS namespace first — typed EnsHashKey wrapper, disjoint from
+  // Sui-name namespace, overwrite-protected. BCS: struct with single
+  // `hash: vector<u8>` field → `ULEB128(len) || hash_bytes`. For a
+  // 32-byte hash: 0x20 prefix + 32 bytes = 33 bytes total.
+  const ensBcs = new Uint8Array(33);
+  ensBcs[0] = 32;
+  ensBcs.set(ensHash, 1);
+  const ensType = `${SUIAMI_ORIGINAL_ID}::roster::EnsHashKey`;
+  const fromEns = decodeRecord(await queryDf(ensType, ensBcs));
+  if (fromEns) return fromEns;
+
+  // Fallback: raw vector<u8> name_hash (Sui-name side, gated by SuiNS
+  // NFT ownership via set_identity — can't be hijacked).
+  return decodeRecord(await queryDf('vector<u8>', nameHash));
 }
 
 // ─── IKA dWallet pubkey → Solana base58 address ─────────────────────

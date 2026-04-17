@@ -25,6 +25,8 @@ use sui::vec_map::{Self, VecMap};
 
 const ENotOwner: u64 = 0;
 const ENoChains: u64 = 1;
+const EEnsNameTaken: u64 = 2;
+const EEnsNotBound: u64 = 3;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
@@ -192,14 +194,18 @@ entry fun set_ens_identity(
     // assert the recovered ETH address matches `updated.chains["eth"]`.
     let _ = eth_owner_sig;
 
+    // First-come immutable: refuse to overwrite an existing ENS
+    // binding. Owner must call `revoke_ens_identity` to release, then
+    // re-bind. Prevents a griefer from hijacking a bound label by
+    // re-issuing its hash.
+    let key = EnsHashKey { hash: ens_hash };
+    assert!(!dynamic_field::exists_<EnsHashKey>(&roster.id, key), EEnsNameTaken);
+
     updated.updated_ms = clock.timestamp_ms();
     let chain_count = updated.chains.length();
     let dwallet_count = updated.dwallet_caps.length();
 
-    if (dynamic_field::exists_<vector<u8>>(&roster.id, ens_hash)) {
-        dynamic_field::remove<vector<u8>, IdentityRecord>(&mut roster.id, ens_hash);
-    };
-    dynamic_field::add(&mut roster.id, ens_hash, updated);
+    dynamic_field::add(&mut roster.id, key, updated);
 
     event::emit(IdentitySet {
         name: ens_name,
@@ -207,6 +213,21 @@ entry fun set_ens_identity(
         chain_count,
         dwallet_count,
     });
+}
+
+/// Release an ENS binding so it can be re-issued (by the same caller
+/// or a different one). Only the bound record owner can revoke —
+/// lookup record under the key and assert `sui_address == sender`.
+entry fun revoke_ens_identity(
+    roster: &mut Roster,
+    ens_hash: vector<u8>,
+    _ctx: &TxContext,
+) {
+    let sender = _ctx.sender();
+    let key = EnsHashKey { hash: ens_hash };
+    assert!(dynamic_field::exists_<EnsHashKey>(&roster.id, key), EEnsNotBound);
+    let record: IdentityRecord = dynamic_field::remove<EnsHashKey, IdentityRecord>(&mut roster.id, key);
+    assert!(record.sui_address == sender, ENotOwner);
 }
 
 // ─── Read (permissionless) ──────────────────────────────────────────
@@ -236,18 +257,21 @@ public fun has_name(roster: &Roster, name_hash: vector<u8>): bool {
     dynamic_field::exists_<vector<u8>>(&roster.id, name_hash)
 }
 
-/// Check if an ENS name is registered. Alias of `has_name` — both
-/// Sui-native names and ENS names share the same `vector<u8>` dynamic
-/// field namespace (keccak256 collision is astronomical, and a single
-/// namespace keeps the Seal v2 policy working for both identity types
-/// with zero policy changes — see Beldum / project_ens_waap_extension).
+/// Typed dynamic-field key for ENS-hashed entries. Isolates the ENS
+/// namespace from the raw `vector<u8>` name_hash namespace so a
+/// malicious caller can't overwrite a Sui-side roster entry by calling
+/// `set_ens_identity` with a colliding hash. Each `EnsHashKey{h}` lives
+/// in a distinct dynamic-field map from `h: vector<u8>`.
+public struct EnsHashKey has copy, drop, store { hash: vector<u8> }
+
+/// Check if an ENS name is registered.
 public fun has_ens_name(roster: &Roster, ens_hash: vector<u8>): bool {
-    dynamic_field::exists_<vector<u8>>(&roster.id, ens_hash)
+    dynamic_field::exists_<EnsHashKey>(&roster.id, EnsHashKey { hash: ens_hash })
 }
 
-/// Lookup by ENS hash. Alias of `lookup_by_name` — see `has_ens_name`.
+/// Lookup by ENS hash.
 public fun lookup_by_ens(roster: &Roster, ens_hash: vector<u8>): &IdentityRecord {
-    dynamic_field::borrow(&roster.id, ens_hash)
+    dynamic_field::borrow(&roster.id, EnsHashKey { hash: ens_hash })
 }
 
 /// Check if an address is registered.

@@ -2908,7 +2908,16 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
     }
 
     const SUI_T = '0x2::sui::SUI';
-    const GAS_DUST_MIST = 50_000_000n;
+    // Keep enough SUI on legacy to cover the sweep PTB's own gas budget
+    // plus headroom. 0.05 SUI was too tight — any PTB touching 6 coin
+    // types reserves > 0.05 SUI for gas, and `splitCoins(tx.gas, [total -
+    // 0.05])` underflows at resolution time ("Insufficient coin balance
+    // for operation"). 0.2 SUI leaves comfortable room for a wide PTB.
+    const GAS_DUST_MIST = 200_000_000n;
+    // Don't bother transferring SUI if what's left above gas dust is
+    // dust itself — emits a split/transfer pair that can only trip the
+    // resolver without moving meaningful value.
+    const SUI_MIN_TRANSFER_MIST = 50_000_000n;
     const COIN_TYPES = [
       { type: '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA', label: 'IKA' },
       { type: '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP', label: 'DEEP' },
@@ -2951,6 +2960,9 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
       if (total === 0n) continue;
       const keep = c2.type === SUI_T ? GAS_DUST_MIST : 0n;
       const transfer = total > keep ? total - keep : 0n;
+      // Skip SUI entirely if the amount above gas-dust isn't worth moving.
+      // Prevents a split-from-gas that could underflow at resolution.
+      if (c2.type === SUI_T && transfer < SUI_MIN_TRANSFER_MIST) continue;
       coinsByType.set(c2.type, coins);
       plans.push({ type: c2.type, label: c2.label, count: coins.length, total, transfer });
     }
@@ -3002,14 +3014,30 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
 
     const { signature } = await legacyKp.signTransaction(txBytes);
     const { toBase64: _toBase64 } = await import('@mysten/sui/utils');
-    const exec = await gql.core.executeTransaction({
-      transaction: _toBase64(txBytes),
-      signatures: [signature],
-    } as never) as unknown as { $kind?: string; Transaction?: { digest?: string }; FailedTransaction?: { digest?: string; error?: string } };
-    const digest = exec.$kind === 'Transaction'
-      ? exec.Transaction?.digest ?? ''
-      : exec.FailedTransaction?.digest ?? '';
-    const execError = exec.$kind === 'FailedTransaction' ? exec.FailedTransaction?.error : undefined;
+    // Submit via JSON-RPC (PublicNode). gql.core.executeTransaction has
+    // returned BCS schema mismatches on wide sweep PTBs — JSON-RPC is
+    // schema-stable and handles the same payload cleanly.
+    const execResp = await fetch(RPC, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'sui_executeTransactionBlock',
+        params: [
+          _toBase64(txBytes),
+          [signature],
+          { showEffects: true },
+          'WaitForLocalExecution',
+        ],
+      }),
+    });
+    const execJson = await execResp.json() as {
+      result?: { digest?: string; effects?: { status?: { status?: string; error?: string } } };
+      error?: { message?: string };
+    };
+    const digest = execJson?.result?.digest ?? '';
+    const status = execJson?.result?.effects?.status?.status;
+    const execError = execJson?.error?.message
+      ?? (status && status !== 'success' ? execJson?.result?.effects?.status?.error : undefined);
     return c.json({ ok: !execError, digest, execError, oldUltron, newUltron, plans: serialized });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

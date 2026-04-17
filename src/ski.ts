@@ -1199,12 +1199,10 @@ console.log('[ski] fetchSquidsForName hook installed — call fetchSquidsForName
 // resolvers (CCIP-read gateway, coming in Iron Defense) can serve
 // the same chain addresses for either handle.
 //
-// v1 trust model: the caller already holds the SUIAMI record, so the
-// Sui-wallet signature IS the ownership proof for the bind call.
-// Metal Claw will add an ecdsa_k1_ecrecover check over a canonical
-// EIP-191 bind message signed by the user's IKA-derived ETH key —
-// harmless to land the write path first since only the record owner
-// can invoke.
+// Trust model (Metal Claw): caller proves ownership of the ETH address
+// stored in their SUIAMI record's `chains["eth"]` slot by signing a
+// canonical EIP-191 bind message. Move-side ecdsa_k1_ecrecover asserts
+// recovered address matches chains["eth"]. ±10min ts skew window.
 const _ensIssue = async (label: string) => {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
@@ -1218,20 +1216,35 @@ const _ensIssue = async (label: string) => {
   try {
     const { Transaction } = await import('@mysten/sui/transactions');
     const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const { hexToBytes } = await import('viem');
     const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { readByAddress } = await import('suiami/roster');
     const { signAndExecuteTransaction } = await import('./wallet.js');
     const { normalizeSuiAddress } = await import('@mysten/sui/utils');
 
     const ensHash = Array.from(keccak_256(new TextEncoder().encode(ensName)));
 
-    // Pre-flight: reject if ens_hash is already bound (v5 on-chain
-    // check would abort anyway with EEnsNameTaken; checking client-
-    // side gives a clearer error before the user spends gas).
+    // Pre-flight 1: load caller's SUIAMI record → must exist + must have eth squid.
+    const record = await readByAddress(normalizeSuiAddress(ws.address));
+    if (!record) {
+      const err = `No SUIAMI record for ${ws.address} — call setIdentity first`;
+      console.error('[ensIssue]', err); showToast(err);
+      return { error: 'no-record' };
+    }
+    const ethSquid = (record.chains?.eth || '').toLowerCase();
+    if (!ethSquid || !/^0x[0-9a-f]{40}$/.test(ethSquid)) {
+      const err = `Your SUIAMI record has no eth squid — rumble secp256k1 first`;
+      console.error('[ensIssue]', err); showToast(err);
+      return { error: 'no-eth-squid' };
+    }
+
+    // Pre-flight 2: reject if ens_hash is already bound (clearer error
+    // than spending gas on an EEnsNameTaken abort).
     const gqlQ = `{ object(address:"${ROSTER_OBJ}"){ dynamicField(name:{ type:"0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa::roster::EnsHashKey", bcs:"${btoa(String.fromCharCode(32, ...ensHash))}" }){ value{ ...on MoveValue{ json } } } } }`;
     const pre = await fetch('https://graphql.mainnet.sui.io/graphql', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: gqlQ }),
-    }).then(r => r.json()).catch(() => null) as any;
+    }).then(r => r.json()).catch(() => null) as { data?: { object?: { dynamicField?: { value?: { json?: { sui_address?: string } } } } } } | null;
     const taken = pre?.data?.object?.dynamicField?.value?.json;
     if (taken) {
       const owner = taken.sui_address ?? 'unknown';
@@ -1241,21 +1254,69 @@ const _ensIssue = async (label: string) => {
       return { error: 'taken', owner };
     }
 
+    // Pre-flight 3: Phantom/MetaMask must be present AND connected to
+    // the address in chains["eth"]. No stub: if the eth signer isn't
+    // available we fail loudly; callers must connect Phantom under
+    // their eth squid or rumble a dWallet-derived eth squid first.
+    const eth = (window as unknown as { ethereum?: {
+      request: (a: { method: string; params?: unknown[] }) => Promise<unknown>;
+    } }).ethereum;
+    if (!eth) {
+      const err = `No window.ethereum — install/unlock Phantom or MetaMask holding ${ethSquid}`;
+      console.error('[ensIssue]', err); showToast(err);
+      return { error: 'no-eth-provider' };
+    }
+    const accounts = await eth.request({ method: 'eth_requestAccounts' }) as string[];
+    const connected = (accounts[0] || '').toLowerCase();
+    if (connected !== ethSquid) {
+      const err = `Eth provider connected as ${connected}, need ${ethSquid} (your SUIAMI record's eth squid)`;
+      console.error('[ensIssue]', err); showToast(err);
+      return { error: 'wrong-eth-account', connected, expected: ethSquid };
+    }
+
+    // Build canonical inner message — MUST match roster.move
+    // `build_bind_inner_message` byte-for-byte.
+    // Format: `SUIAMI bind <ens_name> owner 0x<sui_sender_64hex> at <ts_ms>`
+    const tsMs = Date.now();
+    const suiSender = normalizeSuiAddress(ws.address); // 0x + 64 lowercase hex
+    const inner = `SUIAMI bind ${ensName} owner ${suiSender} at ${tsMs}`;
+
+    // EIP-191 personal_sign request. Phantom/MetaMask prepend the
+    // standard "\x19Ethereum Signed Message:\n<len>" wrapper and sign
+    // the keccak256 digest — matches Move's `eip191_wrap`.
+    showToast(`\u26a1 Sign EIP-191 bind message in your eth wallet\u2026`);
+    const msgHex = '0x' + Array.from(new TextEncoder().encode(inner))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHex = await eth.request({
+      method: 'personal_sign',
+      params: [msgHex, ethSquid],
+    }) as string;
+
+    // viem-free v-byte normalization: sui::ecdsa_k1 wants v ∈ {0,1}
+    const sigBytes = hexToBytes(sigHex as `0x${string}`);
+    if (sigBytes.length !== 65) {
+      const err = `Expected 65-byte sig, got ${sigBytes.length}`;
+      console.error('[ensIssue]', err); showToast(err);
+      return { error: 'bad-sig-length' };
+    }
+    const v = sigBytes[64];
+    sigBytes[64] = v >= 27 ? v - 27 : v;
+
     const tx = new Transaction();
-    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.setSender(suiSender);
     tx.moveCall({
-      target: `${SUIAMI_PKG_LATEST}::roster::set_ens_identity`,
+      target: `${SUIAMI_PKG_LATEST}::roster::set_ens_identity_verified`,
       arguments: [
         tx.object(ROSTER_OBJ),
         tx.pure.string(ensName),
         tx.pure.vector('u8', ensHash),
-        // Placeholder ETH owner sig (v1 doesn't verify; Metal Claw will).
-        tx.pure.vector('u8', []),
+        tx.pure.vector('u8', Array.from(sigBytes)),
+        tx.pure.u64(tsMs),
         tx.object('0x6'), // Clock
       ],
     });
 
-    showToast(`\u26a1 Binding ${ensName} to SUIAMI\u2026`);
+    showToast(`\u26a1 Binding ${ensName} to SUIAMI (verified)\u2026`);
     const { digest } = await signAndExecuteTransaction(tx);
     console.log(`[ensIssue] bound ${ensName} — digest: ${digest}`);
     showToast(`\u2713 ${ensName} bound to SUIAMI`);

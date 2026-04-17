@@ -86,9 +86,32 @@ Per plan. Mainnet-beta deploy (Sky Attack) needs ~5 SOL on `keys/prism_vault-key
 
 **Model to copy:** Drift's klend integration for deposit/withdraw CPI semantics. Jupiter routes through Kamino CLMM for swap-venue precedent.
 
+## LATE-BREAKING: Eitherway $20K side-track (2026-04-16)
+
+Superteam Earn @SuperteamEarn tweet announced the **Eitherway Track** at Frontier:
+- **$20,000 USDC prize pool**
+- Must build with **Eitherway** (a Solana prompt-to-dApp builder tool, handle `@EitherwayAI`)
+- Must deeply integrate ONE of: **Solflare, Kamino, DFlow, QuickNode**
+- Requirement: "launch something that survives beyond the hackathon"
+
+This is the track the user was pointing at when asking "what about using eitherway for kamino integration?" — the name caught me by surprise initially.
+
+**Why this matters for us:** the iUSD→klend collateral→borrow USDC angle we researched (differentiation 5/5) lands directly in eligibility for $20K. Our Quasar `prism_vault` + SUIAMI already covers "survives beyond the hackathon" because sui.ski is live infra.
+
+**An agent is in-flight at session-pause** (agentId `ae44f26de4b0156fc`) investigating:
+- What Eitherway is + URL + how strict "built with Eitherway" requirement is
+- Track deadline (may be before May 11)
+- Kamino templates inside Eitherway
+- Whether a non-Eitherway backend (sui.ski) paired with an Eitherway-generated dashboard qualifies
+
+**Check that agent's output first next session.** Its result will inform whether we:
+- Use Eitherway ONLY for the Kamino dashboard UI, keep our Quasar program + Workers backend as-is
+- Rebuild a slice of sui.ski in Eitherway for submission purposes
+- Skip the track if the "built with Eitherway" rule is too strict
+
 ## Don't forget
 
-- **Superteam Earn — April 15 deadline** for some side-tracks. Open `https://superteam.fun/earn/hackathon/frontier/` first thing, screenshot grid, spreadsheet. Top-3: Arcium (DIRECT fit), Metaplex (adjacent cNFT receipt), Squads (adjacent multisig wrap). See full list in prior session's synthesis.
+- **Superteam Earn — April 15 deadline** for some side-tracks. Open `https://superteam.fun/earn/hackathon/frontier/` first thing, screenshot grid, spreadsheet. Top-3: Arcium (DIRECT fit), Metaplex (adjacent cNFT receipt), Squads (adjacent multisig wrap). **Plus the Eitherway track above.** See full list in prior session's synthesis.
 - **Cloudflare for Startups** — 1hr app, up to $250K credits. https://www.cloudflare.com/forstartups/ — we qualify today.
 - **Tweet at @sendaifun + @yashhsm + @colosseum** with 60s Prism demo when it exists. Skip the sendaifun PRs for now (LIGHT path verdict).
 - **Zero to Agent Buenos Aires** — Vercel/v0 event, NOT Solana. Skip travel.

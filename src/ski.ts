@@ -1191,6 +1191,69 @@ const _fetchSquidsForName = async (nameOrDomain: string) => {
 (globalThis as unknown as { fetchSquidsForName: typeof _fetchSquidsForName }).fetchSquidsForName = _fetchSquidsForName;
 console.log('[ski] fetchSquidsForName hook installed — call fetchSquidsForName("<name>") to decrypt cross-chain squids for any SUIAMI-registered name (requires own SUIAMI entry)');
 
+// ── Beldum Take Down — ENS subname bind (#167) ──
+//
+// Bind `<label>.waap.eth` to the connected wallet's existing SUIAMI
+// record. Writes an `ens_hash`-keyed dynamic field pointing at the
+// same IdentityRecord the Sui side already knows about, so ENS-side
+// resolvers (CCIP-read gateway, coming in Iron Defense) can serve
+// the same chain addresses for either handle.
+//
+// v1 trust model: the caller already holds the SUIAMI record, so the
+// Sui-wallet signature IS the ownership proof for the bind call.
+// Metal Claw will add an ecdsa_k1_ecrecover check over a canonical
+// EIP-191 bind message signed by the user's IKA-derived ETH key —
+// harmless to land the write path first since only the record owner
+// can invoke.
+const _ensIssue = async (label: string) => {
+  const ws = getState();
+  if (ws.status !== 'connected' || !ws.address) {
+    console.error('[ensIssue] not connected'); return { error: 'not connected' };
+  }
+  const bare = (label || '').replace(/\.waap\.eth$/i, '').toLowerCase().trim();
+  if (!bare || /[^a-z0-9-]/.test(bare)) {
+    console.error('[ensIssue] invalid label; use a-z, 0-9, hyphens only'); return { error: 'bad-label' };
+  }
+  const ensName = `${bare}.waap.eth`;
+  try {
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { keccak_256 } = await import('@noble/hashes/sha3.js');
+    const { SUIAMI_PKG_LATEST, ROSTER_OBJ } = await import('./client/suiami-seal.js');
+    const { signAndExecuteTransaction } = await import('./wallet.js');
+    const { normalizeSuiAddress } = await import('@mysten/sui/utils');
+
+    const ensHash = Array.from(keccak_256(new TextEncoder().encode(ensName)));
+
+    const tx = new Transaction();
+    tx.setSender(normalizeSuiAddress(ws.address));
+    tx.moveCall({
+      target: `${SUIAMI_PKG_LATEST}::roster::set_ens_identity`,
+      arguments: [
+        tx.object(ROSTER_OBJ),
+        tx.pure.string(ensName),
+        tx.pure.vector('u8', ensHash),
+        // Placeholder ETH owner sig (v1 doesn't verify; Metal Claw will).
+        tx.pure.vector('u8', []),
+        tx.object('0x6'), // Clock
+      ],
+    });
+
+    showToast(`\u26a1 Binding ${ensName} to SUIAMI\u2026`);
+    const { digest } = await signAndExecuteTransaction(tx);
+    console.log(`[ensIssue] bound ${ensName} — digest: ${digest}`);
+    showToast(`\u2713 ${ensName} bound to SUIAMI`);
+    return { ok: true, ensName, digest };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[ensIssue] failed:', err);
+    if (!msg.toLowerCase().includes('reject')) showToast(`ENS bind failed: ${msg.slice(0, 100)}`);
+    return { error: msg };
+  }
+};
+(window as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
+(globalThis as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
+console.log('[ski] ensIssue hook installed — call ensIssue("alice") to bind alice.waap.eth to your SUIAMI record (Beldum #167)');
+
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
 // from window.rumbleUltron). Admin-gated via the same signed-message

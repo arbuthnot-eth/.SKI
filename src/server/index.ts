@@ -2907,6 +2907,148 @@ app.post('/api/cache/rumble', async (c) => {
   }
 });
 
+// ── Whelm Ultron (fungible phase) — relocate Ultron's coins into new dWallet ─
+// First half of the Whelm Ultron ceremony. Admin-gated (same ADMIN_ADDRESSES
+// allowlist as rumble-ultron-seed). Signs with the legacy Ultron key still
+// in env. Transfers IKA / DEEP / NS / USDC / iUSD and all-but-0.05-SUI from
+// old Ultron → new Ultron. Leaves DWalletCaps, BalanceManager, and iusd::
+// RedeemRequest for the second half (re-encrypt ceremony).
+app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
+  try {
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
+    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'Legacy SHADE_KEEPER_PRIVATE_KEY not present — nothing to sweep from' }, 400);
+
+    const body = await c.req.json() as {
+      adminAddress: string;
+      signature: string;
+      message: string;
+      targetAddress: string;
+      dryRun?: boolean;
+    };
+    if (!body.adminAddress || !body.signature || !body.message || !body.targetAddress) {
+      return c.json({ error: 'Missing adminAddress, signature, message, or targetAddress' }, 400);
+    }
+    const normalizedAdmin = body.adminAddress.toLowerCase();
+    if (!ADMIN_ADDRESSES.has(normalizedAdmin)) {
+      return c.json({ error: `${body.adminAddress} not in admin allowlist` }, 403);
+    }
+    if (!/^0x[0-9a-fA-F]{64}$/.test(body.targetAddress)) {
+      return c.json({ error: 'targetAddress must be 32-byte hex' }, 400);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const expected = `whelm-ultron-fungibles:${body.targetAddress.toLowerCase()}:${today}`;
+    if (body.message !== expected) {
+      return c.json({ error: `message must be exactly "${expected}"` }, 400);
+    }
+    try {
+      const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+      const messageBytes = new TextEncoder().encode(body.message);
+      await verifyPersonalMessageSignature(messageBytes, body.signature, { address: normalizedAdmin });
+    } catch (err) {
+      return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
+    }
+
+    // Build sweep using the LEGACY key explicitly — we want to sign with
+    // old Ultron, even though ultronKeypair() now prefers the new one.
+    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    const legacyKp = Ed25519Keypair.fromSecretKey(c.env.SHADE_KEEPER_PRIVATE_KEY);
+    const oldUltron = normalizeSuiAddress(legacyKp.getPublicKey().toSuiAddress());
+    const newUltron = body.targetAddress.toLowerCase();
+    if (oldUltron.toLowerCase() === newUltron) {
+      return c.json({ error: 'targetAddress equals legacy-derived Ultron address — nothing to sweep' }, 400);
+    }
+
+    const SUI_T = '0x2::sui::SUI';
+    const GAS_DUST_MIST = 50_000_000n;
+    const COIN_TYPES = [
+      { type: '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA', label: 'IKA' },
+      { type: '0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP', label: 'DEEP' },
+      { type: '0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS', label: 'NS' },
+      { type: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC', label: 'USDC' },
+      { type: '0x2c5653668edefe2a782bf755e02bda56149e7b65b56f6245fb75b718941d2ec9::iusd::IUSD', label: 'iUSD' },
+      { type: SUI_T, label: 'SUI' },
+    ];
+
+    const GQL = 'https://graphql.mainnet.sui.io/graphql';
+    async function listCoins(coinType: string): Promise<Array<{ objectId: string; version: string; digest: string; balance: bigint }>> {
+      const r = await fetch(GQL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: `query($a:SuiAddress!,$t:String!){address(address:$a){objects(filter:{type:$t},first:100){nodes{address version digest contents{json}}}}}`,
+          variables: { a: oldUltron, t: `0x2::coin::Coin<${coinType}>` },
+        }),
+      });
+      const j = await r.json() as { data?: { address?: { objects?: { nodes?: Array<{ address: string; version: string; digest: string; contents?: { json?: { balance?: string } } }> } } } };
+      return (j?.data?.address?.objects?.nodes ?? []).map((o) => ({
+        objectId: o.address,
+        version: String(o.version),
+        digest: o.digest,
+        balance: BigInt(o.contents?.json?.balance ?? '0'),
+      }));
+    }
+
+    interface Plan { type: string; label: string; count: number; total: bigint; transfer: bigint; }
+    const plans: Plan[] = [];
+    const coinsByType = new Map<string, Awaited<ReturnType<typeof listCoins>>>();
+    for (const c2 of COIN_TYPES) {
+      const coins = await listCoins(c2.type);
+      const total = coins.reduce((a, x) => a + x.balance, 0n);
+      if (total === 0n) continue;
+      const keep = c2.type === SUI_T ? GAS_DUST_MIST : 0n;
+      const transfer = total > keep ? total - keep : 0n;
+      coinsByType.set(c2.type, coins);
+      plans.push({ type: c2.type, label: c2.label, count: coins.length, total, transfer });
+    }
+
+    if (plans.length === 0) {
+      return c.json({ ok: true, dryRun: true, plans: [], message: 'nothing to sweep' });
+    }
+
+    const { Transaction } = await import('@mysten/sui/transactions');
+    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+    const gql = new SuiGraphQLClient({ url: GQL, network: 'mainnet' });
+
+    const tx = new Transaction();
+    tx.setSender(oldUltron);
+    for (const p of plans) {
+      const coins = coinsByType.get(p.type)!;
+      if (p.type === SUI_T) {
+        if (p.transfer <= 0n) continue;
+        const nonPrimary = coins.slice(1).map((x) => tx.object(x.objectId));
+        if (nonPrimary.length > 0) tx.mergeCoins(tx.gas, nonPrimary);
+        const [transferable] = tx.splitCoins(tx.gas, [tx.pure.u64(p.transfer.toString())]);
+        tx.transferObjects([transferable], tx.pure.address(newUltron));
+      } else {
+        const [primary, ...rest] = coins;
+        if (rest.length > 0) tx.mergeCoins(tx.object(primary.objectId), rest.map((x) => tx.object(x.objectId)));
+        tx.transferObjects([tx.object(primary.objectId)], tx.pure.address(newUltron));
+      }
+    }
+
+    const txBytes = await tx.build({ client: gql as never });
+    const serialized = plans.map((p) => ({ ...p, total: p.total.toString(), transfer: p.transfer.toString() }));
+
+    if (body.dryRun) {
+      return c.json({ ok: true, dryRun: true, oldUltron, newUltron, plans: serialized, txBytesLen: txBytes.length });
+    }
+
+    const { signature } = await legacyKp.signTransaction(txBytes);
+    const { toBase64: _toBase64 } = await import('@mysten/sui/utils');
+    const exec = await gql.core.executeTransaction({
+      transaction: _toBase64(txBytes),
+      signatures: [signature],
+    } as never) as unknown as { $kind?: string; Transaction?: { digest?: string }; FailedTransaction?: { digest?: string; error?: string } };
+    const digest = exec.$kind === 'Transaction'
+      ? exec.Transaction?.digest ?? ''
+      : exec.FailedTransaction?.digest ?? '';
+    const execError = exec.$kind === 'FailedTransaction' ? exec.FailedTransaction?.error : undefined;
+    return c.json({ ok: !execError, digest, execError, oldUltron, newUltron, plans: serialized });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // ── Create iUSD/USDC DeepBook pool ──────────────────────────────
 app.post('/api/cache/create-iusd-pool', async (c) => {
   try {

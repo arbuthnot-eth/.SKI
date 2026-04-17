@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Whelm Ultron</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#0a0a0a; color:#e8e8e8; margin:0; padding:2rem; max-width:820px; margin:0 auto; }
+  h1 { font-weight:700; font-size:1.5rem; margin-bottom:0.25rem; }
+  .sub { color:#888; font-size:0.9rem; margin-bottom:2rem; }
+  .card { background:#141414; border:1px solid #262626; border-radius:8px; padding:1.25rem; margin-bottom:1rem; }
+  .row { display:flex; gap:0.75rem; align-items:center; margin-bottom:0.75rem; }
+  .row:last-child { margin-bottom:0; }
+  .label { color:#888; font-size:0.8rem; width:120px; flex-shrink:0; }
+  .val { font-family: ui-monospace, monospace; font-size:0.85rem; color:#ddd; word-break:break-all; }
+  button { background:#1e3a5f; color:#fff; border:1px solid #2d5a8a; border-radius:6px; padding:0.55rem 1.1rem; font-size:0.9rem; cursor:pointer; font-weight:500; }
+  button:hover { background:#2d5a8a; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  button.danger { background:#5a1e1e; border-color:#8a2d2d; }
+  button.danger:hover { background:#8a2d2d; }
+  pre { background:#0a0a0a; border:1px solid #262626; border-radius:6px; padding:0.75rem; overflow-x:auto; font-size:0.8rem; color:#bbb; }
+  table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  th, td { text-align:left; padding:0.35rem 0.5rem; border-bottom:1px solid #262626; }
+  th { color:#888; font-weight:normal; }
+  td.num { font-family:ui-monospace, monospace; text-align:right; }
+  .pill { display:inline-block; padding:0.1rem 0.5rem; border-radius:10px; font-size:0.75rem; background:#262626; color:#aaa; }
+  .pill.ok { background:#1e4a1e; color:#7ae07a; }
+  .pill.err { background:#5a1e1e; color:#ff9999; }
+  a { color:#6aa8ff; }
+</style>
+</head>
+<body>
+<h1>Whelm Ultron</h1>
+<p class="sub">Relocate Ultron's coins into the new dWallet. Admin-gated — caller must sign with an allowlisted address.</p>
+
+<div class="card">
+  <div class="row"><span class="label">Target (new Ultron)</span><span class="val" id="target"></span></div>
+  <div class="row"><span class="label">Admin wallet</span><span class="val" id="admin">(not connected)</span></div>
+  <div class="row" style="gap:0.5rem;">
+    <button id="connect">Connect wallet</button>
+    <button id="preview" disabled>Preview plan</button>
+    <button id="execute" class="danger" disabled>Whelm Ultron</button>
+  </div>
+</div>
+
+<div id="planCard" class="card" style="display:none;">
+  <h2 style="font-size:1rem; margin:0 0 0.75rem 0;">Plan</h2>
+  <div class="row"><span class="label">From</span><span class="val" id="fromAddr"></span></div>
+  <div class="row"><span class="label">To</span><span class="val" id="toAddr"></span></div>
+  <table>
+    <thead><tr><th>Asset</th><th style="text-align:right;">Coins</th><th style="text-align:right;">Total</th><th style="text-align:right;">Transfer</th></tr></thead>
+    <tbody id="planRows"></tbody>
+  </table>
+</div>
+
+<div id="resultCard" class="card" style="display:none;">
+  <h2 style="font-size:1rem; margin:0 0 0.75rem 0;">Result</h2>
+  <pre id="resultBody"></pre>
+</div>
+
+<script type="module">
+const NEW_ULTRON = '0x9872c1f5edf4daffbdcf5f577567ce997a00db9d63a8a8fac4feb8b135b285f7';
+document.getElementById('target').textContent = NEW_ULTRON;
+
+let adminAddress = null;
+
+async function getWallet() {
+  if (window.phantom?.sui) return window.phantom.sui;
+  if (window.suiet) return window.suiet;
+  if (window.slushWallet) return window.slushWallet;
+  return null;
+}
+
+document.getElementById('connect').onclick = async () => {
+  const wallet = await getWallet();
+  if (!wallet) { alert('No compatible Sui wallet found (Phantom/Suiet/Slush).'); return; }
+  try {
+    const res = await wallet.connect({ onlyIfTrusted: false });
+    adminAddress = res?.accounts?.[0]?.address || res?.publicKey?.toSuiAddress?.() || res?.address;
+    if (!adminAddress) throw new Error('No address from wallet');
+    document.getElementById('admin').textContent = adminAddress;
+    document.getElementById('preview').disabled = false;
+    document.getElementById('execute').disabled = false;
+  } catch (err) {
+    alert(`Connect failed: ${err?.message || err}`);
+  }
+};
+
+async function callSweep(dryRun) {
+  if (!adminAddress) { alert('Connect first.'); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  const message = `whelm-ultron-fungibles:${NEW_ULTRON}:${today}`;
+  const wallet = await getWallet();
+  const bytes = new TextEncoder().encode(message);
+  const signed = await wallet.signPersonalMessage(bytes);
+  const signature = signed?.signature || signed;
+
+  const r = await fetch('/api/cache/whelm-ultron-fungibles', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      adminAddress,
+      signature,
+      message,
+      targetAddress: NEW_ULTRON,
+      dryRun,
+    }),
+  });
+  const j = await r.json();
+  renderResult(j, dryRun);
+}
+
+function renderResult(j, dryRun) {
+  if (j.plans?.length) {
+    document.getElementById('fromAddr').textContent = j.oldUltron || '';
+    document.getElementById('toAddr').textContent = j.newUltron || '';
+    const tbody = document.getElementById('planRows');
+    tbody.innerHTML = j.plans.map((p) => `
+      <tr>
+        <td>${p.label}</td>
+        <td class="num">${p.count}</td>
+        <td class="num">${p.total}</td>
+        <td class="num">${p.transfer}</td>
+      </tr>`).join('');
+    document.getElementById('planCard').style.display = 'block';
+  }
+  document.getElementById('resultCard').style.display = 'block';
+  const body = document.getElementById('resultBody');
+  if (!dryRun && j.digest) {
+    body.innerHTML = `<span class="pill ${j.ok ? 'ok' : 'err'}">${j.ok ? 'success' : 'failed'}</span>\n\n` +
+      `digest: ${j.digest}\n` +
+      `<a href="https://suiscan.xyz/mainnet/tx/${j.digest}" target="_blank" rel="noreferrer">view on Suiscan</a>\n\n` +
+      (j.execError ? `error: ${j.execError}\n\n` : '') +
+      JSON.stringify(j, null, 2);
+  } else {
+    body.textContent = JSON.stringify(j, null, 2);
+  }
+}
+
+document.getElementById('preview').onclick = () => callSweep(true);
+document.getElementById('execute').onclick = async () => {
+  if (!confirm('Whelm Ultron: this will transfer ALL listed fungibles from old Ultron to the new dWallet. Continue?')) return;
+  await callSweep(false);
+};
+</script>
+</body>
+</html>

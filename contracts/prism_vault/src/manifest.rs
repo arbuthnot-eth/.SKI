@@ -40,8 +40,10 @@ impl From<ManifestError> for ProgramError {
 }
 
 pub struct ParsedManifest {
-    /// UUID bytes — used as nullifier PDA seed (single-claim enforcement).
-    pub prism_id: [u8; 16],
+    /// UUID-as-u128 — used as nullifier PDA seed (single-claim enforcement).
+    /// Little-endian interpretation of the 16 UUID bytes so the on-chain
+    /// seed matches `u128.to_le_bytes()` exactly.
+    pub prism_id: u128,
 }
 
 /// Validate a canonical Prism manifest and extract fields the
@@ -66,8 +68,10 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, ManifestError> {
         return Err(ManifestError::BadPrismIdFormat);
     }
     let uuid_str = &bytes[start..start + 36];
-    let prism_id = parse_uuid_hex(uuid_str).ok_or(ManifestError::BadPrismIdFormat)?;
-    Ok(ParsedManifest { prism_id })
+    let prism_id_bytes = parse_uuid_hex(uuid_str).ok_or(ManifestError::BadPrismIdFormat)?;
+    Ok(ParsedManifest {
+        prism_id: u128::from_le_bytes(prism_id_bytes),
+    })
 }
 
 // ─── Internal byte helpers ──────────────────────────────────────────
@@ -133,13 +137,11 @@ mod tests {
     fn parses_valid_manifest() {
         let m = br#"{"schema":1,"prismId":"550e8400-e29b-41d4-a716-446655440000","targetChain":"solana","recipient":"abc","amount":"1000","createdAt":123}"#;
         let parsed = parse_manifest(m).unwrap();
-        assert_eq!(
-            parsed.prism_id,
-            [
-                0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4,
-                0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00,
-            ],
-        );
+        let expected_bytes = [
+            0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4,
+            0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00,
+        ];
+        assert_eq!(parsed.prism_id, u128::from_le_bytes(expected_bytes));
     }
 
     #[test]
@@ -171,7 +173,19 @@ mod tests {
     fn accepts_uppercase_hex() {
         let m = br#"{"schema":1,"prismId":"550E8400-E29B-41D4-A716-446655440000","targetChain":"solana"}"#;
         let parsed = parse_manifest(m).unwrap();
-        assert_eq!(parsed.prism_id[0], 0x55);
-        assert_eq!(parsed.prism_id[1], 0x0e);
+        // Low 2 bytes (LE): [0x55, 0x0e]
+        let bytes = parsed.prism_id.to_le_bytes();
+        assert_eq!(bytes[0], 0x55);
+        assert_eq!(bytes[1], 0x0e);
+    }
+
+    #[test]
+    fn prism_id_roundtrips_through_u128() {
+        let m = br#"{"schema":1,"prismId":"00112233-4455-6677-8899-aabbccddeeff","targetChain":"solana"}"#;
+        let parsed = parse_manifest(m).unwrap();
+        // from_le_bytes: lowest-address byte is least-significant.
+        // bytes 0,1,2,3 = 0x00,0x11,0x22,0x33 → value & 0xFF == 0x00, >>8 & 0xFF == 0x11, ...
+        assert_eq!(parsed.prism_id.to_le_bytes()[0], 0x00);
+        assert_eq!(parsed.prism_id.to_le_bytes()[15], 0xff);
     }
 }

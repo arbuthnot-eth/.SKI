@@ -25,10 +25,13 @@ pub struct VaultConfig {
 }
 
 #[account(discriminator = 2, set_inner)]
-#[seeds(b"nullifier", prism_id: [u8; 16])]
+#[seeds(b"nullifier", prism_id: u128)]
 pub struct Nullifier {
-    /// The 16-byte UUID of the Prism manifest this nullifier consumes.
-    pub prism_id: [u8; 16],
+    /// UUID-as-u128 of the Prism manifest this nullifier consumes.
+    /// Stored as u128 (not [u8;16]) because Quasar's seeds macro calls
+    /// `.to_le_bytes()` on non-Address seeds — [u8;16] has no that method.
+    /// UUIDs are exactly 128 bits, so the mapping is lossless.
+    pub prism_id: u128,
     /// Unix timestamp of consumption (i64 to match Clock::unix_timestamp).
     pub claimed_at: i64,
     /// PDA bump.

@@ -62,6 +62,30 @@ mod prism_vault {
         ctx.accounts.set(fee_bps)
     }
 
-    // discriminator = 1 reserved for claim_transfer (Z6 Thunderbolt)
+    /// Consume a Prism manifest (Z6 Thunderbolt).
+    ///
+    /// Validates the ed25519 precompile ix data binds the IKA pubkey to
+    /// the manifest bytes, parses the manifest, asserts the caller's
+    /// `prism_id` matches what's inside, and inits the Nullifier PDA.
+    /// Init-or-fail on the Nullifier enforces single-claim semantics.
+    #[instruction(discriminator = 1)]
+    pub fn claim_transfer(
+        ctx: Ctx<ClaimTransfer>,
+        prism_id: u128,
+        ika_sig: [u8; 64],
+        ika_pubkey: [u8; 32],
+        manifest_json: Vec<u8, 2048>,
+        ed25519_ix_data: Vec<u8, 1024>,
+    ) -> Result<(), ProgramError> {
+        ctx.accounts.claim(
+            prism_id,
+            manifest_json.as_ref(),
+            &ika_sig,
+            &ika_pubkey,
+            ed25519_ix_data.as_ref(),
+            &ctx.bumps,
+        )
+    }
+
     // discriminator = 2 reserved for claim_swap (Z7 Drill Peck)
 }

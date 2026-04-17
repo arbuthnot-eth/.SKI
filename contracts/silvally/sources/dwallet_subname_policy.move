@@ -20,7 +20,7 @@
 
 module ski::dwallet_subname_policy;
 
-use ika_dwallet_2pc_mpc::coordinator::{Self, MessageApproval};
+use ika_dwallet_2pc_mpc::coordinator::{Self, DWalletCoordinator, MessageApproval};
 use ika_dwallet_2pc_mpc::coordinator_inner::DWalletCap;
 use sui::clock::Clock;
 use sui::event;
@@ -35,13 +35,12 @@ const E_NOT_OWNER: u64 = 3;
 
 // ------------------------------------------------------------------
 // IKA scheme constants
-// Mirror SDK: Curve.SECP256K1 / SignatureAlgorithm.ECDSASecp256k1 / Hash.KECCAK256
-// (Values are placeholders; real constants live in the IKA package.)
+// Mirror SDK: SignatureAlgorithm.ECDSASecp256k1 / Hash.KECCAK256
+// Curve is implied by the DWalletCap (set at DKG time).
 // ------------------------------------------------------------------
 
-const CURVE_SECP256K1: u32 = 0;
-const SIG_ALG_ECDSA_SECP256K1: u32 = 0;
-const HASH_KECCAK256: u32 = 0;
+const SIG_ALG_ECDSA_SECP256K1: u8 = 0;
+const HASH_KECCAK256: u8 = 0;
 
 // ------------------------------------------------------------------
 // State
@@ -127,11 +126,15 @@ public fun init_policy(
 /// Produce a `MessageApproval` for the delegate. Burns one quota slot.
 /// This is THE spike entry — if IKA's `approve_message` accepts a borrowed
 /// `DWalletCap` from inside a shared object, the pattern is proven.
+///
+/// Caller must also pass the IKA `DWalletCoordinator` shared singleton:
+///   mainnet id: 0x5ea59bce034008a006425df777da925633ef384ce25761657ea89e2a08ec75f3
 public fun delegate_approve_spike(
     policy: &mut SubnamePolicy,
+    coordinator: &mut DWalletCoordinator,
     message: vector<u8>,
     clock: &Clock,
-    ctx: &mut TxContext,
+    _ctx: &mut TxContext,
 ): MessageApproval {
     assert!(clock.timestamp_ms() < policy.expiration_ms, E_EXPIRED);
     assert!(policy.issued_count < policy.max_subnames, E_QUOTA_EXCEEDED);
@@ -140,12 +143,11 @@ public fun delegate_approve_spike(
 
     let digest_len = message.length();
     let approval = coordinator::approve_message(
+        coordinator,
         &policy.dwallet_cap,
-        CURVE_SECP256K1,
         SIG_ALG_ECDSA_SECP256K1,
         HASH_KECCAK256,
         message,
-        ctx,
     );
 
     event::emit(DelegateApproved {
@@ -162,23 +164,22 @@ public fun delegate_approve_spike(
 // ------------------------------------------------------------------
 
 /// Produce a `MessageApproval` for the owner. No quota, no expiration —
-/// but requires the matching `OwnerCap`.
+/// but requires the matching `OwnerCap` and the IKA coordinator singleton.
 public fun owner_approve(
     policy: &SubnamePolicy,
     owner_cap: &OwnerCap,
+    coordinator: &mut DWalletCoordinator,
     message: vector<u8>,
-    ctx: &mut TxContext,
 ): MessageApproval {
     assert!(owner_cap.policy_id == policy.id.to_inner(), E_NOT_OWNER);
 
     let digest_len = message.length();
     let approval = coordinator::approve_message(
+        coordinator,
         &policy.dwallet_cap,
-        CURVE_SECP256K1,
         SIG_ALG_ECDSA_SECP256K1,
         HASH_KECCAK256,
         message,
-        ctx,
     );
 
     event::emit(OwnerApproved {

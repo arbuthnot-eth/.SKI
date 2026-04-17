@@ -307,7 +307,25 @@ const SUI_RPC_URLS = [
   'https://sui-rpc.publicnode.com',
   'https://fullnode.mainnet.sui.io:443',
 ];
+// Shared rate limit gate for the generic RPC proxies. Reuses
+// ENS_RATE_LIMITER (60 req/min) with a `rpc:` key prefix so an abusive
+// client can't spend our whole budget by alternating between endpoints.
+async function rpcRateCheck(c: Context, scope: string): Promise<Response | null> {
+  const rl = (c.env as any).ENS_RATE_LIMITER as
+    | { limit: (opts: { key: string }) => Promise<{ success: boolean }> }
+    | undefined;
+  if (!rl) return null;
+  const ip = c.req.header('cf-connecting-ip')
+    ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? 'unknown';
+  const { success } = await rl.limit({ key: `${scope}:${ip}` });
+  if (!success) return c.json({ error: 'rate limit exceeded' }, 429);
+  return null;
+}
+
 app.post('/api/rpc', async (c) => {
+  const blocked = await rpcRateCheck(c, 'rpc');
+  if (blocked) return blocked;
   const body = await c.req.text();
   for (const url of SUI_RPC_URLS) {
     try {
@@ -528,6 +546,8 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
  */
 // Proxy JSON-RPC to PublicNode (avoids CORS from browser)
 app.post('/api/sui-rpc', async (c) => {
+  const blocked = await rpcRateCheck(c, 'sui-rpc');
+  if (blocked) return blocked;
   const body = await c.req.text();
   const res = await fetch('https://sui-rpc.publicnode.com', {
     method: 'POST',
@@ -1744,6 +1764,8 @@ const SOL_RPC_ALLOWED_METHODS = new Set([
 ]);
 app.post('/api/sol-rpc', async (c) => {
   try {
+    const blocked = await rpcRateCheck(c, 'sol-rpc');
+    if (blocked) return blocked;
     if (!c.env.HELIUS_API_KEY) return c.json({ error: 'Helius key not configured' }, 500);
     const body = await c.req.json() as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
     if (!body || typeof body.method !== 'string') {

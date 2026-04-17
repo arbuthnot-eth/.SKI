@@ -35,6 +35,12 @@ const ENoEthSquid: u64 = 4;
 const EEthSigMismatch: u64 = 5;
 const EBadSigLength: u64 = 6;
 const ETimestampSkew: u64 = 7;
+const EChainNotInRecord: u64 = 8;
+const ENoRecord: u64 = 9;
+const EGuestNotBound: u64 = 10;
+const EGuestNotExpired: u64 = 11;
+const EGuestBadTtl: u64 = 12;
+const ENotParentOrDelegate: u64 = 13;
 
 // ─── Events ─────────────────────────────────────────────────────────
 
@@ -688,4 +694,303 @@ public fun test_eth_hex_string_to_bytes(s: &String): vector<u8> {
 #[test_only]
 public fun test_pubkey_to_eth_address(compressed: &vector<u8>): vector<u8> {
     pubkey_to_eth_address(compressed)
+}
+
+// ─── v6: Disclosure projection (PublicChains) ───────────────────────
+//
+// A per-address whitelist of chain keys the owner has opted to expose
+// via ENS / CCIP-read. Semantics:
+//
+//   • If no `PublicChainsKey { addr }` dynamic field exists for a
+//     record, resolvers fall back to `record.chains` (v5 behavior —
+//     everything in chains is readable via ENS).
+//   • If `PublicChainsKey` exists, resolvers read `PublicChains.visible`
+//     strictly — chains not listed there are hidden from ENS, even if
+//     still present in the encrypted Walrus blob / `record.chains`.
+//
+// Owners call `set_public_chains` to opt into whitelist mode and
+// `clear_public_chains` to revert to the v5 default.
+
+public struct PublicChainsKey has copy, drop, store { addr: address }
+
+public struct PublicChains has store, drop {
+    /// chain_key → address copy at publish time. Resolvers use this
+    /// instead of re-fetching IdentityRecord on the hot path.
+    visible: VecMap<String, String>,
+    updated_ms: u64,
+}
+
+public struct PublicChainsSet has copy, drop {
+    sui_address: address,
+    chain_count: u64,
+}
+
+public struct PublicChainsCleared has copy, drop {
+    sui_address: address,
+}
+
+/// Set the whitelist of chain keys to expose via ENS / CCIP-read.
+/// `chain_keys` must be a subset of the caller's existing `chains`.
+/// An empty `chain_keys` vector is allowed (means "hide everything from
+/// ENS but keep the whitelist opted-in"). To revert to v5 default
+/// (expose everything in `chains`), call `clear_public_chains`.
+entry fun set_public_chains(
+    roster: &mut Roster,
+    chain_keys: vector<String>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENoRecord);
+    let record: &IdentityRecord = dynamic_field::borrow<address, IdentityRecord>(&roster.id, sender);
+
+    let mut visible = vec_map::empty<String, String>();
+    let mut i = 0;
+    let len = chain_keys.length();
+    while (i < len) {
+        let key = chain_keys[i];
+        assert!(vec_map::contains(&record.chains, &key), EChainNotInRecord);
+        let value = *vec_map::get(&record.chains, &key);
+        vec_map::insert(&mut visible, key, value);
+        i = i + 1;
+    };
+
+    let pk = PublicChainsKey { addr: sender };
+    if (dynamic_field::exists_<PublicChainsKey>(&roster.id, pk)) {
+        let _old: PublicChains = dynamic_field::remove<PublicChainsKey, PublicChains>(&mut roster.id, pk);
+    };
+    let pc = PublicChains { visible, updated_ms: clock.timestamp_ms() };
+    dynamic_field::add(&mut roster.id, pk, pc);
+
+    event::emit(PublicChainsSet { sui_address: sender, chain_count: len });
+}
+
+/// Drop the whitelist, reverting ENS exposure to v5 default (resolver
+/// reads `record.chains` directly).
+entry fun clear_public_chains(roster: &mut Roster, ctx: &TxContext) {
+    let sender = ctx.sender();
+    let pk = PublicChainsKey { addr: sender };
+    if (dynamic_field::exists_<PublicChainsKey>(&roster.id, pk)) {
+        let _old: PublicChains = dynamic_field::remove<PublicChainsKey, PublicChains>(&mut roster.id, pk);
+        event::emit(PublicChainsCleared { sui_address: sender });
+    };
+}
+
+public fun has_public_chains(roster: &Roster, addr: address): bool {
+    dynamic_field::exists_<PublicChainsKey>(&roster.id, PublicChainsKey { addr })
+}
+
+/// Read the whitelisted chains for an address. Caller should first
+/// check `has_public_chains` — this function aborts if the key is
+/// absent. Use `public_chains_contains` to probe specific keys.
+public fun public_chains_visible(roster: &Roster, addr: address): &VecMap<String, String> {
+    let pc: &PublicChains = dynamic_field::borrow(&roster.id, PublicChainsKey { addr });
+    &pc.visible
+}
+
+public fun public_chains_contains(roster: &Roster, addr: address, chain_key: &String): bool {
+    let pk = PublicChainsKey { addr };
+    if (!dynamic_field::exists_<PublicChainsKey>(&roster.id, pk)) return false;
+    let pc: &PublicChains = dynamic_field::borrow(&roster.id, pk);
+    vec_map::contains(&pc.visible, chain_key)
+}
+
+// ─── v6: Guest Protocol — time-bound subname addresses ──────────────
+//
+// A guest record binds `<label>.<parent_name>` to a target address
+// for a TTL window, after which reads return `none`. Parent owns the
+// parent record; only the parent (or an optional delegate) can
+// bind/revoke. Expiry is enforced at read time — `reap_guest` is a
+// permissionless storage-rebate sweep for housekeeping, not for
+// correctness.
+//
+// parent_hash format matches however the parent record is keyed:
+//   • Sui-name parent: keccak256(bare_label)            (raw vector<u8>)
+//   • ENS-name parent: keccak256(full_ens_name)         (via EnsHashKey)
+// Callers pass the matching hash and the typed / raw lookup happens
+// via the existing parent record indexes.
+
+public struct GuestKey has copy, drop, store {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+}
+
+public struct Guest has store, drop {
+    /// The Sui address that owns the parent record (auth anchor).
+    parent_sui_address: address,
+    /// Target address this guest subname resolves to, until expiry.
+    /// String form because target chain varies — resolver parses
+    /// against the caller's requested coinType.
+    target: String,
+    /// Chain the target belongs to: "eth","sol","btc","tron","sui".
+    chain: String,
+    /// Unix ms. `now < expires_ms` → guest is live.
+    expires_ms: u64,
+    /// Optional keeper/agent address permitted to revoke or rebind.
+    delegate: Option<address>,
+}
+
+public struct GuestBound has copy, drop {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    target: String,
+    chain: String,
+    expires_ms: u64,
+    has_delegate: bool,
+}
+
+public struct GuestRevoked has copy, drop {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    revoker: address,
+}
+
+public struct GuestReaped has copy, drop {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    reaper: address,
+}
+
+/// Resolve parent authority — caller must own the parent record either
+/// by Sui-name (raw vector<u8>) or by ENS hash (EnsHashKey). Returns
+/// the parent's `sui_address` on success.
+fun assert_parent_owner(roster: &Roster, parent_hash: vector<u8>, sender: address): address {
+    // Try Sui-name namespace first.
+    if (dynamic_field::exists_<vector<u8>>(&roster.id, parent_hash)) {
+        let rec: &IdentityRecord = dynamic_field::borrow<vector<u8>, IdentityRecord>(&roster.id, parent_hash);
+        assert!(rec.sui_address == sender, ENotOwner);
+        return rec.sui_address
+    };
+    // Try ENS namespace.
+    let ek = EnsHashKey { hash: parent_hash };
+    if (dynamic_field::exists_<EnsHashKey>(&roster.id, ek)) {
+        let rec: &IdentityRecord = dynamic_field::borrow<EnsHashKey, IdentityRecord>(&roster.id, ek);
+        assert!(rec.sui_address == sender, ENotOwner);
+        return rec.sui_address
+    };
+    abort ENoRecord
+}
+
+/// Bind a guest subname for a TTL window. Only the parent owner can
+/// call (not the delegate — first bind establishes the delegate).
+/// Overwrites an existing binding if present.
+entry fun bind_guest(
+    roster: &mut Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    target: String,
+    chain: String,
+    ttl_ms: u64,
+    delegate: Option<address>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    let parent_addr = assert_parent_owner(roster, parent_hash, sender);
+    // TTL must be positive and bounded. 180 days hard cap — avoids
+    // accidental decade-long leases if a UI passes a raw number.
+    assert!(ttl_ms > 0 && ttl_ms <= 180 * 24 * 60 * 60 * 1000, EGuestBadTtl);
+
+    let now = clock.timestamp_ms();
+    let expires_ms = now + ttl_ms;
+
+    let key = GuestKey { parent_hash, label };
+    if (dynamic_field::exists_<GuestKey>(&roster.id, key)) {
+        let _old: Guest = dynamic_field::remove<GuestKey, Guest>(&mut roster.id, key);
+    };
+    let has_delegate = option::is_some(&delegate);
+    let guest = Guest {
+        parent_sui_address: parent_addr,
+        target,
+        chain,
+        expires_ms,
+        delegate,
+    };
+    dynamic_field::add(&mut roster.id, key, guest);
+
+    event::emit(GuestBound {
+        parent_hash,
+        label,
+        target,
+        chain,
+        expires_ms,
+        has_delegate,
+    });
+}
+
+/// Revoke a guest early. Parent owner OR delegate can call.
+entry fun revoke_guest(
+    roster: &mut Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    let key = GuestKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestKey>(&roster.id, key), EGuestNotBound);
+    let g: &Guest = dynamic_field::borrow<GuestKey, Guest>(&roster.id, key);
+
+    let is_parent = g.parent_sui_address == sender;
+    let is_delegate = option::is_some(&g.delegate)
+        && *option::borrow(&g.delegate) == sender;
+    assert!(is_parent || is_delegate, ENotParentOrDelegate);
+
+    let _old: Guest = dynamic_field::remove<GuestKey, Guest>(&mut roster.id, key);
+    event::emit(GuestRevoked { parent_hash, label, revoker: sender });
+}
+
+/// Permissionless sweep of an expired guest. Caller reclaims storage
+/// rebate. Fails if the guest is still live.
+entry fun reap_guest(
+    roster: &mut Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let key = GuestKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestKey>(&roster.id, key), EGuestNotBound);
+    let g: &Guest = dynamic_field::borrow<GuestKey, Guest>(&roster.id, key);
+    let now = clock.timestamp_ms();
+    assert!(now >= g.expires_ms, EGuestNotExpired);
+
+    let _old: Guest = dynamic_field::remove<GuestKey, Guest>(&mut roster.id, key);
+    event::emit(GuestReaped { parent_hash, label, reaper: ctx.sender() });
+}
+
+// Reader helpers for resolvers.
+
+public fun has_guest(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): bool {
+    dynamic_field::exists_<GuestKey>(&roster.id, GuestKey { parent_hash, label })
+}
+
+/// Returns `some(target)` if the guest is bound and unexpired,
+/// `none` otherwise. Clients should prefer this over raw borrows so
+/// expiry is enforced consistently.
+public fun lookup_guest_target(
+    roster: &Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    clock: &Clock,
+): Option<String> {
+    let key = GuestKey { parent_hash, label };
+    if (!dynamic_field::exists_<GuestKey>(&roster.id, key)) return option::none();
+    let g: &Guest = dynamic_field::borrow<GuestKey, Guest>(&roster.id, key);
+    if (clock.timestamp_ms() >= g.expires_ms) return option::none();
+    option::some(g.target)
+}
+
+public fun guest_chain(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): String {
+    let g: &Guest = dynamic_field::borrow(&roster.id, GuestKey { parent_hash, label });
+    g.chain
+}
+
+public fun guest_expires_ms(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): u64 {
+    let g: &Guest = dynamic_field::borrow(&roster.id, GuestKey { parent_hash, label });
+    g.expires_ms
+}
+
+#[test_only]
+public fun test_assert_parent_owner(roster: &Roster, parent_hash: vector<u8>, sender: address): address {
+    assert_parent_owner(roster, parent_hash, sender)
 }

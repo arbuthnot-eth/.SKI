@@ -19,8 +19,8 @@
  *     net cost to ultron is small.
  */
 
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { ultronKeypair } from './ultron-key.js';
+import type { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { ultronKeypair, hasUltronKey, type UltronEnv } from './ultron-key.js';
 import { Transaction } from '@mysten/sui/transactions';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
@@ -35,8 +35,7 @@ const IOU_TYPE = `${THUNDER_IOU_PACKAGE}::iou::Iou`;
 const THUNDER_IOU_SHIELDED_PACKAGE = '0x3b1dcced3f585157f48afd14a84f42e65ee57dd38be9dd73d7d94a0a1b690782';
 const SHIELDED_TYPE = `${THUNDER_IOU_SHIELDED_PACKAGE}::shielded::ShieldedVault`;
 
-interface SweeperEnv {
-  SHADE_KEEPER_PRIVATE_KEY?: string;
+interface SweeperEnv extends UltronEnv {
   SUI_NETWORK?: string; // 'mainnet' | 'testnet'
 }
 
@@ -175,8 +174,8 @@ export async function sweepExpiredIous(env: SweeperEnv): Promise<{ scanned: numb
     console.log('[iou-sweeper] non-mainnet worker — skipping');
     return { scanned: 0, expired: 0, recalled: 0, failed: 0 };
   }
-  if (!env.SHADE_KEEPER_PRIVATE_KEY) {
-    console.warn('[iou-sweeper] no SHADE_KEEPER_PRIVATE_KEY — skipping');
+  if (!hasUltronKey(env)) {
+    console.warn('[iou-sweeper] no ultron key configured — skipping');
     return { scanned: 0, expired: 0, recalled: 0, failed: 0 };
   }
   const keypair = ultronKeypair(env);

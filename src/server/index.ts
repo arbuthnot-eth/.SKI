@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { ultronKeypair, hasUltronKey, requireUltronSig } from './ultron-key.js';
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { raceJsonRpc } from './rpc.js';
@@ -22,7 +21,8 @@ interface Env {
   UltronSigningAgent: DurableObjectNamespace;
   TRADEPORT_API_KEY: string;
   TRADEPORT_API_USER: string;
-  SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key
+  SHADE_KEEPER_PRIVATE_KEY?: string; // ultron.sui signing key (legacy name — consume via ultronKeypair(env))
+  ULTRON_PRIVATE_KEY?: string; // ultron.sui signing key (preferred name — consume via ultronKeypair(env))
   HELIUS_API_KEY?: string; // Solana RPC (Helius)
   HELIUS_WEBHOOK_SECRET?: string; // Validates incoming Helius webhook requests
   ALCHEMY_WEBHOOK_SECRET?: string; // Validates incoming Alchemy Address Activity webhooks
@@ -202,7 +202,7 @@ const treasuryStub = (c: { env: Env }) => {
 let _treasuryAuthCache: string | null = null;
 function getTreasuryAuth(env: Env): string {
   if (_treasuryAuthCache !== null) return _treasuryAuthCache;
-  if (!env.SHADE_KEEPER_PRIVATE_KEY) { _treasuryAuthCache = ''; return ''; }
+  if (!hasUltronKey(env)) { _treasuryAuthCache = ''; return ''; }
   const kp = ultronKeypair(env);
   _treasuryAuthCache = normalizeSuiAddress(kp.getPublicKey().toSuiAddress()).slice(0, 34);
   return _treasuryAuthCache;
@@ -530,8 +530,6 @@ async function hasSuinsNft(address: string): Promise<boolean> {
 
 // ── Gas sponsorship via ultron ─────────────────────────────────
 
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-
 /**
  * POST /api/sponsor-gas
  * Body: { txBytes: string, senderAddress?: string } (base64-encoded transaction bytes)
@@ -558,8 +556,7 @@ app.post('/api/sui-rpc', async (c) => {
 });
 
 app.post('/api/sponsor-gas', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Gas sponsorship not configured' }, 503);
 
   try {
     const { txBytes, senderAddress } = await c.req.json<{ txBytes: string; senderAddress?: string }>();
@@ -571,7 +568,7 @@ app.post('/api/sponsor-gas', async (c) => {
       if (!hasNft) return c.json({ error: 'SuiNS name required for gas sponsorship' }, 403);
     }
 
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const bytes = Uint8Array.from(atob(txBytes), ch => ch.charCodeAt(0));
     const { signature } = await keypair.signTransaction(bytes);
 
@@ -586,11 +583,10 @@ app.post('/api/sponsor-gas', async (c) => {
  * Returns ultron's address and gas coins so clients can build sponsored txs.
  */
 app.get('/api/sponsor-info', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Gas sponsorship not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Gas sponsorship not configured' }, 503);
 
   try {
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const sponsorAddress = keypair.toSuiAddress();
 
     // Fetch gas coins via GraphQL. The `coins` field on Address
@@ -659,8 +655,7 @@ const GAS_DRIP_COOLDOWN_MS = 60 * 1000;
 const _gasDripLog = new Map<string, number>(); // addr → last drip ts
 
 app.post('/api/fund-gas', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
   try {
     const { address } = await c.req.json<{ address: string }>();
     if (!address || !/^0x[0-9a-fA-F]{64}$/.test(address)) {
@@ -693,7 +688,7 @@ app.post('/api/fund-gas', async (c) => {
       return c.json({ success: true, skipped: true, reason: 'already has gas', balance: userBalance.toString() });
     }
 
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
 
     // Build via a real SuiGraphQLClient and pin ultron's explicit
@@ -775,8 +770,7 @@ app.post('/api/fund-gas', async (c) => {
  * Ultron signs and submits directly (no user signature needed).
  */
 app.post('/api/ika/fund', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
 
   try {
     const { address } = await c.req.json<{ address: string }>();
@@ -786,7 +780,7 @@ app.post('/api/ika/fund', async (c) => {
     const hasNft = await hasSuinsNft(address);
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
 
     // Find ultron's IKA coin
@@ -854,8 +848,7 @@ app.post('/api/ika/fund', async (c) => {
  * Uses requestDWalletDKGWithPublicUserShare (shared dWallet).
  */
 app.post('/api/ika/create', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
 
   try {
     const { address, authSignature, dkgData } = await c.req.json<{
@@ -880,7 +873,7 @@ app.post('/api/ika/create', async (c) => {
 
     // TODO: verify authSignature matches address (cryptographic proof of intent)
 
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
 
     // Fetch ultron's coins
@@ -1030,8 +1023,7 @@ app.post('/api/ika/create', async (c) => {
  * has the SuiNS gate), then co-signs and submits.
  */
 app.post('/api/ika/provision', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
 
   try {
     const { address } = await c.req.json<{ address: string }>();
@@ -1041,7 +1033,7 @@ app.post('/api/ika/provision', async (c) => {
     const hasNft = await hasSuinsNft(address);
     if (!hasNft) return c.json({ error: 'SuiNS name required' }, 403);
 
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const ultronAddress = keypair.toSuiAddress();
 
     // Fetch ultron's gas coins + IKA coins via GraphQL
@@ -1358,8 +1350,7 @@ app.post('/api/iusd/swap', async (c) => {
 // gated to the stranded-sweep recipient so nobody else can drain
 // ultron's NS balance via this endpoint.
 app.post('/api/cache/refund-stranded-ns', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
   // Hardcoded recipient — this is a one-off refund for a specific
   // on-chain event, not a general admin endpoint.
   const RECIPIENT = '0xbec4fec9d1639fbe5e8ab93bf2475d6907f6534a78407912e618e94195afa057';
@@ -1374,7 +1365,7 @@ app.post('/api/cache/refund-stranded-ns', async (c) => {
   const DB_IUSD_USDC_POOL_INITIAL_SHARED_VERSION = 832866334;
 
   try {
-    const keypair = Ed25519Keypair.fromSecretKey(key);
+    const keypair = ultronKeypair(c.env);
     const ultronAddress = normalizeSuiAddress(keypair.toSuiAddress());
     const graphql = new SuiGraphQLClient({ url: SUINS_GQL_URL, network: 'mainnet' });
 
@@ -1986,7 +1977,7 @@ app.get('/api/ultron/read-dwallet', async (c) => {
 // session needs to be online. Ultron doing its own SUIAMI — finally.
 app.post('/api/cache/ultron-roster', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     // No auth gate. The endpoint is self-referential: ultron writes its
     // own IKA-derived addresses to its own roster entry with its own
     // keypair. There's no path for a caller to extract value — the
@@ -1994,7 +1985,6 @@ app.post('/api/cache/ultron-roster', async (c) => {
     // gas for repeated identical writes. Accept {} body.
     try { await c.req.json(); } catch { /* body optional */ }
 
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress } = await import('@mysten/sui/utils');
     const { keccak_256 } = await import('@noble/hashes/sha3.js');
@@ -2249,8 +2239,7 @@ app.post('/api/ultron/sign', async (c) => {
 // Read-only: the address itself is public info, so no auth needed.
 app.get('/api/cache/ultron-sol-probe', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const { b58encode } = await import('./solana-spl.js');
     const keypair = ultronKeypair(c.env);
     const oldSolAddress = b58encode(keypair.getPublicKey().toRawBytes());
@@ -2319,12 +2308,11 @@ app.get('/api/cache/ultron-sol-probe', async (c) => {
 // coins. No auth needed — this only rearranges ultron's own SUI.
 app.post('/api/cache/ultron-split-sui', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json().catch(() => ({})) as { count?: number; sizeMist?: string };
     const count = Math.max(1, Math.min(20, Number(body.count ?? 5)));
     const sizeMist = BigInt(body.sizeMist ?? '50000000'); // default 0.05 SUI per piece
 
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
     const keypair = ultronKeypair(c.env);
@@ -2410,11 +2398,10 @@ app.post('/api/cache/ultron-split-sui', async (c) => {
 // EInsufficientCollateral abort).
 app.post('/api/cache/ultron-transfer-iusd', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json().catch(() => ({})) as { recipient?: string; amountMist?: string };
     if (!body.recipient) return c.json({ error: 'recipient required' }, 400);
 
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
     const keypair = ultronKeypair(c.env);
@@ -2499,10 +2486,9 @@ app.post('/api/cache/ultron-transfer-iusd', async (c) => {
 // $0.371 USDC balance per call.
 app.post('/api/cache/psm-smoke', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json().catch(() => ({})) as { amountMist?: string };
 
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { Transaction } = await import('@mysten/sui/transactions');
     const { normalizeSuiAddress, toBase64 } = await import('@mysten/sui/utils');
 
@@ -2688,7 +2674,7 @@ app.post('/api/cache/psm-smoke', async (c) => {
 // Admin-gated like /api/cache/rumble-ultron-seed.
 app.post('/api/cache/sweep-sol-ultron', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json() as {
       recipient: string; // new sol@ultron (base58)
       adminAddress: string;
@@ -2717,7 +2703,6 @@ app.post('/api/cache/sweep-sol-ultron', async (c) => {
       return c.json({ error: `Invalid signature: ${err instanceof Error ? err.message : String(err)}` }, 403);
     }
 
-    const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519');
     const { ed25519 } = await import('@noble/curves/ed25519.js');
     const { b58encode, b58decode, sweepSplAccount, sweepNativeSol } = await import('./solana-spl.js');
     type SolanaRpcConfig = import('./solana-spl.js').SolanaRpcConfig;
@@ -2857,7 +2842,7 @@ const ADMIN_ADDRESSES = new Set([
 ]);
 app.post('/api/cache/rumble-ultron-seed', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json() as {
       curve: 'ed25519' | 'secp256k1';
       adminAddress: string;
@@ -2996,8 +2981,7 @@ app.post('/api/cache/seed-iusd-pool', async (c) => {
 
 // Scan + batch-recall all ShieldedVaults where the caller is sender
 app.post('/api/recall-vaults', async (c) => {
-  const key = c.env.SHADE_KEEPER_PRIVATE_KEY;
-  if (!key) return c.json({ error: 'Not configured' }, 503);
+  if (!hasUltronKey(c.env)) return c.json({ error: 'Not configured' }, 503);
   try {
     const { address } = await c.req.json<{ address: string }>();
     if (!address) return c.json({ error: 'Missing address' }, 400);
@@ -3445,7 +3429,7 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
     // it. The DO method is idempotent (returns existing mint if already
     // created), so the endpoint is safe to leave public: worst case, a
     // caller races us for the one-time creation, and we wanted it anyway.
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) {
+    if (!hasUltronKey(c.env)) {
       return c.json({ error: 'No keeper key configured' }, 500);
     }
     const kp = ultronKeypair(c.env);
@@ -3465,7 +3449,7 @@ app.post('/api/cache/create-iusd-sol-mint', async (c) => {
 
 app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key configured' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key configured' }, 500);
     const body = await c.req.json() as { recipientSolAddress: string; amount: string };
     const kp = ultronKeypair(c.env);
     const callerAddress = normalizeSuiAddress(kp.getPublicKey().toSuiAddress());
@@ -3499,7 +3483,7 @@ app.post('/api/cache/bam-mint-iusd-sol', async (c) => {
 //   { amount, expiresMs, mintAddress, nonce, recipientSolAddress }
 app.post('/api/cache/bam-mint-v2', async (c) => {
   try {
-    if (!c.env.SHADE_KEEPER_PRIVATE_KEY) return c.json({ error: 'No keeper key' }, 500);
+    if (!hasUltronKey(c.env)) return c.json({ error: 'No keeper key' }, 500);
     const body = await c.req.json();
 
     // All five Vector principles live in the shared helper now.
@@ -4352,7 +4336,7 @@ app.post('/api/cache/rescan-deposits', async (c) => {
 app.post('/api/iou/sweep', async (c) => {
   try {
     const { sweepExpiredIous } = await import('./iou-sweeper.js');
-    const result = await sweepExpiredIous(c.env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+    const result = await sweepExpiredIous(c.env);
     return c.json(result);
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -4370,7 +4354,7 @@ export default {
     ctx.waitUntil((async () => {
       try {
         const { sweepExpiredIous } = await import('./iou-sweeper.js');
-        const result = await sweepExpiredIous(env as unknown as { SHADE_KEEPER_PRIVATE_KEY?: string });
+        const result = await sweepExpiredIous(env);
         console.log('[cron] iou-sweeper:', JSON.stringify(result));
       } catch (err) {
         console.error('[cron] iou-sweeper threw:', err instanceof Error ? err.message : err);

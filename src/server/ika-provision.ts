@@ -14,8 +14,7 @@
  */
 
 import { Transaction } from '@mysten/sui/transactions';
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { ultronKeypair } from './ultron-key.js';
+import { ultronKeypair, type UltronEnv } from './ultron-key.js';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import {
   IkaClient, IkaTransaction, getNetworkConfig,
@@ -61,9 +60,9 @@ export interface ProvisionResult {
  */
 export async function buildProvisionTx(
   userAddress: string,
-  keeperPrivateKey: string,
+  env: UltronEnv,
 ): Promise<ProvisionResult> {
-  const keypair = Ed25519Keypair.fromSecretKey(keeperPrivateKey);
+  const keypair = ultronKeypair(env);
   const keeperAddress = keypair.toSuiAddress();
 
   // Set up gRPC client + adapter (no JSON-RPC)

@@ -22,7 +22,7 @@ export const ROSTER_PACKAGE = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d
  * resolve the module at the target address directly and can't
  * follow Sui's original→latest redirection. Bump on every upgrade.
  */
-export const ROSTER_PACKAGE_LATEST = '0xea0b948522bf759ccde5fb10b74bae99b8929495926a53678c9d4cbd0fd4f202';
+export const ROSTER_PACKAGE_LATEST = '0xe1b6ecf937974317ec558e85ce7c61f57f14f67f7c199cfb4b592ede3fbb535e';
 
 /** Shared Roster object. Owner of all name_hash / address / chain / ens_hash dynamic fields. */
 export const ROSTER_OBJECT = '0x30b45c51a34b20b5ab99e8c493a82c332e9502e5f4380d1be6cc79e712eaab1d';

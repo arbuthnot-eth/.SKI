@@ -1,7 +1,7 @@
 [package]
 name = "suiami"
 edition = "2024.beta"
-published-at = "0xea0b948522bf759ccde5fb10b74bae99b8929495926a53678c9d4cbd0fd4f202"
+published-at = "0xe1b6ecf937974317ec558e85ce7c61f57f14f67f7c199cfb4b592ede3fbb535e"
 
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }

@@ -1,12 +1,12 @@
 ---
 name: pokedex
-description: Use when the user invokes /pokedex or asks "show me the pokedex", "what Pokemon are active", "status of the swarm", "which pokemon evolved", "which ones feinted", or similar swarm-status queries. Surveys all Pokemon-named GitHub issues + recent git history, groups by Active / Evolved / Feinted, and renders a Pokedex-style card. Feinted Pokemon are archived as historically insignificant — tracked only so the swarm doesn't rebuild the same bad idea twice.
+description: Use when the user invokes /pokedex or asks "show me the pokedex", "what Pokemon are active", "status of the swarm", "which pokemon evolved", "which ones fainted", or similar swarm-status queries. Surveys all Pokemon-named GitHub issues + recent git history, groups by Active / Evolved / Fainted, and renders a Pokedex-style card. Fainted Pokemon are archived as historically insignificant — tracked only so the swarm doesn't rebuild the same bad idea twice.
 version: 1.0.0
 ---
 
 # Pokedex
 
-Survey the .SKI Pokemon Swarm's current state: which Pokemon are active in development, which have evolved (PR merged to master), and which have been feinted (walked back or cleaned up).
+Survey the .SKI Pokemon Swarm's current state: which Pokemon are active in development, which have evolved (PR merged to master), and which have been fainted (walked back or cleaned up).
 
 ## Conventions
 
@@ -18,7 +18,7 @@ Survey the .SKI Pokemon Swarm's current state: which Pokemon are active in devel
 
 **Evolution = PR merge to master.** A Pokemon is "evolved" if its issue is closed AND a PR referencing it landed on master.
 
-**Feinted = walked back.** A Pokemon is "feinted" if its issue is closed without a successful PR merge, OR explicitly labeled `feinted`. Feinted Pokemon are historical records — they exist so the swarm doesn't repeat a bad idea. Don't feature them; archive them.
+**Fainted = walked back.** A Pokemon is "fainted" if its issue is closed without a successful PR merge, OR explicitly labeled `fainted`. Fainted Pokemon are historical records — they exist so the swarm doesn't repeat a bad idea. Don't feature them; archive them.
 
 ## How to run
 
@@ -32,7 +32,7 @@ Run these in a single parallel Bash block:
 # Open issues (likely active)
 gh issue list --state open --limit 50 --json number,title,labels,updatedAt,state,url
 
-# Closed issues (may be evolved or feinted)
+# Closed issues (may be evolved or fainted)
 gh issue list --state closed --limit 50 --json number,title,labels,closedAt,state,url,stateReason
 ```
 
@@ -53,8 +53,8 @@ For each issue:
 2. **Status derivation:**
    - `state == "open"` → **Active**
    - `state == "closed"` + matched by a merged PR → **Evolved**
-   - `state == "closed"` + `stateReason == "not_planned"` OR label `feinted` → **Feinted**
-   - `state == "closed"` + no matching merged PR + no feinted label → **Evolved** (assume default closure = completed; flag ambiguity only if clearly suspicious)
+   - `state == "closed"` + `stateReason == "not_planned"` OR label `fainted` → **Fainted**
+   - `state == "closed"` + no matching merged PR + no fainted label → **Evolved** (assume default closure = completed; flag ambiguity only if clearly suspicious)
 
 ### Step 3 — Render
 
@@ -73,7 +73,7 @@ Output as three sections, in this order. Be concise — one line per Pokemon wit
 - 🧲 **Magneton Tri Attack** #161 → ed3b91e (2026-04-16)
 - 💾 **Porygon** #162 → 3dba9097 (2026-04-16)
 
-## Feinted (K Pokemon, archived — historically insignificant)
+## Fainted (K Pokemon, archived — historically insignificant)
 
 - (none yet)
 ```
@@ -96,4 +96,4 @@ After rendering, if any Pokemon are Active, end with a single line:
 
 - Cross-reference GitHub issue labels with in-session TaskList to show which moves have local tracking too.
 - Fold commit counts per Pokemon into the rendering ("Zapdos has 2 moves shipped, 8 queued").
-- Auto-detect when a Pokemon has been stale >14 days → suggest feinting.
+- Auto-detect when a Pokemon has been stale >14 days → suggest fainting.

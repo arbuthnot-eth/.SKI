@@ -1271,6 +1271,106 @@ const _ensIssue = async (label: string) => {
 (globalThis as unknown as { ensIssue: typeof _ensIssue }).ensIssue = _ensIssue;
 console.log('[ski] ensIssue hook installed — call ensIssue("alice") to bind alice.waap.eth to your SUIAMI record (Beldum #167)');
 
+// ── Beldum Metal Claw prep — Phantom key → IKA dWallet parse/derive ──
+//
+// Accepts either a BIP-39 mnemonic (12/24 words) or a 32-byte hex
+// private key, derives the secp256k1 public key + ETH address
+// client-side via viem, and returns what's needed to feed into the
+// IKA imported-key DKG flow. The private key never leaves the
+// browser; the mnemonic is zero'd from memory after derivation.
+//
+// For mnemonics, default derivation path is Ethereum's
+// `m/44'/60'/0'/0/0` (matches Phantom, MetaMask, Rainbow, Trust).
+// Callers can pass a different path or index to hunt for the
+// account that matches a specific ETH address.
+//
+// NOTE: this is the parse/verify step only. The actual IKA
+// `requestImportedKeyDWalletVerification` ceremony hooks a separate
+// (coming) entry in `src/client/ika.ts::importSecp256k1DWallet` —
+// which calls `prepareImportedKeyDWalletVerification(ikaClient,
+// Curve.SECP256K1, bytesToHash, senderAddress, userShareKeys,
+// privateKey)` then builds the PTB. Landing parse first so you can
+// validate that brando's seed derives to 0x9e825c8DB5758A7B888d281b83e28792233A3314
+// before committing to the full MPC import.
+const _importPhantomKey = async (
+  input: string,
+  opts?: { path?: string; index?: number; expectAddress?: string },
+) => {
+  if (!input || typeof input !== 'string') {
+    console.error('[importPhantomKey] expected mnemonic or hex priv key as first arg');
+    return { error: 'no-input' };
+  }
+  const trimmed = input.trim();
+  try {
+    const { privateKeyToAccount, mnemonicToAccount } = await import('viem/accounts');
+    let priv: `0x${string}`;
+    let address: `0x${string}`;
+    let mode: 'mnemonic' | 'hex';
+
+    if (/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
+      mode = 'hex';
+      priv = trimmed as `0x${string}`;
+      address = privateKeyToAccount(priv).address;
+    } else if (trimmed.split(/\s+/).length >= 12) {
+      mode = 'mnemonic';
+      const words = trimmed.split(/\s+/).length;
+      if (words !== 12 && words !== 15 && words !== 18 && words !== 21 && words !== 24) {
+        console.error(`[importPhantomKey] mnemonic must be 12/15/18/21/24 words, got ${words}`);
+        return { error: 'bad-word-count' };
+      }
+      const index = opts?.index ?? 0;
+      const path = opts?.path ?? `m/44'/60'/0'/0/${index}`;
+      const acct = mnemonicToAccount(trimmed, { path: path as `m/${string}` });
+      address = acct.address;
+      // viem 2.x: account.getHdKey().privateKey gives the raw 32 bytes.
+      const hd = (acct as any).getHdKey?.();
+      if (!hd?.privateKey) {
+        console.error('[importPhantomKey] could not extract private key from derived account');
+        return { error: 'derivation-failed' };
+      }
+      priv = ('0x' + Array.from(hd.privateKey as Uint8Array)
+        .map(b => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`;
+    } else {
+      console.error('[importPhantomKey] input must be a BIP-39 mnemonic (12+ words) or a 0x-prefixed 32-byte hex private key');
+      return { error: 'bad-input' };
+    }
+
+    console.log(`[importPhantomKey] mode=${mode}, derived address: ${address}`);
+    if (opts?.expectAddress) {
+      const expected = opts.expectAddress.toLowerCase();
+      const actual = address.toLowerCase();
+      if (expected !== actual) {
+        console.error(`[importPhantomKey] ADDRESS MISMATCH — expected ${expected}, got ${actual}`);
+        console.error('  For mnemonics, try a different index: importPhantomKey("<phrase>", { index: 1 })');
+        // Zero the priv bytes before returning.
+        (priv as unknown) = undefined;
+        return { error: 'address-mismatch', expected, derived: address };
+      }
+      console.log(`[importPhantomKey] \u2713 matches expected address ${expected}`);
+    }
+
+    // TODO Beldum Metal Claw: wire to ika.ts
+    //   const { importSecp256k1DWallet } = await import('./client/ika.js');
+    //   const result = await importSecp256k1DWallet({
+    //     privateKeyHex: priv,
+    //     bytesToHash: new TextEncoder().encode(`SUIAMI import ${address} @ ${Date.now()}`),
+    //   });
+    //   Then assert result.ethAddress === address, write dwalletCap to roster.
+    console.log('[importPhantomKey] IKA ceremony not yet wired — parse/derive verified only.');
+    console.log(`  Ready to import: address=${address}, mode=${mode}`);
+    console.log('  Next: confirm above, then run the ika.ts import flow (commit pending).');
+
+    return { ok: true, mode, address, priv: '0x<redacted>' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[importPhantomKey] failed:', err);
+    return { error: msg };
+  }
+};
+(window as unknown as { importPhantomKey: typeof _importPhantomKey }).importPhantomKey = _importPhantomKey;
+(globalThis as unknown as { importPhantomKey: typeof _importPhantomKey }).importPhantomKey = _importPhantomKey;
+console.log('[ski] importPhantomKey hook installed — call importPhantomKey("<mnemonic|0xhex>", { expectAddress:"0x9e82..." }) to verify your waap.eth seed before the IKA import ceremony (Beldum Metal Claw, #167)');
+
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron
 // from window.rumbleUltron). Admin-gated via the same signed-message

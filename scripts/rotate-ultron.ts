@@ -21,7 +21,16 @@ const address = kp.getPublicKey().toSuiAddress();
 
 const proc = spawn(WRANGLER, ['secret', 'put', 'ULTRON_PRIVATE_KEY'], {
     stdio: ['pipe', 'inherit', 'inherit'],
-    env: { ...process.env, PATH: `/usr/local/bin:${process.env.PATH}` },
+    env: {
+        ...process.env,
+        PATH: `/usr/local/bin:${process.env.PATH}`,
+        // When bun is installed as a snap, XDG_CONFIG_HOME is
+        // redirected into ~/snap/bun-js/<rev>/.config, which hides the
+        // wrangler OAuth token stored by `wrangler login` at the real
+        // ~/.config/.wrangler/. Force the spawned wrangler back to the
+        // user's host config so it sees the login.
+        XDG_CONFIG_HOME: `${process.env.HOME}/.config`,
+    },
 });
 proc.stdin.write(bech32);
 proc.stdin.end();
@@ -36,7 +45,16 @@ proc.on('exit', (code) => {
     // binding actually landed before reporting success.
     const list = spawnSync(WRANGLER, ['secret', 'list'], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `/usr/local/bin:${process.env.PATH}` },
+        env: {
+        ...process.env,
+        PATH: `/usr/local/bin:${process.env.PATH}`,
+        // When bun is installed as a snap, XDG_CONFIG_HOME is
+        // redirected into ~/snap/bun-js/<rev>/.config, which hides the
+        // wrangler OAuth token stored by `wrangler login` at the real
+        // ~/.config/.wrangler/. Force the spawned wrangler back to the
+        // user's host config so it sees the login.
+        XDG_CONFIG_HOME: `${process.env.HOME}/.config`,
+    },
     });
     if (list.status !== 0 || !list.stdout.includes('"ULTRON_PRIVATE_KEY"')) {
         console.error('\n[rotate-ultron] wrangler reported success but ULTRON_PRIVATE_KEY is NOT in `wrangler secret list`.');

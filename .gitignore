@@ -19,6 +19,9 @@ contracts/*/Move.lock
 *.key
 drafts/
 .claude/worktrees/
+.env
+.env.local
+.dev.vars
 
 # Private decision logs (raw discussion transcripts, not for publication)
 .decisions/

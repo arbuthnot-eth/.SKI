@@ -10116,7 +10116,7 @@ function bindEvents() {
 
   // Idle screensaver — show SKI pixel art over menu
   let _idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const IDLE_MS = 15_000; // 15 seconds
+  const IDLE_MS = 300_000; // 5 minutes — screensaver triggers after true idle
   // Snorlax #144 — every _showIdleOverlay() call re-attaches window
   // listeners that close over that mount's `_cardCurrentName` and
   // other local state. Without a generation guard, old listeners

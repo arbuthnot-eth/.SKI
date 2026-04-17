@@ -1534,27 +1534,23 @@ const _whelm = async (ensName: string, opts?: {
     console.error('[whelm] invalid ENS name; use a-z, 0-9, hyphens only');
     return { error: 'bad-ens-name' };
   }
-  // Resolve dwalletAddress — accepts either a raw 0x… hex address or a
-  // chain@name identifier (e.g. "eth@superteam") which looks up the
-  // target's IKA-derived address via the SUIAMI roster.
+  // Resolve dwalletAddress — accepts a raw 0x… hex OR a chain@name
+  // identifier (via SUIAMI roster). Whelm is ENS-specific, so only
+  // eth@<name> makes sense here; other chains raise a clear error.
   let dwalletAddress = opts?.dwalletAddress ?? 'eth@superteam';
-  if (/^eth@/i.test(dwalletAddress)) {
-    const bareName = dwalletAddress.replace(/^eth@/i, '').toLowerCase();
-    try {
-      const { readByName } = await import('suiami/roster');
-      const record = await readByName(bareName);
-      const resolved = record?.chains?.eth;
-      if (!resolved) {
-        const err = `eth@${bareName} — no eth squid in SUIAMI roster (pass a raw 0x… address instead)`;
-        console.error('[whelm]', err);
-        return { error: 'resolve-failed', identifier: dwalletAddress };
-      }
-      console.log(`[whelm] resolved eth@${bareName} → ${resolved}`);
-      dwalletAddress = resolved;
-    } catch (err) {
-      console.error('[whelm] roster lookup failed:', err);
-      return { error: 'resolve-failed', identifier: dwalletAddress };
+  if (/@/.test(dwalletAddress)) {
+    const { resolveChainAddr } = await import('./client/chain-at.js');
+    const r = await resolveChainAddr(dwalletAddress);
+    if (!r.ok || !r.address) {
+      console.error(`[whelm] resolve ${dwalletAddress} failed: ${r.error}`);
+      return { error: 'resolve-failed', identifier: dwalletAddress, detail: r.error };
     }
+    if (r.chain !== 'eth') {
+      console.error(`[whelm] whelm only accepts eth@<name> for dwalletAddress (got ${r.chain}@${r.name})`);
+      return { error: 'wrong-chain-identifier', got: r.chain };
+    }
+    console.log(`[whelm] resolved ${dwalletAddress} → ${r.address}`);
+    dwalletAddress = r.address;
   }
   if (!/^0x[0-9a-fA-F]{40}$/.test(dwalletAddress)) {
     console.error(`[whelm] dwalletAddress must be 0x-prefixed 20-byte hex, got ${dwalletAddress}`);
@@ -1728,6 +1724,23 @@ const _moveWaapEthToDwallet = async (opts?: {
 (window as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
 (globalThis as unknown as { moveWaapEthToDwallet: typeof _moveWaapEthToDwallet }).moveWaapEthToDwallet = _moveWaapEthToDwallet;
 console.log('[ski] whelm hook installed — call whelm("whelm") to engulf whelm.eth into eth@superteam\'s IKA dWallet. Pass { dwalletAddress: "eth@<name>" } to target another SUIAMI-Rumbled address, or { skipTransfer:true } to dry-run. Legacy moveWaapEthToDwallet() still aliases to whelm("waap").');
+
+// ── chainAt — canonical console resolver for chain@name identifiers ──
+//
+// Works for eth, sol, btc, tron, sui, and any other chain stored in
+// the SUIAMI roster. Returns raw address or throws. Plays with the
+// project's chain@name vocabulary (feedback_address_format.md).
+//
+//   await chainAt('eth@superteam')  → 0xCE3e…
+//   await chainAt('sol@ultron')     → Base58 Solana address
+//   await chainAt('sui@brando')     → 0x… sui-native 32-byte hex
+const _chainAt = async (identifier: string): Promise<string> => {
+  const { chainAt } = await import('./client/chain-at.js');
+  return chainAt(identifier);
+};
+(window as unknown as { chainAt: typeof _chainAt }).chainAt = _chainAt;
+(globalThis as unknown as { chainAt: typeof _chainAt }).chainAt = _chainAt;
+console.log('[ski] chainAt hook installed — await chainAt("eth@superteam") / chainAt("sol@ultron") / chainAt("sui@brando") to resolve any chain@name identifier via the SUIAMI roster.');
 
 // Sweep the OLD raw-keypair sol@ultron into a new IKA-derived recipient.
 // Pass the recipient address explicitly (typically the new sol@ultron

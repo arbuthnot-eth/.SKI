@@ -13,21 +13,41 @@
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 export interface UltronEnv {
+    /**
+     * Preferred name for ultron's Ed25519 private key (bech32 `suiprivkey1…`).
+     * Use this for new deploys and future rotations.
+     */
+    ULTRON_PRIVATE_KEY?: string;
+    /**
+     * Legacy name — ultron originally shipped as the Shade keeper only.
+     * Still accepted for backwards compatibility during the rename
+     * window; delete once ULTRON_PRIVATE_KEY is written on every
+     * environment.
+     */
     SHADE_KEEPER_PRIVATE_KEY?: string;
+}
+
+/** Resolve ultron's secret from either the preferred or legacy env name. */
+function resolveUltronSecret(env: UltronEnv): string | undefined {
+    return env.ULTRON_PRIVATE_KEY ?? env.SHADE_KEEPER_PRIVATE_KEY;
+}
+
+/** True if ultron is configured on this env (preferred or legacy name). */
+export function hasUltronKey(env: UltronEnv): boolean {
+    return !!resolveUltronSecret(env);
 }
 
 /**
  * Ultron.sui Ed25519 keypair. One call site away from IKA MPC.
  *
- * Throws if the secret isn't configured — call sites that tolerate an
- * unconfigured keeper should gate on `env.SHADE_KEEPER_PRIVATE_KEY`
- * before invoking, matching the existing pattern used across the
- * agents.
+ * Throws if no secret is configured — call sites that tolerate an
+ * unconfigured keeper should gate on `hasUltronKey(env)` before
+ * invoking, matching the runtime pattern across the agents.
  */
 export function ultronKeypair(env: UltronEnv): Ed25519Keypair {
-    const secret = env.SHADE_KEEPER_PRIVATE_KEY;
+    const secret = resolveUltronSecret(env);
     if (!secret) {
-        throw new Error('ultronKeypair: SHADE_KEEPER_PRIVATE_KEY not configured');
+        throw new Error('ultronKeypair: no ULTRON_PRIVATE_KEY or SHADE_KEEPER_PRIVATE_KEY configured');
     }
     return Ed25519Keypair.fromSecretKey(secret);
 }

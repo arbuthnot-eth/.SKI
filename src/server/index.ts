@@ -2950,7 +2950,20 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
     }
 
     if (plans.length === 0) {
-      return c.json({ ok: true, dryRun: true, plans: [], message: 'nothing to sweep' });
+      // Include resolved addresses so the UI shows which address was
+      // checked — catches the case where SHADE_KEEPER_PRIVATE_KEY has
+      // been overwritten to the new key (then oldUltron == newUltron
+      // and there's nothing to find).
+      return c.json({
+        ok: true,
+        dryRun: true,
+        oldUltron,
+        newUltron,
+        plans: [],
+        message: oldUltron === newUltron
+          ? `SHADE_KEEPER_PRIVATE_KEY derives to the NEW address (${oldUltron}) — it was likely overwritten during rotation. The original old-Ultron key is no longer on the Worker.`
+          : `No fungible coins found on ${oldUltron}. Verify balances on-chain.`,
+      });
     }
 
     const { Transaction } = await import('@mysten/sui/transactions');

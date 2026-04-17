@@ -91,7 +91,9 @@ export async function whelmUltronFlow(toast: (m: string, isHtml?: boolean, persi
         return;
     }
     if (!plan.plans?.length) {
-        toast('Nothing to whelm \u2014 old Ultron is empty.');
+        const addrLine = plan.oldUltron ? `\n\nChecked: ${plan.oldUltron}` : '';
+        const hint = (plan as { message?: string }).message ? `\n\n${(plan as { message?: string }).message}` : '';
+        toast(`Nothing to whelm.${addrLine}${hint}`, false, true);
         return;
     }
     const rows = plan.plans.map(p => `${p.label}: ${p.transfer} (of ${p.total}, ${p.count} coin${p.count === 1 ? '' : 's'})`).join('\n');

@@ -2973,7 +2973,7 @@ app.post('/api/cache/whelm-ultron-fungibles', async (c) => {
 
     const { Transaction } = await import('@mysten/sui/transactions');
     const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
-    const gql = new SuiGraphQLClient({ url: GQL, network: 'mainnet' });
+    const gql = new SuiGraphQLClient({ url: 'https://graphql.mainnet.sui.io/graphql', network: 'mainnet' });
 
     const tx = new Transaction();
     tx.setSender(oldUltron);

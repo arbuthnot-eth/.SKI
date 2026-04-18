@@ -18,7 +18,7 @@ Bonus: the name itself is thematic — "whelm.eth" as the engulfing parent that 
 | Parent ENS node: `namehash('waap.eth')` | Parent ENS node: `namehash('whelm.eth')` |
 | OffchainResolver gated on ultron + hot signer | Same — parent swap, not auth swap |
 | SuiNS twin: `alice.waap.sui` | SuiNS twin: `alice.whelm.sui` (or keep waap.sui if user prefers) |
-| L1 registrar: `ENS.setResolver(namehash(waap.eth), gatewayAddr)` after whelm | `ENS.setResolver(namehash(whelm.eth), gatewayAddr)` — signable TODAY via brando/dWallet flow |
+| L1 registrar: `ENS.setResolver(namehash(waap.eth), gatewayAddr)` after whelm | `ENS.setResolver(namehash(whelm.eth), gatewayAddr)` — signable TODAY via brando/dWallet flow (~$0.024 gas at 0.195 gwei) |
 
 ## Multi-parent support (optional)
 

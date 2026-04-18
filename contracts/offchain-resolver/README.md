@@ -52,12 +52,16 @@ await ensRegistry.setResolver(
 Then call `OffchainResolver.setAdmin(ultronDwalletAddr)` so future rotations are
 threshold-gated instead of hot-key gated.
 
-## Gas budget (mainnet, ~50 gwei scenarios)
+## Gas budget
 
-- Deploy: ~$2 (Foundry-optimized) to $3 (unoptimized)
-- `setResolver` per parent: ~$0.20
-- `setAdmin`: ~$0.15
-- `rotateSigners`: ~$0.20 per rotation
+Actual mainnet check 2026-04-17: gas price **0.195 gwei**, ETH **$2,424.80**.
+
+- Deploy (~1.2M gas): **~$0.57**
+- `setResolver` per parent (~50k gas): **~$0.024**
+- `setAdmin` (~30k gas): **~$0.015**
+- `rotateSigners` (~45k gas per rotation): **~$0.022**
+
+At the 50 gwei scenarios that used to be the norm, multiply by ~250× (so deploy was ~$150 back then). Gas has been this low since the Dencun / blob-throttling era — budget might spike during mainnet congestion, but routine deploys are sub-dollar today.
 
 ## Source of the signer addresses
 

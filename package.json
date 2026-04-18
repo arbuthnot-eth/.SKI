@@ -66,6 +66,7 @@
     "@mysten/sui-groups": "^0.0.1",
     "@mysten/sui-stack-messaging": "^0.0.2",
     "@mysten/suins": "^1.0.5",
+    "@mysten/walrus": "^1.1.2",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "@scure/base": "^2.0.0",

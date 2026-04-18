@@ -31,6 +31,7 @@
  */
 
 import { Agent, callable } from 'agents';
+import { ultronKeypair, hasUltronKey, type UltronEnv } from '../ultron-key.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -74,9 +75,19 @@ export interface AggronPendingBlob {
   /** Optional producer-scoped metadata pass-through. Not inspected here. */
   metadata?: Record<string, string>;
   submittedAtMs: number;
-  /** Flipped to true by the alarm stub when the entry is "accepted for
-   *  flush". Move 2 replaces this with a real Walrus quilt pointer. */
+  /** Flipped to true once the entry has been included in a successful
+   *  Walrus Quilt publish. Pointer (quiltBlobId + patchId) is written
+   *  alongside so the downstream reconciler can resolve it. */
   flushed?: boolean;
+  /** Walrus Quilt blob id this entry was written into (null until flushed). */
+  quiltBlobId?: string;
+  /** Quilt patch identifier (unique within the Quilt) for this blob. */
+  patchId?: string;
+  /** Consecutive failed flush attempts. Entries reaching
+   *  AGGRON_FLUSH_MAX_ATTEMPTS are dead-lettered. */
+  flushAttempts?: number;
+  /** Most recent flush error, if any. */
+  lastFlushError?: string;
 }
 
 export interface AggronCompletedFlush {
@@ -100,9 +111,14 @@ export interface AggronBatcherState {
   completedFlushes: AggronCompletedFlush[];
 }
 
-interface Env {
+interface Env extends UltronEnv {
   SUI_NETWORK?: string;
 }
+
+/** Upper bound on how many consecutive failed flush attempts we tolerate
+ *  for a single entry before giving up (moves entry into a dead-letter
+ *  state; producer can re-enqueue). */
+export const AGGRON_FLUSH_MAX_ATTEMPTS = 5;
 
 // ─── Pure helpers (exported for tests) ──────────────────────────────
 
@@ -112,6 +128,14 @@ export function generateBlobId(random?: () => Uint8Array): string {
   let hex = '0x';
   for (const b of bytes) hex += b.toString(16).padStart(2, '0');
   return hex;
+}
+
+/** Decode base64 → Uint8Array. atob is available in the Workers runtime. */
+export function base64Decode(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 /** Decoded byte length of a base64 string without materializing the bytes. */
@@ -240,12 +264,13 @@ export class AggronBatcher extends Agent<Env, AggronBatcherState> {
 
   // ─── Internal ──────────────────────────────────────────────────────
 
-  /** Move 1 stub: marks unflushed entries as `flushed` with a null quilt
-   *  pointer, records the cycle in completedFlushes, and reschedules.
-   *  Move 2 (Aggron Stone Edge) replaces this with a real Walrus SDK
-   *  Quilt publish PTB signed by ultron. */
+  /** Aggron Stone Edge — real Walrus Quilt publish. Ultron signs the PTB
+   *  with its own keypair, WAL storage fee comes out of its balance.
+   *  Amortizes cost across all entries in the flush. */
   async _runFlushAlarm(): Promise<void> {
-    const ready = this.state.pendingBlobs.filter(b => !b.flushed);
+    const ready = this.state.pendingBlobs.filter(
+      b => !b.flushed && (b.flushAttempts ?? 0) < AGGRON_FLUSH_MAX_ATTEMPTS,
+    );
     if (ready.length === 0) {
       await this._scheduleFlushAlarm();
       return;
@@ -253,29 +278,106 @@ export class AggronBatcher extends Agent<Env, AggronBatcherState> {
     const kinds = Array.from(new Set(ready.map(b => b.kind))).sort();
     const totalBytes = ready.reduce((acc, b) => acc + b.sizeBytes, 0);
     const flushId = generateBlobId();
-    const flush: AggronCompletedFlush = {
-      flushId,
-      count: ready.length,
-      totalBytes,
-      kinds,
-      quiltBlobId: null, // TODO(Aggron Stone Edge): real Walrus quilt blob id
-      publishDigest: null, // TODO(Aggron Stone Edge): Sui tx digest
-      flushedAtMs: Date.now(),
-    };
-    const flushedSet = new Set(ready.map(b => b.blobId));
-    const updatedPending = this.state.pendingBlobs.map(b =>
-      flushedSet.has(b.blobId) ? { ...b, flushed: true } : b,
-    );
-    const history = [...this.state.completedFlushes, flush].slice(-AGGRON_HISTORY_MAX);
-    this.setState({
-      ...this.state,
-      pendingBlobs: updatedPending,
-      completedFlushes: history,
-    });
-    console.log(
-      `[AggronBatcher] flush stub ${flushId.slice(0, 10)}… — ${ready.length} entries, ${totalBytes} B, kinds=${kinds.join(',')}`,
-    );
+
+    if (!hasUltronKey(this.env)) {
+      console.warn(`[AggronBatcher] flush ${flushId.slice(0, 10)}… skipped — no ultron key`);
+      await this._recordFlushFailure(ready, 'no-ultron-key');
+      await this._scheduleFlushAlarm();
+      return;
+    }
+
+    try {
+      const { WalrusClient } = await import('@mysten/walrus');
+      const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+      const gql = new SuiGraphQLClient({
+        url: 'https://graphql.mainnet.sui.io/graphql',
+        network: 'mainnet',
+      });
+      // ClientWithCoreApi cast: SuiGraphQLClient exposes .core on ^2.16.
+      const walrus = new WalrusClient({
+        network: 'mainnet',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        suiClient: gql as any,
+      });
+      const signer = ultronKeypair(this.env);
+
+      // Decode each base64 ciphertext into bytes. The Quilt API takes
+      // { contents, identifier, tags } per blob. Use blobId as identifier
+      // so we can reconcile the patch index back to our pending entry.
+      const quiltBlobs = ready.map(b => ({
+        contents: base64Decode(b.ciphertextB64),
+        identifier: b.blobId,
+        tags: {
+          kind: b.kind,
+          targetKey: b.targetKey,
+          ...(b.metadata ?? {}),
+        },
+      }));
+
+      const result = await walrus.writeQuilt({
+        blobs: quiltBlobs,
+        signer,
+      });
+
+      // Build quick index from identifier → patch for pointer update.
+      const patchByIdentifier = new Map<string, { patchId: string; startIndex: number; endIndex: number }>();
+      for (const p of result.index.patches) {
+        patchByIdentifier.set(p.identifier, {
+          patchId: p.patchId,
+          startIndex: p.startIndex,
+          endIndex: p.endIndex,
+        });
+      }
+
+      const flushedSet = new Set(ready.map(b => b.blobId));
+      const updatedPending = this.state.pendingBlobs.map(b => {
+        if (!flushedSet.has(b.blobId)) return b;
+        const patch = patchByIdentifier.get(b.blobId);
+        return {
+          ...b,
+          flushed: true,
+          quiltBlobId: result.blobId,
+          patchId: patch?.patchId,
+        };
+      });
+      const flush: AggronCompletedFlush = {
+        flushId,
+        count: ready.length,
+        totalBytes,
+        kinds,
+        quiltBlobId: result.blobId,
+        publishDigest: result.blobObject.id ?? null,
+        flushedAtMs: Date.now(),
+      };
+      const history = [...this.state.completedFlushes, flush].slice(-AGGRON_HISTORY_MAX);
+      this.setState({
+        ...this.state,
+        pendingBlobs: updatedPending,
+        completedFlushes: history,
+      });
+      console.log(
+        `[AggronBatcher] flush ${flushId.slice(0, 10)}… quilt=${result.blobId.slice(0, 12)}… — ${ready.length} entries, ${totalBytes} B`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[AggronBatcher] flush ${flushId.slice(0, 10)}… failed: ${msg}`);
+      await this._recordFlushFailure(ready, msg);
+    }
+
     await this._scheduleFlushAlarm();
+  }
+
+  /** Bump attempt counters + store last error on entries that just failed
+   *  a flush. Entries that hit AGGRON_FLUSH_MAX_ATTEMPTS are dead-lettered
+   *  (flushed=false + attempts at cap) so producers can inspect / re-queue. */
+  private async _recordFlushFailure(failed: AggronPendingBlob[], err: string): Promise<void> {
+    const failedSet = new Set(failed.map(b => b.blobId));
+    const next = this.state.pendingBlobs.map(b => {
+      if (!failedSet.has(b.blobId)) return b;
+      const attempts = (b.flushAttempts ?? 0) + 1;
+      return { ...b, flushAttempts: attempts, lastFlushError: err };
+    });
+    this.setState({ ...this.state, pendingBlobs: next });
   }
 
   /** Schedule the next alarm — by default the standard cadence, or a

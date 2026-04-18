@@ -1840,48 +1840,64 @@ console.log('[ski] bindWhelmEthResolver hook installed — once OffchainResolver
 //   3. window.ethereum.providers[i] — legacy multi-provider array
 //   4. window.ethereum — last resort (what we were doing before)
 type EthProvider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
+// EIP-6963 is the only safe channel — extensions dispatch announce events
+// directly, can't be monkey-patched by a rival wallet. window.phantom.ethereum
+// and window.ethereum are both monkey-patchable and have been observed
+// hijacked by Me/peer.xyz wallets even when their global namespaces look
+// untouched.
 async function getPhantomEth(): Promise<EthProvider | null> {
   const w = window as unknown as {
     phantom?: { ethereum?: EthProvider };
     ethereum?: EthProvider & { providers?: (EthProvider & { isPhantom?: boolean })[]; isPhantom?: boolean };
   };
-  if (w.phantom?.ethereum) {
-    console.log('[getPhantomEth] via window.phantom.ethereum');
-    return w.phantom.ethereum;
-  }
   const found = await new Promise<EthProvider | null>((resolve) => {
-    const announced: { rdns: string; name: string }[] = [];
+    const announced: { rdns: string; name: string; uuid: string }[] = [];
+    let phantomFound: EthProvider | null = null;
     const handler = (ev: Event) => {
-      const d = (ev as CustomEvent<{ info?: { rdns?: string; name?: string }; provider?: EthProvider }>).detail;
+      const d = (ev as CustomEvent<{
+        info?: { rdns?: string; name?: string; uuid?: string };
+        provider?: EthProvider;
+      }>).detail;
       const rdns = d?.info?.rdns?.toLowerCase() ?? '';
       const name = d?.info?.name?.toLowerCase() ?? '';
-      announced.push({ rdns, name });
-      if (rdns.includes('phantom') || name.includes('phantom')) {
-        window.removeEventListener('eip6963:announceProvider', handler as EventListener);
+      announced.push({ rdns, name, uuid: d?.info?.uuid ?? '' });
+      if ((rdns.includes('phantom') || name.includes('phantom')) && !phantomFound) {
+        phantomFound = d?.provider ?? null;
         console.log('[getPhantomEth] via EIP-6963, rdns=', rdns);
-        resolve(d?.provider ?? null);
       }
     };
     window.addEventListener('eip6963:announceProvider', handler as EventListener);
     window.dispatchEvent(new Event('eip6963:requestProvider'));
+    // Wait 2 seconds for all providers to announce — some wallets lazy-init.
     setTimeout(() => {
       window.removeEventListener('eip6963:announceProvider', handler as EventListener);
-      console.log('[getPhantomEth] EIP-6963 timeout, announced providers:', announced);
-      resolve(null);
-    }, 500);
+      if (phantomFound) {
+        console.log('[getPhantomEth] EIP-6963 resolved after 2s, all announced:', announced);
+        resolve(phantomFound);
+      } else {
+        console.warn('[getPhantomEth] EIP-6963 found no Phantom after 2s. Announced providers:', announced);
+        resolve(null);
+      }
+    }, 2000);
   });
   if (found) return found;
+  // EIP-6963 didn't find Phantom — fall back to legacy detection, with
+  // integrity checks (isPhantom flag) before trusting.
   const legacy = w.ethereum?.providers?.find((p) => p.isPhantom);
   if (legacy) {
-    console.log('[getPhantomEth] via window.ethereum.providers[] (isPhantom match)');
+    console.log('[getPhantomEth] fallback: window.ethereum.providers[] (isPhantom=true)');
     return legacy;
   }
   if (w.ethereum?.isPhantom) {
-    console.log('[getPhantomEth] via window.ethereum (isPhantom=true)');
+    console.log('[getPhantomEth] fallback: window.ethereum (isPhantom=true)');
     return w.ethereum;
   }
-  console.warn('[getPhantomEth] falling back to window.ethereum (NOT Phantom — hijacker may be active)');
-  return w.ethereum ?? null;
+  if (w.phantom?.ethereum) {
+    console.warn('[getPhantomEth] last-resort: window.phantom.ethereum (may be hijacked — if this fails, disable conflicting wallet extensions)');
+    return w.phantom.ethereum;
+  }
+  console.error('[getPhantomEth] no Phantom ETH provider found');
+  return null;
 }
 (window as unknown as { getPhantomEth: typeof getPhantomEth }).getPhantomEth = getPhantomEth;
 

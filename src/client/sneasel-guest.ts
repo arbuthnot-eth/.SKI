@@ -531,6 +531,38 @@ export async function sealDecryptColdDest(params: {
 // Bronzong pattern can grep for it without chasing through re-exports.
 void getSealClient;
 
+/** Build (but do NOT submit) the rotate_sweep_delegate PTB (Sneasel Slash).
+ *  Swaps sweep_delegate + sealed_cold_dest in place — preserves hot_addr,
+ *  chain, expires_ms so live guests keep their unchanged on-chain face.
+ *  Parent-owner only. See roster.move::rotate_sweep_delegate. */
+export async function buildRotateSweepDelegateTx(
+  tx: TxType,
+  args: {
+    rosterObj: string;
+    parentHash: number[];
+    labelBytes: number[];
+    newDelegate: string;
+    newSealedColdDest: Uint8Array;
+  },
+): Promise<void> {
+  if (!SUIAMI_STEALTH_PKG) {
+    throw new Error(
+      '[sneasel] SUIAMI_STEALTH_PKG not set — Move upgrade (incl. Slash) pending publish.',
+    );
+  }
+  tx.moveCall({
+    target: `${SUIAMI_STEALTH_PKG}::roster::rotate_sweep_delegate`,
+    arguments: [
+      tx.object(args.rosterObj),
+      tx.pure.vector('u8', args.parentHash),
+      tx.pure.vector('u8', args.labelBytes),
+      tx.pure.address(args.newDelegate),
+      tx.pure.vector('u8', Array.from(args.newSealedColdDest)),
+      tx.object('0x6'), // Clock
+    ],
+  });
+}
+
 /** Build (but do NOT submit) the bind_guest_stealth PTB. Caller submits
  *  via the usual signAndExecuteTransaction path. */
 export async function buildBindGuestStealthTx(

@@ -994,3 +994,213 @@ public fun guest_expires_ms(roster: &Roster, parent_hash: vector<u8>, label: vec
 public fun test_assert_parent_owner(roster: &Roster, parent_hash: vector<u8>, sender: address): address {
     assert_parent_owner(roster, parent_hash, sender)
 }
+
+// ─── Guest Stealth subnames (Sneasel arc, #197) ────────────────────
+//
+// Privacy-preserving variant of Guest. Public CCIP-read resolves to a
+// freshly-derived hot address per counterparty (amazon.brando.whelm.eth
+// vs venmo.brando.whelm.eth get different, unlinkable addrs). The true
+// cold squid destination is stored as a Seal-encrypted blob, decryptable
+// ONLY by ultron (or the designated sweep delegate). The hot→cold sweep
+// is ultron's job: IKA-sign from hot using its DWalletCap, batch+jitter
+// to break timing correlation, deposit into the cold squid.
+//
+// Key authorisation flow:
+//   - parent owner (brando) writes GuestStealth via `bind_guest_stealth`
+//   - sealed_cold_dest is encrypted client-side against ultron's Seal policy
+//   - ultron's `seal_approve_guest_stealth` fn gates decryption to the
+//     sweep delegate's own on-chain ownership proof
+//   - CCIP-read gateway resolves the subname to `hot_addr` (public-OK)
+//   - ultron scans hot_addr via webhook, decrypts cold-dest JIT, signs
+//     sweep tx via IKA, discards plaintext
+//
+// Observer view: hot_addr receives funds, forwards batch N minutes later
+// to ultron's sweep collector; collector batches again to cold. Zero
+// direct hot→cold link visible from Etherscan/Arkham. Amazon and Venmo
+// can't link payments because their guest subnames resolve to different
+// addresses.
+
+public struct GuestStealthKey has copy, drop, store {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+}
+
+public struct GuestStealth has store, drop {
+    /// The Sui address that owns the parent record (auth anchor).
+    parent_sui_address: address,
+    /// Hot receive address — freshly provisioned per guest, no history.
+    /// Public CCIP-read resolves the subname to this. Chain varies; the
+    /// resolver matches against the caller's requested coinType.
+    hot_addr: String,
+    /// Chain hint for `hot_addr`: "eth","sol","btc","tron","sui".
+    chain: String,
+    /// Seal-ciphertext of the actual cold-squid destination address +
+    /// any sweep policy hints (e.g., minimum batch size). Opaque here —
+    /// the Seal policy gates who can decrypt. Stored as raw bytes so
+    /// the encrypt format can evolve without Move upgrade.
+    sealed_cold_dest: vector<u8>,
+    /// Unix ms. `now < expires_ms` → guest is live.
+    expires_ms: u64,
+    /// Sweep delegate — the address whose ownership proof satisfies
+    /// `seal_approve_guest_stealth`. Typically ultron's ETH dWallet
+    /// or its IKA-derived address.
+    sweep_delegate: address,
+}
+
+public struct GuestStealthBound has copy, drop {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    hot_addr: String,
+    chain: String,
+    expires_ms: u64,
+    sweep_delegate: address,
+}
+
+public struct GuestStealthRevoked has copy, drop {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    revoker: address,
+}
+
+public struct GuestStealthReaped has copy, drop {
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    reaper: address,
+}
+
+/// Bind a privacy-preserving guest subname. Caller must own the parent
+/// record (via Sui-name or ENS hash). `sealed_cold_dest` is opaque here;
+/// encrypt it client-side against the Seal policy before submitting.
+/// Overwrites any existing binding under the same key.
+entry fun bind_guest_stealth(
+    roster: &mut Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    hot_addr: String,
+    chain: String,
+    sealed_cold_dest: vector<u8>,
+    ttl_ms: u64,
+    sweep_delegate: address,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    let parent_addr = assert_parent_owner(roster, parent_hash, sender);
+
+    let key = GuestStealthKey { parent_hash, label };
+    if (dynamic_field::exists_<GuestStealthKey>(&roster.id, key)) {
+        let _old: GuestStealth = dynamic_field::remove<GuestStealthKey, GuestStealth>(&mut roster.id, key);
+    };
+
+    let expires_ms = clock.timestamp_ms() + ttl_ms;
+    let stealth = GuestStealth {
+        parent_sui_address: parent_addr,
+        hot_addr,
+        chain,
+        sealed_cold_dest,
+        expires_ms,
+        sweep_delegate,
+    };
+    dynamic_field::add(&mut roster.id, key, stealth);
+
+    let borrowed: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    event::emit(GuestStealthBound {
+        parent_hash,
+        label,
+        hot_addr: borrowed.hot_addr,
+        chain: borrowed.chain,
+        expires_ms,
+        sweep_delegate,
+    });
+}
+
+/// Parent owner (or sweep_delegate) can revoke before expiry.
+entry fun revoke_guest_stealth(
+    roster: &mut Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    let authorised = (stealth.parent_sui_address == sender) || (stealth.sweep_delegate == sender);
+    assert!(authorised, ENotOwner);
+    let _drop: GuestStealth = dynamic_field::remove<GuestStealthKey, GuestStealth>(&mut roster.id, key);
+    event::emit(GuestStealthRevoked { parent_hash, label, revoker: sender });
+}
+
+/// Permissionless reap after expiry — keeps the roster tidy.
+entry fun reap_guest_stealth(
+    roster: &mut Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    assert!(clock.timestamp_ms() >= stealth.expires_ms, EGuestNotBound);
+    let _drop: GuestStealth = dynamic_field::remove<GuestStealthKey, GuestStealth>(&mut roster.id, key);
+    event::emit(GuestStealthReaped { parent_hash, label, reaper: ctx.sender() });
+}
+
+/// Seal approval — gates who can decrypt `sealed_cold_dest`. Seal calls
+/// this at decrypt time; succeeds ⇒ key released. Callable by the sweep
+/// delegate only. Expiry enforces auto-lockdown: expired stealths can't
+/// be decrypted even by the delegate (caller should reap + rebind with
+/// fresh sealed blob when rotating).
+entry fun seal_approve_guest_stealth(
+    roster: &Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    assert!(stealth.sweep_delegate == ctx.sender(), ENotOwner);
+    assert!(clock.timestamp_ms() < stealth.expires_ms, EGuestNotBound);
+}
+
+public fun has_guest_stealth(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): bool {
+    let key = GuestStealthKey { parent_hash, label };
+    dynamic_field::exists_<GuestStealthKey>(&roster.id, key)
+}
+
+public fun guest_stealth_hot_addr(
+    roster: &Roster,
+    parent_hash: vector<u8>,
+    label: vector<u8>,
+    clock: &Clock,
+): String {
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    assert!(clock.timestamp_ms() < stealth.expires_ms, EGuestNotBound);
+    stealth.hot_addr
+}
+
+public fun guest_stealth_chain(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): String {
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    stealth.chain
+}
+
+public fun guest_stealth_expires_ms(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): u64 {
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    stealth.expires_ms
+}
+
+public fun guest_stealth_sweep_delegate(roster: &Roster, parent_hash: vector<u8>, label: vector<u8>): address {
+    let key = GuestStealthKey { parent_hash, label };
+    assert!(dynamic_field::exists_<GuestStealthKey>(&roster.id, key), EGuestNotBound);
+    let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
+    stealth.sweep_delegate
+}

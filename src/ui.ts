@@ -6393,6 +6393,14 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Squids</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron-squids" type="button" title="Sweep DWalletCap objects from old Ultron into the new address">Whelm Squids</button>
         </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Resolver</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-deploy-resolver" type="button" title="Deploy OffchainResolver.sol on Ethereum mainnet (~$0.57 gas)">Deploy Resolver</button>
+        </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Bind whelm.eth</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-bind-whelm-eth" type="button" title="Bind whelm.eth to the deployed resolver (~$0.024 gas)">Bind whelm.eth</button>
+        </div>
       </div>`;
 }
 
@@ -7173,6 +7181,91 @@ function renderSkiMenu() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Whelm Squids error: ${msg}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  // Admin — Deploy OffchainResolver (ENS CCIP-read resolver for whelm.eth)
+  document.getElementById('wk-deploy-resolver')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Signing\u2026';
+    try {
+      const fn = (window as unknown as {
+        deployOffchainResolver?: (opts?: { dryRun?: boolean }) => Promise<{
+          ok?: boolean;
+          tx?: string;
+          address?: string;
+          predictedAddress?: string;
+          error?: string;
+        }>;
+      }).deployOffchainResolver;
+      if (!fn) {
+        showToast('deployOffchainResolver helper not loaded');
+        return;
+      }
+      const result = await fn();
+      if (result.error) {
+        showToast(`Deploy failed: ${result.error}`, false, true);
+        return;
+      }
+      const addr = result.address ?? result.predictedAddress;
+      if (addr) {
+        localStorage.setItem('ski:offchain-resolver-addr', addr);
+        showToast(`\u2713 Resolver: ${addr.slice(0, 10)}\u2026 (saved — now click Bind whelm.eth)`, false, true);
+      } else {
+        showToast('Deploy submitted; no address returned', false, true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Deploy error: ${msg}`, false, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  // Admin — Bind whelm.eth to the deployed OffchainResolver
+  document.getElementById('wk-bind-whelm-eth')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    const saved = localStorage.getItem('ski:offchain-resolver-addr');
+    const addr = saved ?? (prompt('Deployed OffchainResolver address (0x…):') ?? '').trim();
+    if (!addr || !/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+      showToast('Need a valid 0x…40-hex resolver address. Deploy first or paste manually.');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Signing\u2026';
+    try {
+      const fn = (window as unknown as {
+        bindWhelmEthResolver?: (
+          addr: string,
+          opts?: { ensName?: string; dryRun?: boolean },
+        ) => Promise<{ ok?: boolean; tx?: string; error?: string }>;
+      }).bindWhelmEthResolver;
+      if (!fn) {
+        showToast('bindWhelmEthResolver helper not loaded');
+        return;
+      }
+      const result = await fn(addr);
+      if (result.error) {
+        showToast(`Bind failed: ${result.error}`, false, true);
+        return;
+      }
+      if (result.tx) {
+        showToast(`\u2713 whelm.eth \u2192 ${addr.slice(0, 10)}\u2026 (tx ${result.tx.slice(0, 10)}\u2026)`, false, true);
+      } else {
+        showToast('Bind submitted; no tx hash returned', false, true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Bind error: ${msg}`, false, true);
     } finally {
       btn.disabled = false;
       btn.textContent = original;

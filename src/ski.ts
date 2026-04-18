@@ -1152,7 +1152,11 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[upgradeSuiami] failed:', err);
     if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
-      showToast(`Upgrade failed: ${msg.slice(0, 100)}`);
+      // Auto-copy the full error so the user can paste it into a
+      // console/debug tool without character-truncation.
+      try { navigator.clipboard?.writeText(msg); } catch { /* clipboard blocked */ }
+      const preview = msg.length > 100 ? `${msg.slice(0, 100)}… (full copied)` : msg;
+      showToast(`Upgrade failed: ${preview}`);
     }
     return { error: msg };
   }

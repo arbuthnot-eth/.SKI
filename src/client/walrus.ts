@@ -19,8 +19,10 @@ export const WALRUS_AGGREGATORS_MAINNET: readonly string[] = [
 
 /** Mainnet publishers — writes are sequential until one accepts. */
 export const WALRUS_PUBLISHERS_MAINNET: readonly string[] = [
+    'https://publisher.mainnet.walrus.mirai.cloud',
     'https://publisher.walrus-mainnet.h2o-nodes.com',
     'https://publisher.walrus.space',
+    'https://sm-walrus-mainnet-publisher.stakesquid.com',
 ] as const;
 
 /** Legacy single-URL export for code paths still reading a single string. */

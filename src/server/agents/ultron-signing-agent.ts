@@ -15,7 +15,7 @@
  * can be layered on top using the same initSync path.
  */
 
-import { Agent } from 'agents';
+import { Agent, callable } from 'agents';
 import { SuiGraphQLClient } from '@mysten/sui/graphql';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -70,6 +70,13 @@ const ULTRON_DWALLETS: Record<'ed25519' | 'secp256k1', DWalletSpec> = {
     dkgDigest: '38NwvhPrP911FBJgQsVMmCE6jhufWCCzpxubwY8CTaDy',
   },
 };
+// TODO(Weavile Assurance Move 6): Rumble the paymaster squid to populate.
+// A dedicated IKA secp256k1 dWallet whose pubkey is registered as the
+// verifying-signer in the Pimlico paymaster contract. Rotated weekly.
+// Until Move 6 runs DKG in brando's browser, this stays null and any
+// caller requesting a paymaster-signer signature must be rejected.
+export const PAYMASTER_SIGNER_DWALLET: DWalletSpec | null = null;
+
 // Legacy shims so existing call sites in this file keep working until
 // we sweep them all to use ULTRON_DWALLETS[curve].
 const ULTRON_ED25519_DWALLET_ID = ULTRON_DWALLETS.ed25519.dwalletId;
@@ -1180,6 +1187,100 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
    * converts that into the canonical curve/algorithm-specific signature
    * bytes (DER-encoded for ECDSA, raw 64 bytes for Ed25519).
    */
+  /**
+   * Weavile Assurance Move 1 — generic 32-byte hash signing entry point.
+   *
+   * Signs an arbitrary 32-byte hash via IKA 2PC-MPC. Used for:
+   *   - EIP-4337 UserOp hashes (secp256k1, KECCAK256) — WeavileAssuranceAgent
+   *   - Paymaster data EIP-712 digests (secp256k1, KECCAK256)
+   *   - Raw Solana/Sui tx body hashes (ed25519, SHA512)
+   *
+   * Reuses the existing IKA ceremony machinery end-to-end:
+   *   _requestPresign → _pollPresignCompleted → _requestSign → _pollSignCompleted.
+   * The hash is fed in as the "message" bytes with an appropriate hashScheme;
+   * IKA's approveMessage contract accepts the 32-byte digest directly.
+   *
+   * dWallet lookup: matches against ULTRON_DWALLETS[curve] or
+   * PAYMASTER_SIGNER_DWALLET. Additional specs (per-stealth dWallets from
+   * Weavile scans) can be threaded in later by extending the lookup here.
+   *
+   * Returns a 0x-prefixed hex signature:
+   *   - secp256k1: 64 bytes (r || s), DER or compact per SDK parser
+   *   - ed25519: 64 bytes raw
+   */
+  @callable({})
+  async signForStealth(params: {
+    dwalletId: string;
+    hash: string;
+    curve: 'secp256k1' | 'ed25519';
+  }): Promise<{ sig: string }> {
+    const { dwalletId, hash, curve } = params;
+
+    if (curve !== 'secp256k1' && curve !== 'ed25519') {
+      throw new Error(`signForStealth: invalid curve '${String(curve)}' (must be secp256k1 or ed25519)`);
+    }
+    if (typeof hash !== 'string' || !hash.startsWith('0x')) {
+      throw new Error(`signForStealth: hash must be a 0x-prefixed hex string`);
+    }
+    const hexBody = hash.slice(2);
+    if (hexBody.length !== 64 || !/^[0-9a-fA-F]+$/.test(hexBody)) {
+      throw new Error(`signForStealth: hash must decode to exactly 32 bytes (got ${hexBody.length / 2} hex chars)`);
+    }
+    const hashBytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+      hashBytes[i] = parseInt(hexBody.slice(i * 2, i * 2 + 2), 16);
+    }
+
+    // Resolve dWallet spec. Move 1 supports the two ultron dWallets and the
+    // (currently null) paymaster signer. Future moves extend this to per-
+    // stealth dWallets by threading a spec registry through DO state.
+    const ultronSpec = ULTRON_DWALLETS[curve];
+    let matched = false;
+    if (ultronSpec.dwalletId === dwalletId) matched = true;
+    if (PAYMASTER_SIGNER_DWALLET && PAYMASTER_SIGNER_DWALLET.dwalletId === dwalletId) matched = true;
+    if (!matched) {
+      throw new Error(`signForStealth: unknown dwalletId '${dwalletId}' for curve ${curve}`);
+    }
+
+    // Hash scheme must match curve per IKA's validity matrix (see Hash enum
+    // jsdoc in @ika.xyz/sdk types). The hash we receive is already digested
+    // (EIP-4337 userOpHash is keccak256, Solana tx body is sha512-ready, etc),
+    // so we pass it as message bytes and declare the appropriate scheme.
+    const hashScheme = curve === 'secp256k1' ? 'KECCAK256' : 'SHA512';
+
+    // Step 1: request presign on the Active dWallet.
+    const presignResult = await this._requestPresign(curve);
+    if (!presignResult.ok || !presignResult.presignObjectId || !presignResult.presignCapId) {
+      throw new Error(`signForStealth: presign request failed: ${presignResult.error ?? 'unknown'}`);
+    }
+
+    // Step 2: poll presign until Completed.
+    const presignPoll = await this._pollPresignCompleted(presignResult.presignObjectId);
+    if (!presignPoll.ok || !presignPoll.completed) {
+      throw new Error(`signForStealth: presign did not complete: ${presignPoll.error ?? 'unknown'}`);
+    }
+
+    // Step 3: submit sign PTB against the completed presign.
+    const signResult = await this._requestSign({
+      curve,
+      presignObjectId: presignResult.presignObjectId,
+      presignCapId: presignResult.presignCapId,
+      message: hashBytes,
+      hashScheme,
+    });
+    if (!signResult.ok || !signResult.signSessionId) {
+      throw new Error(`signForStealth: sign request failed: ${signResult.error ?? 'unknown'}`);
+    }
+
+    // Step 4: poll sign session until Completed, parse signature bytes.
+    const signPoll = await this._pollSignCompleted(signResult.signSessionId, curve);
+    if (!signPoll.ok || !signPoll.signatureHex) {
+      throw new Error(`signForStealth: sign did not complete: ${signPoll.error ?? 'unknown'}`);
+    }
+
+    return { sig: `0x${signPoll.signatureHex}` };
+  }
+
   private async _pollSignCompleted(
     signSessionId: string,
     curve: 'ed25519' | 'secp256k1' = 'secp256k1',

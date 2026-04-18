@@ -1829,6 +1829,128 @@ const _bindWhelmEthResolver = async (
 (globalThis as unknown as { bindWhelmEthResolver: typeof _bindWhelmEthResolver }).bindWhelmEthResolver = _bindWhelmEthResolver;
 console.log('[ski] bindWhelmEthResolver hook installed — once OffchainResolver.sol is deployed, call bindWhelmEthResolver("0x<addr>") from the whelm.eth owner\'s wallet.');
 
+// ── publishStealthMeta — Weavile Razor Claw (#198) ──────────────────
+//
+// Publish a Weavile stealth meta-address as an ENS text record on the
+// caller's ENS name. Senders reading that text record derive fresh
+// stealth addresses via ECDH against the published view pubkey, so the
+// meta-address is the *public* half of the scheme — safe to publish.
+//
+// Usage (from whelm.eth owner's console):
+//   publishStealthMeta('ska:0x<ika_dwallet_id>:eth=0x02ab…|sui=0x12…')
+//   publishStealthMeta(meta, { ensName: 'whelm', key: 'stealth-meta-address' })
+//   publishStealthMeta(meta, { dryRun: true })
+//
+// The `key` defaults to `stealth-meta-address` (a Razor Claw convention;
+// Fluidkey uses `eth.umbra.receiving-address` for its Umbra equivalent).
+// For a later Pursuit move we may add `stealth-meta-address.v2` alongside
+// for versioned rotations.
+const _publishStealthMeta = async (
+  metaStr: string,
+  opts?: { ensName?: string; key?: string; dryRun?: boolean },
+) => {
+  if (!metaStr.startsWith('ska:')) {
+    console.error(`[publishStealthMeta] meta-address must start with "ska:" (got: ${metaStr.slice(0, 32)})`);
+    return { error: 'invalid meta format' };
+  }
+  const ensName = (opts?.ensName ?? 'whelm').toLowerCase().trim();
+  const recordKey = opts?.key ?? 'stealth-meta-address';
+  if (!/^[a-z0-9-]+$/.test(ensName)) {
+    console.error(`[publishStealthMeta] invalid ENS name: "${ensName}"`);
+    return { error: 'invalid ens name' };
+  }
+  const eth = await getPhantomEth();
+  if (!eth) {
+    console.error('[publishStealthMeta] no Phantom ETH provider — unlock Phantom first');
+    return { error: 'no wallet' };
+  }
+  const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
+  const { keccak_256 } = await import('@noble/hashes/sha3.js');
+  // Namehash per EIP-137.
+  const labels = `${ensName}.eth`.split('.');
+  let node = new Uint8Array(32);
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const labelHash = keccak_256(new TextEncoder().encode(labels[i]));
+    const buf = new Uint8Array(64);
+    buf.set(node, 0);
+    buf.set(labelHash, 32);
+    node = keccak_256(buf);
+  }
+  const nodeHex = '0x' + Array.from(node, (b) => b.toString(16).padStart(2, '0')).join('');
+  // Resolve current resolver — ENS Registry.resolver(node) = 0x0178b8bf.
+  const resolverResp = (await eth.request({
+    method: 'eth_call',
+    params: [{ to: ENS_REGISTRY, data: '0x0178b8bf' + nodeHex.slice(2) }, 'latest'],
+  })) as string;
+  const resolverAddr = '0x' + resolverResp.slice(-40);
+  if (/^0x0+$/.test(resolverAddr)) {
+    console.error(`[publishStealthMeta] ${ensName}.eth has no resolver set — run bindWhelmEthResolver first`);
+    return { error: 'no resolver bound' };
+  }
+  // ABI-encode setText(bytes32 node, string key, string value)
+  //   selector = 0x10f13a8c
+  //   args    = node || offset_key(0x60) || offset_val(0x60+pad(key))
+  //             || len_key || key_bytes || len_val || val_bytes
+  const keyBytes = new TextEncoder().encode(recordKey);
+  const valBytes = new TextEncoder().encode(metaStr);
+  const pad32 = (n: number) => Math.ceil(n / 32) * 32;
+  const keyHexLen = pad32(keyBytes.length);
+  const valHexLen = pad32(valBytes.length);
+  const hex = (n: number) => n.toString(16).padStart(64, '0');
+  const bytesToHexPad = (b: Uint8Array, padded: number) => {
+    let s = '';
+    for (const x of b) s += x.toString(16).padStart(2, '0');
+    return s + '00'.repeat(padded - b.length);
+  };
+  const keyOffset = 0x60; // 3 * 32 bytes (node + 2 offsets)
+  const valOffset = keyOffset + 32 + keyHexLen; // + len word + padded bytes
+  const data =
+    '0x10f13a8c' +
+    nodeHex.slice(2) +
+    hex(keyOffset) +
+    hex(valOffset) +
+    hex(keyBytes.length) +
+    bytesToHexPad(keyBytes, keyHexLen) +
+    hex(valBytes.length) +
+    bytesToHexPad(valBytes, valHexLen);
+  const accounts = (await eth.request({ method: 'eth_accounts' })) as string[];
+  const from = accounts?.[0];
+  if (!from) {
+    console.error('[publishStealthMeta] no account connected — eth_requestAccounts first');
+    return { error: 'not connected' };
+  }
+  console.log('[publishStealthMeta] plan:');
+  console.log(`  from:     ${from}`);
+  console.log(`  ens name: ${ensName}.eth`);
+  console.log(`  namehash: ${nodeHex}`);
+  console.log(`  resolver: ${resolverAddr}`);
+  console.log(`  key:      ${recordKey}`);
+  console.log(`  value:    ${metaStr.slice(0, 80)}${metaStr.length > 80 ? '…' : ''}`);
+  if (opts?.dryRun) {
+    console.log('[publishStealthMeta] dryRun=true — stopping before prompt');
+    return { ok: true, dryRun: true, from, node: nodeHex, resolver: resolverAddr, key: recordKey };
+  }
+  try {
+    await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+  } catch { /* already on mainnet or user denied; let the tx itself fail */ }
+  try {
+    const tx = (await eth.request({
+      method: 'eth_sendTransaction',
+      params: [{ from: from.toLowerCase(), to: resolverAddr.toLowerCase(), data, value: '0x0' }],
+    })) as string;
+    console.log(`[publishStealthMeta] tx submitted: ${tx}`);
+    showToast(`\u2713 ${ensName}.eth ${recordKey} published`);
+    return { ok: true, tx, node: nodeHex, key: recordKey };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[publishStealthMeta] failed:', msg);
+    return { error: msg };
+  }
+};
+(window as unknown as { publishStealthMeta: typeof _publishStealthMeta }).publishStealthMeta = _publishStealthMeta;
+(globalThis as unknown as { publishStealthMeta: typeof _publishStealthMeta }).publishStealthMeta = _publishStealthMeta;
+console.log('[ski] publishStealthMeta hook installed — call publishStealthMeta("ska:0x…") from the ENS owner\'s wallet to publish a Weavile stealth meta-address as an ENS text record.');
+
 // ── getPhantomEth — reach Phantom's ETH provider past hijackers ──
 //
 // When multiple wallet extensions install (Phantom + Me + Backpack + Rabby),

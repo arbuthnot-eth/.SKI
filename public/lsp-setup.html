@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Code LSP — one-time setup</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #0a0a0b;
+    color: #e5e7eb;
+    line-height: 1.55;
+    margin: 0;
+    padding: 2.5rem 1.25rem;
+    display: flex;
+    justify-content: center;
+  }
+  main { max-width: 46rem; width: 100%; }
+  h1 { font-size: 1.6rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.05rem; margin: 1.75rem 0 0.5rem; color: #a5b4fc; }
+  p, li { font-size: 0.95rem; }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+  }
+  code {
+    background: #18181b;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    color: #fde68a;
+  }
+  pre {
+    background: #111113;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    color: #e5e7eb;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  .lede { color: #9ca3af; font-size: 1rem; margin-top: 0.25rem; }
+  .note {
+    background: #0f172a;
+    border-left: 3px solid #6366f1;
+    padding: 0.75rem 1rem;
+    border-radius: 0 6px 6px 0;
+    margin: 1rem 0;
+    color: #cbd5e1;
+    font-size: 0.9rem;
+  }
+  .check { color: #34d399; font-weight: 600; }
+  a { color: #818cf8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Turn Claude Code into an IDE, in ~30 seconds.</h1>
+  <p class="lede">
+    By default Claude Code uses <code>grep</code> for code navigation — fine for strings, wasteful for symbols. Wire up the LSP tool and it does <em>goToDefinition</em>, <em>findReferences</em>, and <em>workspaceSymbol</em> like a real editor. Less token churn, fewer wrong matches, faster work.
+  </p>
+
+  <h2>One-time setup</h2>
+  <pre><code># 1. Make the LSP tool env flag permanent
+echo 'export ENABLE_LSP_TOOL=1' &gt;&gt; ~/.zshrc   # or ~/.bashrc
+
+# 2. Install a TypeScript language server (pick one)
+npm i -g @vtsls/language-server typescript
+
+# 3. Register the official Claude LSP marketplace
+claude plugin marketplace add Piebald-AI/claude-code-lsps
+
+# 4. Install + enable the TS LSP plugin at user scope
+claude plugin install typescript-lsp@claude-plugins-official --scope user
+claude plugin enable  typescript-lsp@claude-plugins-official --scope user
+
+# 5. Reload shell
+source ~/.zshrc</code></pre>
+
+  <div class="note">
+    <strong>Other languages:</strong> same pattern. Python: <code>pip install pyright</code> + <code>pyright-lsp</code> plugin. Go: <code>go install golang.org/x/tools/gopls@latest</code> + <code>gopls-lsp</code>. Rust / Kotlin plugins also live in that marketplace.
+  </div>
+
+  <h2>Verify</h2>
+  <pre><code>claude plugin list | grep -i lsp
+echo "ENABLE_LSP_TOOL=$ENABLE_LSP_TOOL"
+command -v vtsls</code></pre>
+
+  <p>All three should return something. Restart Claude Code after the setup so the plugin + env picks up.</p>
+
+  <h2>Make the agent actually use it</h2>
+  <p>Drop this line into your <code>CLAUDE.md</code> (global or per-project):</p>
+  <pre><code>## Code navigation
+Prefer LSP tools (goToDefinition, findReferences, workspaceSymbol)
+over Grep for symbol navigation. Fall back to Grep only for
+strings, comments, or non-code artifacts.</code></pre>
+
+  <h2>Why bother</h2>
+  <ul>
+    <li><span class="check">Exact semantic results</span> instead of string matches that hit shadowed names or comments.</li>
+    <li><span class="check">Drops token cost dramatically</span> — one definition lookup replaces 3–5 grep passes across <code>src/</code> and <code>node_modules</code>.</li>
+    <li><span class="check">Works across package boundaries</span> — follow a call from your code into a dependency's types without guessing paths.</li>
+  </ul>
+
+  <p style="margin-top: 2rem; color: #6b7280; font-size: 0.85rem;">
+    Tested on Claude Code with <code>vtsls</code> 0.3.0. Free. No backend. No telemetry to us.
+  </p>
+</main>
+</body>
+</html>

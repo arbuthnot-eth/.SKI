@@ -262,10 +262,15 @@ export async function mintGuestIntermediate(params: {
   seed.set(params.parentHash, 0);
   seed.set(labelBytes, params.parentHash.length);
   seed.set(new TextEncoder().encode(params.chain), params.parentHash.length + labelBytes.length);
-  const hex = Array.from(seed)
+  // Simple xor-fold so the label actually affects the first 16 bytes
+  // of the stub addr (parentHash alone would shadow short labels).
+  const folded = new Uint8Array(16);
+  for (let i = 0; i < seed.length; i += 1) {
+    folded[i % 16] ^= seed[i];
+  }
+  const hex = Array.from(folded)
     .map((x) => x.toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 32);
+    .join('');
   const intermediateAddr = `0xICE_FANG_STUB_${hex}`;
   return { intermediateAddr, intermediateCapId: null };
 }

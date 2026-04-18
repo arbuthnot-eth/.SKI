@@ -1204,3 +1204,157 @@ public fun guest_stealth_sweep_delegate(roster: &Roster, parent_hash: vector<u8>
     let stealth: &GuestStealth = dynamic_field::borrow<GuestStealthKey, GuestStealth>(&roster.id, key);
     stealth.sweep_delegate
 }
+
+// ─── Weavile Razor Claw — stealth meta-addresses (#198) ─────────────
+//
+// EIP-6538-adjacent registry, multi-chain from day one. One
+// IKA-imported spend key identity (`ika_dwallet_id`) + per-chain view
+// pubkeys. Senders ECDH(ephemeral_priv, view_pub) on the target chain's
+// curve to derive a fresh unlinkable stealth address; recipient scans
+// announcements with the matching view priv; sweep composes
+// `spend_priv + s` via IKA 2PC-MPC (Metal Claw follow-up).
+//
+// Auth: caller must already have an IdentityRecord at their Sui
+// address (same shape as PublicChainsKey). Owner-only write; reads are
+// permissionless (meta-address is the *public* half by design — senders
+// need it to pay).
+//
+// Format stored on-chain:
+//   ika_dwallet_id: ID — links to the spend-key dWallet in the
+//     caller's IKA registry (not the Sui dWallet that owns *this*
+//     record; this is specifically the cross-curve spend-key dWallet
+//     that gets rotated per view-key rotation).
+//   view_pubkeys: VecMap<chain_key, pubkey_bytes>
+//     "eth"/"btc"/"polygon"/"base"/"arbitrum"/"tron" → secp256k1
+//       compressed (33 bytes)
+//     "sui"/"sol" → ed25519 (32 bytes)
+//   updated_ms — rotations emit StealthMetaSet with a fresh timestamp.
+//
+// Deliberate non-goals here: the Move module does NOT validate pubkey
+// bytes against a curve (no sui-framework call for ed25519 pubkey parse,
+// and secp256k1 parse is expensive on-chain for a check that the
+// browser can do trivially). Bad bytes get rejected at scan time — a
+// malformed view pubkey produces no matches, i.e. a self-DoS.
+
+public struct StealthMetaKey has copy, drop, store { addr: address }
+
+public struct StealthMeta has store, drop {
+    /// Cross-curve spend-key IKA dWallet. Senders don't need this (they
+    /// derive against view pubkeys + ephemeral) — it's published so the
+    /// recipient's scanner can find the matching dWallet during sweep.
+    ika_dwallet_id: ID,
+    /// Per-chain view pubkeys. Curve depends on chain_key.
+    view_pubkeys: VecMap<String, vector<u8>>,
+    /// Last write ms — rotations bump this, resolvers can show "last
+    /// rotated".
+    updated_ms: u64,
+}
+
+public struct StealthMetaSet has copy, drop {
+    addr: address,
+    ika_dwallet_id: ID,
+    chains: vector<String>,
+    updated_ms: u64,
+}
+
+public struct StealthMetaCleared has copy, drop {
+    addr: address,
+}
+
+/// Set your stealth meta-address. Requires an existing IdentityRecord
+/// at the caller's Sui address. Parallel vectors `chain_keys` /
+/// `view_pubkeys` get zipped into a VecMap; an empty input is allowed
+/// (register the dwallet_id now, publish view keys in a later call).
+/// Overwrites any existing meta for this caller.
+entry fun set_stealth_meta(
+    roster: &mut Roster,
+    ika_dwallet_id: ID,
+    chain_keys: vector<String>,
+    view_pubkeys: vector<vector<u8>>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    let sender = ctx.sender();
+    assert!(dynamic_field::exists_<address>(&roster.id, sender), ENoRecord);
+    let len = chain_keys.length();
+    assert!(len == view_pubkeys.length(), ENoChains);
+
+    let mut map = vec_map::empty<String, vector<u8>>();
+    let mut i = 0;
+    while (i < len) {
+        vec_map::insert(&mut map, chain_keys[i], view_pubkeys[i]);
+        i = i + 1;
+    };
+
+    let key = StealthMetaKey { addr: sender };
+    if (dynamic_field::exists_<StealthMetaKey>(&roster.id, key)) {
+        let _old: StealthMeta = dynamic_field::remove<StealthMetaKey, StealthMeta>(&mut roster.id, key);
+    };
+
+    let updated_ms = clock.timestamp_ms();
+    let meta = StealthMeta {
+        ika_dwallet_id,
+        view_pubkeys: map,
+        updated_ms,
+    };
+    dynamic_field::add(&mut roster.id, key, meta);
+
+    event::emit(StealthMetaSet {
+        addr: sender,
+        ika_dwallet_id,
+        chains: chain_keys,
+        updated_ms,
+    });
+}
+
+/// Clear your stealth meta. Drops the dWallet id + all view pubkeys.
+/// Idempotent — clearing a non-existent entry is a no-op (no event).
+entry fun clear_stealth_meta(roster: &mut Roster, ctx: &TxContext) {
+    let sender = ctx.sender();
+    let key = StealthMetaKey { addr: sender };
+    if (dynamic_field::exists_<StealthMetaKey>(&roster.id, key)) {
+        let _old: StealthMeta = dynamic_field::remove<StealthMetaKey, StealthMeta>(&mut roster.id, key);
+        event::emit(StealthMetaCleared { addr: sender });
+    };
+}
+
+public fun has_stealth_meta(roster: &Roster, addr: address): bool {
+    dynamic_field::exists_<StealthMetaKey>(&roster.id, StealthMetaKey { addr })
+}
+
+public fun stealth_meta_dwallet_id(roster: &Roster, addr: address): ID {
+    let meta: &StealthMeta = dynamic_field::borrow(&roster.id, StealthMetaKey { addr });
+    meta.ika_dwallet_id
+}
+
+public fun stealth_meta_updated_ms(roster: &Roster, addr: address): u64 {
+    let meta: &StealthMeta = dynamic_field::borrow(&roster.id, StealthMetaKey { addr });
+    meta.updated_ms
+}
+
+public fun stealth_meta_has_chain(roster: &Roster, addr: address, chain: &String): bool {
+    let key = StealthMetaKey { addr };
+    if (!dynamic_field::exists_<StealthMetaKey>(&roster.id, key)) return false;
+    let meta: &StealthMeta = dynamic_field::borrow(&roster.id, key);
+    vec_map::contains(&meta.view_pubkeys, chain)
+}
+
+/// Read the view pubkey for a specific chain. Aborts with EChainNotInRecord
+/// if the caller has a meta but no entry for that chain, or ENoRecord
+/// if no meta exists at all.
+public fun stealth_meta_view_pubkey(
+    roster: &Roster,
+    addr: address,
+    chain: &String,
+): vector<u8> {
+    let key = StealthMetaKey { addr };
+    assert!(dynamic_field::exists_<StealthMetaKey>(&roster.id, key), ENoRecord);
+    let meta: &StealthMeta = dynamic_field::borrow(&roster.id, key);
+    assert!(vec_map::contains(&meta.view_pubkeys, chain), EChainNotInRecord);
+    *vec_map::get(&meta.view_pubkeys, chain)
+}
+
+public fun stealth_meta_view_pubkeys(roster: &Roster, addr: address): &VecMap<String, vector<u8>> {
+    let meta: &StealthMeta = dynamic_field::borrow(&roster.id, StealthMetaKey { addr });
+    &meta.view_pubkeys
+}

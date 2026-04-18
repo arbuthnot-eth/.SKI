@@ -1843,19 +1843,22 @@ type EthProvider = { request: (args: { method: string; params?: unknown[] }) => 
 async function getPhantomEth(): Promise<EthProvider | null> {
   const w = window as unknown as {
     phantom?: { ethereum?: EthProvider };
-    ethereum?: EthProvider & { providers?: (EthProvider & { isPhantom?: boolean })[] };
+    ethereum?: EthProvider & { providers?: (EthProvider & { isPhantom?: boolean })[]; isPhantom?: boolean };
   };
-  if (w.phantom?.ethereum) return w.phantom.ethereum;
-  // EIP-6963: listen for announceProvider events. Already-announced providers
-  // re-fire when we dispatch requestProvider, so this catches whichever order
-  // the extensions loaded in.
+  if (w.phantom?.ethereum) {
+    console.log('[getPhantomEth] via window.phantom.ethereum');
+    return w.phantom.ethereum;
+  }
   const found = await new Promise<EthProvider | null>((resolve) => {
+    const announced: { rdns: string; name: string }[] = [];
     const handler = (ev: Event) => {
       const d = (ev as CustomEvent<{ info?: { rdns?: string; name?: string }; provider?: EthProvider }>).detail;
       const rdns = d?.info?.rdns?.toLowerCase() ?? '';
       const name = d?.info?.name?.toLowerCase() ?? '';
+      announced.push({ rdns, name });
       if (rdns.includes('phantom') || name.includes('phantom')) {
         window.removeEventListener('eip6963:announceProvider', handler as EventListener);
+        console.log('[getPhantomEth] via EIP-6963, rdns=', rdns);
         resolve(d?.provider ?? null);
       }
     };
@@ -1863,12 +1866,21 @@ async function getPhantomEth(): Promise<EthProvider | null> {
     window.dispatchEvent(new Event('eip6963:requestProvider'));
     setTimeout(() => {
       window.removeEventListener('eip6963:announceProvider', handler as EventListener);
+      console.log('[getPhantomEth] EIP-6963 timeout, announced providers:', announced);
       resolve(null);
     }, 500);
   });
   if (found) return found;
   const legacy = w.ethereum?.providers?.find((p) => p.isPhantom);
-  if (legacy) return legacy;
+  if (legacy) {
+    console.log('[getPhantomEth] via window.ethereum.providers[] (isPhantom match)');
+    return legacy;
+  }
+  if (w.ethereum?.isPhantom) {
+    console.log('[getPhantomEth] via window.ethereum (isPhantom=true)');
+    return w.ethereum;
+  }
+  console.warn('[getPhantomEth] falling back to window.ethereum (NOT Phantom — hijacker may be active)');
   return w.ethereum ?? null;
 }
 (window as unknown as { getPhantomEth: typeof getPhantomEth }).getPhantomEth = getPhantomEth;

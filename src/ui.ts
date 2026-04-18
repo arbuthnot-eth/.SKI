@@ -4341,12 +4341,30 @@ function _persistRouteOpen() {
   if (hasName) { try { sessionStorage.removeItem('ski:route-open'); } catch {} return; }
   _persistRouteOpen();
 }
-let _suiamiVerifyHtml = (() => { try { return localStorage.getItem('ski:suiami-html') || ''; } catch { return ''; } })();
-let _suiamiProofToken = (() => { try { return localStorage.getItem('ski:suiami-token') || ''; } catch { return ''; } })();
+// Suiami-verify cache is keyed by wallet address so switching Phantom
+// accounts doesn't carry a verified chip from a prior wallet into the
+// new session (the "arbuthnot.sui shows up for unrelated wallets" bug).
+let _suiamiVerifyHtml = (() => {
+  try {
+    const savedAddr = localStorage.getItem('ski:suiami-addr') || '';
+    const currAddr = (getState().address || '').toLowerCase();
+    if (!savedAddr || savedAddr !== currAddr) return '';
+    return localStorage.getItem('ski:suiami-html') || '';
+  } catch { return ''; }
+})();
+let _suiamiProofToken = (() => {
+  try {
+    const savedAddr = localStorage.getItem('ski:suiami-addr') || '';
+    const currAddr = (getState().address || '').toLowerCase();
+    if (!savedAddr || savedAddr !== currAddr) return '';
+    return localStorage.getItem('ski:suiami-token') || '';
+  } catch { return ''; }
+})();
 function _cacheSuiamiProof() {
   try {
     localStorage.setItem('ski:suiami-html', _suiamiVerifyHtml);
     localStorage.setItem('ski:suiami-token', _suiamiProofToken);
+    localStorage.setItem('ski:suiami-addr', (getState().address || '').toLowerCase());
   } catch {}
 }
 function _persistRosterOpen() { try { sessionStorage.setItem('ski:roster-open', nsRosterOpen ? '1' : '0'); } catch {} }
@@ -6405,6 +6423,10 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Delegate to Ultron</span>
           <button class="wk-settings-value wk-settings-button" id="wk-delegate-whelm-eth" type="button" title="One-time: approve eth@ultron to manage whelm.eth (run from the invalid.eth Phantom account)">Delegate whelm.eth</button>
         </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">My ETH addr</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-show-eth-addr" type="button" title="Read window.ethereum active account + copy to clipboard">Show ETH addr</button>
+        </div>
       </div>`;
 }
 
@@ -7270,6 +7292,43 @@ function renderSkiMenu() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Bind error: ${msg}`, false, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  // Admin — Show current window.ethereum account (Phantom ETH side)
+  document.getElementById('wk-show-eth-addr')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Reading\u2026';
+    try {
+      const eth = (window as unknown as { ethereum?: {
+        request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+      } }).ethereum;
+      if (!eth) {
+        showToast('No window.ethereum — is Phantom ETH unlocked?', false, true);
+        return;
+      }
+      const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[];
+      const addr = accounts?.[0];
+      if (!addr) {
+        showToast('No ETH account returned from Phantom', false, true);
+        return;
+      }
+      const WRAPPED_OWNER = '0xa964b8b83290b60f27d57a8b9e07862ceb5e1bc1';
+      const matches = addr.toLowerCase() === WRAPPED_OWNER;
+      try { await navigator.clipboard.writeText(addr); } catch {}
+      const note = matches
+        ? ' \u2713 matches whelm.eth wrapped owner — Delegate will work'
+        : ` \u26A0\uFE0F does NOT match whelm.eth owner (${WRAPPED_OWNER.slice(0, 10)}\u2026). Switch Phantom account.`;
+      showToast(`ETH: ${addr}${note}  (copied)`, false, true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`ETH read failed: ${msg}`, false, true);
     } finally {
       btn.disabled = false;
       btn.textContent = original;

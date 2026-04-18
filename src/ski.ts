@@ -701,13 +701,14 @@ window.addEventListener('ski:rumble-paymaster-squid', async () => {
     const sig = await signPersonalMessage(new TextEncoder().encode(message));
     const persistRes = await fetch('/api/admin/paymaster-signer', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-ultron-admin': ws.address,
-        'x-ultron-sig': sig.signature,
-        'x-ultron-msg': message,
-      },
-      body: JSON.stringify({ dwalletId, ethAddress }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dwalletId,
+        ethAddress,
+        adminAddress: ws.address,
+        signature: sig.signature,
+        message,
+      }),
     });
     if (!persistRes.ok) {
       const errJson = await persistRes.json().catch(() => ({})) as { error?: string };

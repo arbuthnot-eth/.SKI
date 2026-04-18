@@ -2112,10 +2112,20 @@ app.post('/api/ultron/accept-share', async (c) => {
 // directly into UltronSigningAgent DO state — no code paste, no
 // redeploy. Rotating the signer is just another call with a new pair.
 app.post('/api/admin/paymaster-signer', async (c) => {
-  const denied = await requireUltronSig(c, 'set-paymaster-signer');
+  const body = await c.req.json() as {
+    dwalletId?: string;
+    ethAddress?: string;
+    adminAddress?: string;
+    signature?: string;
+    message?: string;
+  };
+  const { requireUltronAdmin, todayUtc } = await import('./ultron-policy.js');
+  const denied = await requireUltronAdmin(c, body as Required<typeof body>, {
+    context: 'set-paymaster-signer',
+    messageFor: (b) => `set-paymaster-signer:${b.ethAddress}:${todayUtc()}`,
+  });
   if (denied) return denied;
   try {
-    const body = await c.req.json() as { dwalletId?: string; ethAddress?: string };
     if (!body.dwalletId || !body.ethAddress) {
       return c.json({ error: 'dwalletId and ethAddress required' }, 400);
     }

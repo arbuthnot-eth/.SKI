@@ -6399,8 +6399,34 @@ const _SKI_ADMIN_ADDRS = new Set([
 ]);
 function _skiAdminGroupHtml(): string {
   const ws = getState();
-  if (!ws.address || !_SKI_ADMIN_ADDRS.has(ws.address.toLowerCase())) return '';
-  return `
+  const isAdmin = ws.address && _SKI_ADMIN_ADDRS.has(ws.address.toLowerCase());
+  const hasWallet = !!ws.address;
+
+  // ENS-side tools are ungated — they fire through window.ethereum, auth is
+  // the ETH signature the user actually signs. Admin allowlist only gates
+  // server-side (Ultron sweep) endpoints that enforce it independently.
+  const ensGroup = hasWallet ? `
+      <div class="wk-settings-group">
+        <span class="wk-settings-group-label">ENS · whelm.eth</span>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">My ETH addr</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-show-eth-addr" type="button" title="Read window.ethereum active account + copy to clipboard">Show ETH addr</button>
+        </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Delegate to Ultron</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-delegate-whelm-eth" type="button" title="One-time: approve eth@ultron to manage whelm.eth (run from the whelm.eth wrapped-owner Phantom account)">Delegate whelm.eth</button>
+        </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Resolver</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-deploy-resolver" type="button" title="Deploy OffchainResolver.sol on Ethereum mainnet (~$0.57 gas)">Deploy Resolver</button>
+        </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Bind whelm.eth</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-bind-whelm-eth" type="button" title="Bind whelm.eth to the deployed resolver (~$0.024 gas)">Bind whelm.eth</button>
+        </div>
+      </div>` : '';
+
+  const adminGroup = isAdmin ? `
       <div class="wk-settings-group">
         <span class="wk-settings-group-label">Admin</span>
         <div class="wk-settings-row wk-settings-row--button">
@@ -6411,23 +6437,9 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Squids</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron-squids" type="button" title="Sweep DWalletCap objects from old Ultron into the new address">Whelm Squids</button>
         </div>
-        <div class="wk-settings-row wk-settings-row--button">
-          <span class="wk-settings-label">Resolver</span>
-          <button class="wk-settings-value wk-settings-button" id="wk-deploy-resolver" type="button" title="Deploy OffchainResolver.sol on Ethereum mainnet (~$0.57 gas)">Deploy Resolver</button>
-        </div>
-        <div class="wk-settings-row wk-settings-row--button">
-          <span class="wk-settings-label">Bind whelm.eth</span>
-          <button class="wk-settings-value wk-settings-button" id="wk-bind-whelm-eth" type="button" title="Bind whelm.eth to the deployed resolver (~$0.024 gas)">Bind whelm.eth</button>
-        </div>
-        <div class="wk-settings-row wk-settings-row--button">
-          <span class="wk-settings-label">Delegate to Ultron</span>
-          <button class="wk-settings-value wk-settings-button" id="wk-delegate-whelm-eth" type="button" title="One-time: approve eth@ultron to manage whelm.eth (run from the invalid.eth Phantom account)">Delegate whelm.eth</button>
-        </div>
-        <div class="wk-settings-row wk-settings-row--button">
-          <span class="wk-settings-label">My ETH addr</span>
-          <button class="wk-settings-value wk-settings-button" id="wk-show-eth-addr" type="button" title="Read window.ethereum active account + copy to clipboard">Show ETH addr</button>
-        </div>
-      </div>`;
+      </div>` : '';
+
+  return ensGroup + adminGroup;
 }
 
 function menuLockin() {

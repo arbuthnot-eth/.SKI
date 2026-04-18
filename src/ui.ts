@@ -10522,7 +10522,7 @@ function bindEvents() {
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
           <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble Your Squids">\ud83e\udd91 Rumble</button>
-          <button class="ski-idle-next" id="ski-idle-next" type="button" title="t2000 Ship">\u203a</button>
+          <button class="ski-idle-next" id="ski-idle-next" type="button" title="Guest Manager">\u203a</button>
         </div>
       `;
 
@@ -14023,38 +14023,36 @@ function bindEvents() {
         }
       });
 
-      // Next page → t2000 page
+      // Next page → Sneasel Guest Manager
       _idleOverlay.querySelector('#ski-idle-next')?.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!_idleOverlay) return;
-        const t2000s = (self as any).__skiT2000s ?? [];
-        const agentCount = t2000s.length;
-        // Replace overlay content with t2000 page
+        // Replace overlay content with guest manager page
         const mediaEl = _idleOverlay.querySelector('.ski-idle-media');
         const bottomRow = _idleOverlay.querySelector('.ski-idle-bottom-row');
-        const thunderRow = _idleOverlay.querySelector('.ski-idle-thunder-row');
-        const cardEl = _idleOverlay.querySelector('.ski-idle-card');
+        // Future: fetch SUIAMI roster GuestStealth dynamic fields owned
+        // by ws.address and render one row per guest with chain + expiry
+        // + a Revoke button (admin-gated). For now ship the shell so the
+        // idle page stops pointing at dormant t2000 state.
+        const guests: Array<{ label: string; name: string; chain: string; expiresMs: number }> = [];
+        const rowsHtml = guests.length === 0
+          ? `<div class="ski-idle-guest-empty">
+              No guests yet.<br/>
+              Open the console and run:<br/>
+              <code>await guestPrivate('label', { cold: { chain: 'sol', address: '…' } })</code>
+            </div>`
+          : guests.map(g => {
+              const days = Math.max(0, Math.ceil((g.expiresMs - Date.now()) / 86_400_000));
+              return `<div class="ski-idle-guest-row">
+                <span class="ski-idle-guest-name">${g.label}.${g.name}.whelm.eth</span>
+                <span class="ski-idle-guest-chain">${g.chain}</span>
+                <span class="ski-idle-guest-expires">${days}d</span>
+              </div>`;
+            }).join('');
         if (mediaEl) mediaEl.innerHTML = `
-          <div class="ski-idle-t2000">
-            <div class="ski-idle-t2000-header">\ud83e\udd16 t2000 Ship</div>
-            <div class="ski-idle-t2000-stat">
-              <span>Agents deployed</span>
-              <span>${agentCount}</span>
-            </div>
-            <div class="ski-idle-t2000-stat">
-              <span>Deploy cost</span>
-              <span>$4.50 iUSD</span>
-            </div>
-            <div class="ski-idle-t2000-missions">
-              <div class="ski-idle-t2000-mission" data-mission="arb">\u26a1 arb</div>
-              <div class="ski-idle-t2000-mission" data-mission="sweep">\ud83e\uddf9 sweep</div>
-              <div class="ski-idle-t2000-mission" data-mission="farm">\ud83c\udf3e farm</div>
-              <div class="ski-idle-t2000-mission" data-mission="watch">\ud83d\udc41 watch</div>
-              <div class="ski-idle-t2000-mission" data-mission="route">\ud83d\udcca route</div>
-              <div class="ski-idle-t2000-mission" data-mission="snipe">\ud83c\udfaf snipe</div>
-              <div class="ski-idle-t2000-mission" data-mission="storm">\u26c8\ufe0f storm</div>
-            </div>
-            <div class="ski-idle-t2000-motto">destroys bridges and wormholes</div>
+          <div class="ski-idle-guest">
+            <div class="ski-idle-guest-header">\u2744\ufe0f Guest Manager</div>
+            <div class="ski-idle-guest-list">${rowsHtml}</div>
           </div>
         `;
         // Swap next arrow to back arrow

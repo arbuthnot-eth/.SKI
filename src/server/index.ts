@@ -2125,17 +2125,40 @@ app.put('/api/aggron/publish', async (c) => {
     const kind = c.req.query('kind') || 'misc';
 
     const { WalrusClient } = await import('@mysten/walrus');
-    const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
-    const gql = new SuiGraphQLClient({
-      url: 'https://graphql.mainnet.sui.io/graphql',
+    const { SuiJsonRpcClient } = await import('@mysten/sui/jsonRpc');
+    const initWalrusWasm = (await import('@mysten/walrus-wasm')).default;
+    // Pre-init the walrus-wasm with the in-bundle CompiledWasm module
+    // — CF Workers disallow runtime WebAssembly.instantiate() of fetched
+    // bytes, so we import the module statically (same pattern as IKA).
+    const walrusWasmModule = (await import('./wasm/walrus_wasm_bg.wasm')).default;
+    await initWalrusWasm({ module_or_path: walrusWasmModule as unknown as WebAssembly.Module });
+    // GraphQL caps queries at 5000B; Walrus SDK's internal fetches
+    // blow past that. JSON-RPC via PublicNode works in Workers.
+    const sui = new SuiJsonRpcClient({ url: 'https://sui-rpc.publicnode.com' });
+    const walrus = new WalrusClient({
       network: 'mainnet',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      suiClient: sui as any,
+      // wasmUrl is ignored once initWalrusWasm has run above.
+      wasmUrl: 'about:blank',
+      // Upload relay — offloads the storage-node fan-out write. Worker
+      // only needs to reach ONE relay host, not the whole committee.
+      uploadRelay: {
+        host: 'https://upload-relay.mainnet.walrus.space',
+        // Relay charges a tip; cap it at 0.01 SUI so a misconfigured
+        // relay can't drain ultron. Tip is paid in SUI at encoded-size rate.
+        sendTip: { max: 10_000_000 },
+      },
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const walrus = new WalrusClient({ network: 'mainnet', suiClient: gql as any });
     const signer = ultronKeypair(c.env);
+    // epochs = how many Walrus epochs (~2 weeks each on mainnet) to
+    // retain the blob. 12 ≈ 6 months. Re-publish to extend.
+    // deletable = lets the owner reclaim the storage if needed.
     const result = await walrus.writeQuilt({
       blobs: [{ contents: body, identifier, tags: { kind } }],
       signer,
+      epochs: 12,
+      deletable: true,
     });
     return c.json({
       blobId: result.blobId,
@@ -2148,8 +2171,9 @@ app.put('/api/aggron/publish', async (c) => {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[aggron/publish]', msg);
-    return c.json({ error: msg }, 500);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.warn('[aggron/publish]', msg, stack);
+    return c.json({ error: msg, stack: stack?.split('\n').slice(0, 8) }, 500);
   }
 });
 

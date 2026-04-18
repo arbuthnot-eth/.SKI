@@ -288,16 +288,22 @@ export class AggronBatcher extends Agent<Env, AggronBatcherState> {
 
     try {
       const { WalrusClient } = await import('@mysten/walrus');
-      const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
-      const gql = new SuiGraphQLClient({
-        url: 'https://graphql.mainnet.sui.io/graphql',
-        network: 'mainnet',
-      });
-      // ClientWithCoreApi cast: SuiGraphQLClient exposes .core on ^2.16.
+      const { SuiJsonRpcClient } = await import('@mysten/sui/jsonRpc');
+      const initWalrusWasm = (await import('@mysten/walrus-wasm')).default;
+      const walrusWasmModule = (await import('../wasm/walrus_wasm_bg.wasm')).default;
+      await initWalrusWasm({ module_or_path: walrusWasmModule as unknown as WebAssembly.Module });
+      // Use JSON-RPC, not GraphQL — Walrus SDK's internal queries
+      // exceed GraphQL's 5000B cap.
+      const sui = new SuiJsonRpcClient({ url: 'https://sui-rpc.publicnode.com' });
       const walrus = new WalrusClient({
         network: 'mainnet',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        suiClient: gql as any,
+        suiClient: sui as any,
+        wasmUrl: 'about:blank',
+        uploadRelay: {
+          host: 'https://upload-relay.mainnet.walrus.space',
+          sendTip: { max: 10_000_000 },
+        },
       });
       const signer = ultronKeypair(this.env);
 
@@ -317,6 +323,8 @@ export class AggronBatcher extends Agent<Env, AggronBatcherState> {
       const result = await walrus.writeQuilt({
         blobs: quiltBlobs,
         signer,
+        epochs: 12,
+        deletable: true,
       });
 
       // Build quick index from identifier → patch for pointer update.

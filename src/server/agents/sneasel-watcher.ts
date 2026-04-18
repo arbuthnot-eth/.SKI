@@ -2,9 +2,11 @@
  * SneaselWatcher — Durable Object that watches stealth-guest hot addresses
  * and sweeps incoming funds to cold squids.
  *
- * One DO instance per parent whelm-eth name (keyed by parentHash hex or the
- * parent ENS name, e.g. "brando.whelm.eth"). It tracks fresh per-counterparty
- * hot addresses (`*.brando.whelm.eth` → hotAddr), listens for inbound funds
+ * One DO instance per guest-protocol parent (keyed by parentHash hex). Parents
+ * are dual: `guest.sui` (SuiNS, superteam-owned) and `guest.whelm.eth` (ENS,
+ * CCIP-read). Both map to the same Move-roster records. The DO tracks fresh
+ * per-counterparty hot addresses (`*.guest.sui` / `*.guest.whelm.eth` →
+ * hotAddr), listens for inbound funds
  * via webhook (Alchemy for EVM, Helius for SOL, Mempool.space/BTC bridge, …),
  * and after a short debounce fires an ultron-signed sweep hot → cold.
  *
@@ -65,9 +67,10 @@ export function pickSweepJitterMs(random: () => number = Math.random): number {
 // ─── Types ──────────────────────────────────────────────────────────────
 
 export interface WatchedHotAddr {
-  /** keccak256(parent ENS name) as 0x-prefixed hex — matches Move roster. */
+  /** keccak256(parent name) as 0x-prefixed hex — matches Move roster. Parent
+   *  is typically `guest.sui` (SuiNS hash); ENS parents also supported. */
   parentHash: string;
-  /** Guest label (e.g. "amazon" in amazon.brando.whelm.eth). */
+  /** Guest label (e.g. "hermes" in hermes.guest.sui / hermes.guest.whelm.eth). */
   label: string;
   /** Freshly-provisioned hot receive address (chain-native format). */
   hotAddr: string;

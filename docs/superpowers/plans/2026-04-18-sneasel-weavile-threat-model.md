@@ -8,7 +8,7 @@ Written after a 3-voter deliberation swarm (research + engineering-reuse + adver
 
 ## Language discipline (voter 3's "don't lie to users")
 
-- **Sneasel (guest subnames)** is a **counterparty-siloing UX primitive.** It lets you give Amazon and Venmo different addresses so they can't enumerate each other's payments. It is **not** a privacy layer against chain analytics, subpoena, or targeted surveillance.
+- **Sneasel (guest subnames)** is a **counterparty-siloing UX primitive.** It lets you give Hermes and Athena different addresses so they can't enumerate each other's payments. It is **not** a privacy layer against chain analytics, subpoena, or targeted surveillance.
 - **Weavile (stealth addresses)** is a **per-payment unlinkability layer.** Every payment lands at a mathematically fresh, ECDH-derived address that isn't visible on-chain without the view key.
 
 Any user-facing surface that suggests Sneasel alone is "private" is a security bug. Sneasel is useful, but it protects against a weaker adversary than users will assume.
@@ -18,15 +18,15 @@ Any user-facing surface that suggests Sneasel alone is "private" is a security b
 ## Adversary tiers
 
 ### T1 — curious counterparty
-Amazon wants to know what else Brando buys.
+Hermes (a merchant counterparty) wants to know what else Brando buys.
 
-- **Sneasel defeats.** Amazon sees `0xhotA`, has no access to `0xhotV` where Venmo pays.
-- **Weavile defeats.** Amazon sees a fresh addr per payment, can't link to anything.
+- **Sneasel defeats.** Hermes sees `0xhotH`, has no access to `0xhotA` where Athena pays.
+- **Weavile defeats.** Hermes sees a fresh addr per payment, can't link to anything.
 
 ### T2 — chain analytics (Arkham, Nansen, Chainalysis)
 Cluster all addresses that behave like one user.
 
-- **Sneasel FAILS.** All hot addrs sweep to ultron's broker cluster via common-input heuristics. Arkham will tag all `.whelm.eth` users as one cohort and trace individual cold squids via peel-chain analysis. **This is the fatal Sneasel flaw.**
+- **Sneasel FAILS.** All hot addrs sweep to ultron's broker cluster via common-input heuristics. Arkham will tag all `.guest.sui` users as one cohort and trace individual cold squids via peel-chain analysis. **This is the fatal Sneasel flaw.**
   - **Mitigation (Sneasel Ice Fang):** per-guest distinct cold destinations + per-guest Seal encryption. No common broker.
 - **Weavile defeats, conditional on gas-funding hygiene.** Without EIP-4337 paymaster, funding stealth addrs from a common source re-links the graph (arxiv 2308.01703, Umbra anonymity analysis). With paymaster-sponsored sweeps + randomized timing, no peel.
   - **Ship-gate (Weavile Assurance):** 4337 integration before public launch.
@@ -63,7 +63,7 @@ User hands over keys under duress.
 ## Marketing language we refuse to ship
 
 - ❌ "`*.whelm.eth` sends are private."
-  - Correct: "`*.whelm.eth` lets you publish chain-resolvable identity. Privacy level depends on whether you use a plain address, a Sneasel guest subname, or a Weavile stealth meta-address."
+  - Correct: "`*.whelm.eth` lets you publish chain-resolvable identity. Privacy level depends on whether you use a plain address, a Sneasel guest subname (under `*.guest.sui`), or a Weavile stealth meta-address."
 - ❌ "Sneasel is privacy-preserving."
   - Correct: "Sneasel lets you give different counterparties different addresses so they can't compare notes. It's not private against chain analytics."
 - ❌ "Stealth addresses are anonymous."

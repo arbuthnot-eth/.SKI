@@ -998,8 +998,9 @@ public fun test_assert_parent_owner(roster: &Roster, parent_hash: vector<u8>, se
 // ─── Guest Stealth subnames (Sneasel arc, #197) ────────────────────
 //
 // Privacy-preserving variant of Guest. Public CCIP-read resolves to a
-// freshly-derived hot address per counterparty (amazon.brando.whelm.eth
-// vs venmo.brando.whelm.eth get different, unlinkable addrs). The true
+// freshly-derived hot address per counterparty (hermes.guest.sui /
+// hermes.guest.whelm.eth vs athena.guest.* get different, unlinkable
+// addrs). The true
 // cold squid destination is stored as a Seal-encrypted blob, decryptable
 // ONLY by ultron (or the designated sweep delegate). The hot→cold sweep
 // is ultron's job: IKA-sign from hot using its DWalletCap, batch+jitter
@@ -1016,7 +1017,7 @@ public fun test_assert_parent_owner(roster: &Roster, parent_hash: vector<u8>, se
 //
 // Observer view: hot_addr receives funds, forwards batch N minutes later
 // to ultron's sweep collector; collector batches again to cold. Zero
-// direct hot→cold link visible from Etherscan/Arkham. Amazon and Venmo
+// direct hot→cold link visible from Etherscan/Arkham. Hermes and Athena
 // can't link payments because their guest subnames resolve to different
 // addresses.
 

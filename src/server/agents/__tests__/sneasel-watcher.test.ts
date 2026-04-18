@@ -52,7 +52,7 @@ describe('SneaselWatcherAgent.tick() — Ice Fang grouping', () => {
       watchedHotAddrs: [
         {
           parentHash: '0xparent',
-          label: 'amazon',
+          label: 'hermes',
           hotAddr: '0xHOT_AMAZON',
           chain: 'eth',
           sweepDelegate: '0xULTRON',
@@ -61,7 +61,7 @@ describe('SneaselWatcherAgent.tick() — Ice Fang grouping', () => {
         },
         {
           parentHash: '0xparent',
-          label: 'venmo',
+          label: 'athena',
           hotAddr: '0xHOT_VENMO',
           chain: 'eth',
           sweepDelegate: '0xULTRON',
@@ -104,7 +104,7 @@ describe('SneaselWatcherAgent.tick() — Ice Fang grouping', () => {
       watchedHotAddrs: [
         {
           parentHash: '0xparent',
-          label: 'amazon',
+          label: 'hermes',
           hotAddr: '0xHOT_AMAZON',
           chain: 'eth',
           sweepDelegate: '0xULTRON',

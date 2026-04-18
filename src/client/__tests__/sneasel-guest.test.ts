@@ -57,7 +57,7 @@ describe('sealEncryptColdDest (Ice Fang v2)', () => {
       intermediateAddr: '0xINTERMEDIATE_A',
       chain: 'eth',
       parentHash: parentHash32(),
-      labelBytes: new TextEncoder().encode('amazon'),
+      labelBytes: new TextEncoder().encode('hermes'),
       sweepDelegate: '0xULTRON',
     });
     expect(captured.length).toBe(1);
@@ -76,7 +76,7 @@ describe('sealEncryptColdDest (Ice Fang v2)', () => {
         intermediateAddr: '0xULTRON',
         chain: 'eth',
         parentHash: parentHash32(),
-        labelBytes: new TextEncoder().encode('amazon'),
+        labelBytes: new TextEncoder().encode('hermes'),
         sweepDelegate: '0xULTRON',
       }),
     ).rejects.toThrow(/Ice Fang collapse/);
@@ -90,14 +90,14 @@ describe('sealEncryptColdDest (Ice Fang v2)', () => {
       intermediateAddr: '0xINT_A',
       chain: 'eth',
       parentHash: parent,
-      labelBytes: new TextEncoder().encode('amazon'),
+      labelBytes: new TextEncoder().encode('hermes'),
       sweepDelegate: '0xULTRON',
     });
     await sealEncryptColdDest({
       intermediateAddr: '0xINT_B',
       chain: 'eth',
       parentHash: parent,
-      labelBytes: new TextEncoder().encode('venmo'),
+      labelBytes: new TextEncoder().encode('athena'),
       sweepDelegate: '0xULTRON',
     });
     expect(captured.length).toBe(2);
@@ -116,12 +116,12 @@ describe('mintGuestIntermediateDryRun (Icy Wind preview)', () => {
     const a = mintGuestIntermediateDryRun({
       chain: 'eth',
       parentHash: parentHash32(),
-      label: 'amazon',
+      label: 'hermes',
     });
     const b = mintGuestIntermediateDryRun({
       chain: 'eth',
       parentHash: parentHash32(),
-      label: 'venmo',
+      label: 'athena',
     });
     expect(a.previewAddr).toContain('ICY_WIND_PREVIEW_');
     expect(b.previewAddr).toContain('ICY_WIND_PREVIEW_');
@@ -139,8 +139,8 @@ describe('mintGuestIntermediateDryRun (Icy Wind preview)', () => {
 
   test('same inputs → identical seed (deterministic keeper re-derivation)', async () => {
     const { deriveIcyWindSeed } = await import('../sneasel-guest.js');
-    const s1 = deriveIcyWindSeed({ parentHash: parentHash32(), label: 'amazon', chain: 'eth' });
-    const s2 = deriveIcyWindSeed({ parentHash: parentHash32(), label: 'amazon', chain: 'eth' });
+    const s1 = deriveIcyWindSeed({ parentHash: parentHash32(), label: 'hermes', chain: 'eth' });
+    const s2 = deriveIcyWindSeed({ parentHash: parentHash32(), label: 'hermes', chain: 'eth' });
     expect(Buffer.from(s1).toString('hex')).toBe(Buffer.from(s2).toString('hex'));
     expect(s1.length).toBe(32);
   });
@@ -154,7 +154,7 @@ describe('mintGuestIntermediate (real DKG path — env guards)', () => {
       mintGuestIntermediate({
         chain: 'eth',
         parentHash: parentHash32(),
-        label: 'amazon',
+        label: 'hermes',
         sweepDelegate: '0xULTRON_SUI',
         // @ts-expect-error — intentionally malformed to hit the guard
         callbacks: {},

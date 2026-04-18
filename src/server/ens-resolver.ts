@@ -199,7 +199,8 @@ async function lookupGuest(parentHash: Uint8Array, label: string): Promise<{ tar
 // `GuestStealthKey { parent_hash: vector<u8>, label: vector<u8> }` is
 // identical to `GuestKey` (two vector<u8> fields, ULEB128 length
 // prefixes). When present + live this takes precedence over the
-// plaintext `GuestKey` path so `amazon.brando.whelm.eth` resolves to
+// plaintext `GuestKey` path so `hermes.guest.whelm.eth` (and its
+// SuiNS mirror `hermes.guest.sui`) resolves to
 // the rotating `hot_addr` and never exposes the sealed cold
 // destination on-chain.
 async function lookupGuestStealth(parentHash: Uint8Array, label: string): Promise<{ hotAddr: string; chain: string; expiresMs: number; sweepDelegate: string } | null> {

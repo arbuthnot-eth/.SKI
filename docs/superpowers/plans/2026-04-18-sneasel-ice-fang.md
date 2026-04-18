@@ -9,17 +9,17 @@
 
 ## 1. Problem statement
 
-Current Sneasel design creates a **fresh hot address per guest** (`amazon.brando.whelm.eth` vs `venmo.brando.whelm.eth` resolve to distinct addrs), but every hot address sweeps to a **single ultron broker cluster** (`eth@ultron = 0xcaA8d6F0…882d`, hardcoded in `src/server/agents/sneasel-watcher.ts:46`).
+Current Sneasel design creates a **fresh hot address per guest** (`hermes.guest.sui` vs `athena.guest.sui` resolve to distinct addrs), but every hot address sweeps to a **single ultron broker cluster** (`eth@ultron = 0xcaA8d6F0…882d`, hardcoded in `src/server/agents/sneasel-watcher.ts:46`).
 
 Consequence:
 - Chainalysis common-input heuristic clusters all hot addrs the first time they co-fund a sweep tx.
 - Peel-chain analysis from the broker cluster forward links each counterparty's cold squid back to the same cohort.
 - Arkham tags all `.whelm.eth` users as one entity.
-- Amazon and Venmo still can't compare notes (UX win), but any observer with one of their payments can enumerate every other counterparty and the eventual cold squid. T2 is lost.
+- Hermes and Athena still can't compare notes (UX win), but any observer with one of their payments can enumerate every other counterparty and the eventual cold squid. T2 is lost.
 
 ## 2. What Ice Fang must guarantee
 
-1. **Per-guest distinct cold destination.** Amazon's funds and Venmo's funds must land at distinct on-chain cold addresses.
+1. **Per-guest distinct cold destination.** Hermes's funds and Athena's funds must land at distinct on-chain cold addresses.
 2. **Per-guest intermediate hop.** Hot → (guest-specific intermediate) → cold. Intermediate is a fresh IKA-derived dWallet, one per guest, unlinked from ultron's broker cluster.
 3. **No batching across guests.** The sweep codepath must never pool multiple guests' hot-addr UTXOs into a single signed transaction. Batching within a single guest's multiple top-ups is fine.
 4. **Seal ciphertext already per-guest** — verify this property holds and that nothing in the sweep codepath collapses it.
@@ -97,11 +97,11 @@ None required for Ice Fang (distinct delegates already supported). If §6 lands:
 - `tick() applies per-batch random jitter in the 30s-30min window`.
 
 ### 5.4 E2E smoke (manual mainnet)
-1. Bind `amazon.brando.whelm.eth` w/ intermediate A.
-2. Bind `venmo.brando.whelm.eth` w/ intermediate B.
+1. Bind `hermes.guest.sui` w/ intermediate A.
+2. Bind `athena.guest.sui` w/ intermediate B.
 3. Fund each hot with 0.001 ETH.
 4. Wait ~35 min.
-5. Confirm Etherscan: hot_amazon→A (one tx), hot_venmo→B (different block).
+5. Confirm Etherscan: hot_hermes→A (one tx), hot_athena→B (different block).
 6. Manual Arkham/Chainalysis cluster check.
 
 ---

@@ -1,12 +1,15 @@
 /**
- * Sneasel — private-send flow for `*.whelm.eth` (#197).
+ * Sneasel — private-send flow for `*.guest.sui` + `*.guest.whelm.eth` (#197).
+ * The guest protocol is dual-parent: SuiNS (`guest.sui`, superteam-owned) and
+ * ENS (`guest.whelm.eth`, CCIP-read gateway). Both index the same
+ * Move-roster `GuestStealthKey { parent_hash, label }` records.
  *
  * Wraps the Move `bind_guest_stealth` entry with a client-side helper that
  * Seal-encrypts the cold-squid destination and gates decrypt to ultron
  * (or a designated sweep delegate) via `seal_approve_guest_stealth`.
  *
  * Call shape:
- *   await guestPrivate('amazon.brando', {
+ *   await guestPrivate('hermes', {  // label under guest.sui / guest.whelm.eth
  *     hotAddr: '0xHOTeth...',                   // fresh IKA-derived receive addr
  *     coldAddr: '0xCOLDeth...',                 // real squid, never appears on-chain plaintext
  *     chain: 'eth',
@@ -15,7 +18,7 @@
  *   });
  *
  * Observer-facing view:
- *   amazon.brando.whelm.eth → hotAddr (public CCIP-read, zero history)
+ *   hermes.guest.sui / hermes.guest.whelm.eth → hotAddr (zero history)
  *   funds land at hotAddr, ultron's sweeper (Sneasel Pursuit DO) fires an
  *   IKA-signed sweep after decrypting coldAddr JIT via seal_approve_guest_stealth.
  *

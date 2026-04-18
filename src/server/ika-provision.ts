@@ -21,7 +21,7 @@ import {
   Curve, UserShareEncryptionKeys,
   createRandomSessionIdentifier, prepareDKGAsync,
 } from '@ika.xyz/sdk';
-import { createGrpc7kAdapter } from './grpc-7k-adapter.js';
+import { createSuiClientAdapter } from './sui-client-adapter.js';
 
 const IKA_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 const SUI_TYPE = '0x2::sui::SUI';
@@ -67,7 +67,7 @@ export async function buildProvisionTx(
 
   // Set up gRPC client + adapter (no JSON-RPC)
   const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: 'https://fullnode.mainnet.sui.io:443' });
-  const adapter = createGrpc7kAdapter(grpc);
+  const adapter = createSuiClientAdapter(grpc);
 
   // Set up IKA client
   const config = getNetworkConfig('mainnet');

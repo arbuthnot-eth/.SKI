@@ -1,9 +1,10 @@
 /**
- * gRPC → 7K Adapter
+ * gRPC → SuiClient Adapter
  *
- * Wraps SuiGrpcClient to satisfy @bluefin-exchange/bluefin7k-aggregator-sdk's
- * expected SuiClient interface. The SDK uses duck typing (no instanceof checks),
- * so we only need the 4 methods it actually calls:
+ * Wraps SuiGrpcClient to satisfy the @mysten/sui v1 SuiClient shape
+ * that IKA's IkaClient (and 7k-style SDKs) duck-type against. No
+ * instanceof checks happen at the consumer, so we only need the 4
+ * methods it actually calls:
  *   - getCoins()
  *   - getOwnedObjects()
  *   - dryRunTransactionBlock()
@@ -25,9 +26,9 @@ interface CoinStruct {
 
 /**
  * Create an adapter that wraps a SuiGrpcClient and exposes the methods
- * the Bluefin 7K aggregator SDK expects.
+ * the IkaClient + any SDK that duck-types against @mysten/sui v1 SuiClient expects.
  */
-export function createGrpc7kAdapter(grpc: SuiGrpcClient) {
+export function createSuiClientAdapter(grpc: SuiGrpcClient) {
   return {
     // ── getCoins ──────────────────────────────────────────────────
     // 7K calls:   client.getCoins({ owner, coinType, cursor, limit })

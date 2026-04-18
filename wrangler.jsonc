@@ -93,6 +93,10 @@
       {
         "name": "WeavileAssuranceAgent",
         "class_name": "WeavileAssuranceAgent"
+      },
+      {
+        "name": "AggronBatcher",
+        "class_name": "AggronBatcher"
       }
     ]
   },
@@ -153,6 +157,10 @@
     {
       "tag": "v14",
       "new_sqlite_classes": ["WeavileAssuranceAgent"]
+    },
+    {
+      "tag": "v15",
+      "new_sqlite_classes": ["AggronBatcher"]
     }
   ],
 

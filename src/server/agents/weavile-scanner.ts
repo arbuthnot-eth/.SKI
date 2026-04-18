@@ -146,6 +146,8 @@ interface Env {
   /** Published suiami weavile package id — when set, SuiAnnouncerSource
    *  queries `{pkg}::stealth_announcer::StealthAnnouncement`. */
   SUIAMI_WEAVILE_PKG?: string;
+  /** Assurance DO — gas-sponsored sweep handoff (Move 5). */
+  WeavileAssuranceAgent: DurableObjectNamespace;
 }
 
 interface AdminAuth {
@@ -666,18 +668,55 @@ export class WeavileScannerAgent extends Agent<Env, WeavileScannerState> {
     const rest = this.state.pendingStealths.slice(TICK_BATCH_MAX);
     const jitterMs = pickScanJitterMs();
 
+    // Weavile Dark Pulse — Assurance pt1 Move 5. Scanner's job ends
+    // at detection + enqueue; WeavileAssuranceAgent DO owns the sweep
+    // (gas sponsorship via 4337 paymaster on EVM, Kora co-sign on SOL,
+    // SponsorAgent on Sui, per-sweep CPFP dWallet on BTC — see
+    // docs/superpowers/plans/2026-04-18-weavile-assurance.md §3).
+    // Tickets enqueued here fire once the Assurance DO's live dispatch
+    // (Move 7) lands. Until then enqueues accumulate in the Assurance
+    // DO and expire after TICKET_VALIDITY_MS, which is fine — no funds
+    // leak because stealth addrs sit idle on-chain anyway.
+    const handedOff: PendingStealth[] = [];
+    const heldBack: PendingStealth[] = [];
     if (batch.length > 0) {
-      // TODO(Metal Claw + Icy Wind): for each PendingStealth, kick off
-      // an IKA sweep ceremony against `stealthAddr` using the dWallet
-      // that owns `spendPub`. On success, append to completedSweeps
-      // and drop from pending. Until then, we leave batch in-place so
-      // Metal Claw can pick up where we left off.
+      for (const p of batch) {
+        try {
+          const assuranceStub = this.env.WeavileAssuranceAgent.get(
+            this.env.WeavileAssuranceAgent.idFromName(`assurance:${p.recipientSuiAddr}`),
+          );
+          // coldDestSealRef + dwalletId are placeholders until Icy Wind
+          // wires per-stealth Seal + per-stealth dWallet provisioning.
+          // Passing tweakHex as dwalletId lets Move 7 look it up later.
+          await (assuranceStub as unknown as {
+            enqueueSweep: (params: {
+              stealthAddr: string;
+              chain: 'eth' | 'sol' | 'sui' | 'btc';
+              recipientSuiAddr: string;
+              coldDestSealRef: string;
+              dwalletId: string;
+            }) => Promise<{ ticketId: string; expiresAtMs: number }>;
+          }).enqueueSweep({
+            stealthAddr: p.stealthAddr,
+            chain: (['eth', 'sol', 'sui', 'btc'].includes(p.chain)
+              ? p.chain
+              : 'eth') as 'eth' | 'sol' | 'sui' | 'btc',
+            recipientSuiAddr: p.recipientSuiAddr,
+            coldDestSealRef: p.announcementDigest,
+            dwalletId: p.tweakHex,
+          });
+          handedOff.push(p);
+        } catch (err) {
+          console.warn(`[WeavileScanner:${this.name}] enqueueSweep failed:`, err);
+          heldBack.push(p);
+        }
+      }
       console.log(
-        `[WeavileScanner:${this.name}] tick() — stub sweep for ${batch.length} pending stealth(s); jitter=${jitterMs}ms`,
+        `[WeavileScanner:${this.name}] tick() — handed ${handedOff.length}/${batch.length} to Assurance (jitter=${jitterMs}ms)`,
       );
     }
 
-    this.setState({ ...this.state, pendingStealths: rest.concat(batch) });
+    this.setState({ ...this.state, pendingStealths: rest.concat(heldBack) });
     this._scheduleScannerAlarm();
     return {
       polled,

@@ -102,7 +102,7 @@ let _sealClientGql: SealClient | null = null;
 let _sessionKey: SessionKey | null = null;
 let _sessionKeyAddr = '';
 
-function getSealClient(): SealClient {
+export function getSealClient(): SealClient {
   if (_sealClientGrpc) return _sealClientGrpc;
   _sealClientGrpc = new SealClient({
     suiClient: grpcClient as never,
@@ -131,7 +131,7 @@ function getSealClientGql(): SealClient {
  *  transport-agnostic) and the same key-server responses, so the
  *  only thing that diverges is the underlying `core.getObject` /
  *  package version check. Racing them is safe. */
-async function sealRace<T>(op: (client: SealClient) => Promise<T>): Promise<T> {
+export async function sealRace<T>(op: (client: SealClient) => Promise<T>): Promise<T> {
   const grpcTry = op(getSealClient()).then(
     (v) => ({ ok: true as const, v, src: 'grpc' as const }),
     (e) => ({ ok: false as const, e, src: 'grpc' as const }),

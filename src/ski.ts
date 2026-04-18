@@ -1763,6 +1763,7 @@ const _bindWhelmEthResolver = async (
     return { error: 'no wallet' };
   }
   const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
+  const NAME_WRAPPER = '0xD4416b13d2b3a9aBae7aCd5D6C2BbDBE25686401';
   const { keccak_256 } = await import('@noble/hashes/sha3.js');
   // Namehash per EIP-137.
   const labels = `${ensName}.eth`.split('.');
@@ -1775,7 +1776,17 @@ const _bindWhelmEthResolver = async (
     node = keccak_256(buf);
   }
   const nodeHex = '0x' + Array.from(node, (b) => b.toString(16).padStart(2, '0')).join('');
-  // ENS.setResolver(bytes32 node, address resolver) = 0x1896f70a
+  // Check if the name is wrapped — Registry.owner(node) returns NameWrapper
+  // for wrapped names. Wrapped names require setResolver against NameWrapper
+  // (which proxies to Registry after verifying the wrapped owner).
+  const ownerResp = (await eth.request({
+    method: 'eth_call',
+    params: [{ to: ENS_REGISTRY, data: '0x02571be3' + nodeHex.slice(2) }, 'latest'],
+  })) as string;
+  const registryOwner = '0x' + ownerResp.slice(-40);
+  const isWrapped = registryOwner.toLowerCase() === NAME_WRAPPER.toLowerCase();
+  const target = isWrapped ? NAME_WRAPPER : ENS_REGISTRY;
+  // setResolver(bytes32 node, address resolver) = 0x1896f70a (same selector on both)
   const data =
     '0x1896f70a' +
     nodeHex.slice(2).padStart(64, '0') +
@@ -1791,20 +1802,21 @@ const _bindWhelmEthResolver = async (
   console.log(`  ens name: ${ensName}.eth`);
   console.log(`  namehash: ${nodeHex}`);
   console.log(`  resolver: ${resolverAddress}`);
-  console.log(`  to:       ${ENS_REGISTRY}`);
+  console.log(`  wrapped?: ${isWrapped ? 'yes → NameWrapper' : 'no → Registry'}`);
+  console.log(`  to:       ${target}`);
   console.log(`  calldata: ${data}`);
   if (opts?.dryRun) {
     console.log('[bindResolver] dryRun=true — stopping before prompt');
-    return { ok: true, dryRun: true, from, node: nodeHex, resolver: resolverAddress };
+    return { ok: true, dryRun: true, from, node: nodeHex, resolver: resolverAddress, isWrapped };
   }
   try {
     const tx = (await eth.request({
       method: 'eth_sendTransaction',
-      params: [{ from, to: ENS_REGISTRY, data }],
+      params: [{ from, to: target, data }],
     })) as string;
     console.log(`[bindResolver] tx submitted: ${tx}`);
     showToast(`\u2713 ${ensName}.eth → ${resolverAddress.slice(0, 10)}\u2026`);
-    return { ok: true, tx, node: nodeHex };
+    return { ok: true, tx, node: nodeHex, isWrapped };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[bindResolver] failed:', msg);
@@ -1911,6 +1923,77 @@ const _deployOffchainResolver = async (opts?: {
 (window as unknown as { deployOffchainResolver: typeof _deployOffchainResolver }).deployOffchainResolver = _deployOffchainResolver;
 (globalThis as unknown as { deployOffchainResolver: typeof _deployOffchainResolver }).deployOffchainResolver = _deployOffchainResolver;
 console.log('[ski] deployOffchainResolver hook installed — call deployOffchainResolver() from a funded ETH wallet to deploy the OffchainResolver contract. Follow with bindWhelmEthResolver().');
+
+// ── delegateWhelmEthManagement — approve an operator on NameWrapper ──
+//
+// One-time tx from the wrapped-name owner (e.g. the invalid.eth Phantom
+// account that holds whelm.eth). After this, the operator can setResolver
+// / addSigners etc. on whelm.eth without touching the owner's Phantom again.
+//
+// Defaults operator to ultron's ETH dWallet — the same co-signer baked
+// into the OffchainResolver contract constructor. Keeps ownership on the
+// black-diamond account, moves day-to-day management to ultron.
+//
+// Usage:
+//   delegateWhelmEthManagement()                         // default: delegate to eth@ultron
+//   delegateWhelmEthManagement({ operator: '0x…' })      // override
+//   delegateWhelmEthManagement({ dryRun: true })         // log plan only
+//   delegateWhelmEthManagement({ revoke: true })         // revoke instead
+const _delegateWhelmEthManagement = async (opts?: {
+  operator?: string;
+  dryRun?: boolean;
+  revoke?: boolean;
+}) => {
+  const DEFAULT_OPERATOR = '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d'; // eth@ultron
+  const operator = (opts?.operator ?? DEFAULT_OPERATOR).toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(operator)) {
+    console.error(`[delegate] invalid operator: ${operator}`);
+    return { error: 'invalid operator' };
+  }
+  const eth = (window as unknown as { ethereum?: {
+    request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  } }).ethereum;
+  if (!eth) {
+    console.error('[delegate] no window.ethereum — connect the invalid.eth Phantom account first');
+    return { error: 'no wallet' };
+  }
+  const NAME_WRAPPER = '0xD4416b13d2b3a9aBae7aCd5D6C2BbDBE25686401';
+  // setApprovalForAll(address operator, bool approved) = 0xa22cb465
+  const approvedHex = opts?.revoke ? '0'.repeat(63) + '0' : '0'.repeat(63) + '1';
+  const data = '0xa22cb465' + operator.slice(2).padStart(64, '0') + approvedHex;
+  const accounts = (await eth.request({ method: 'eth_accounts' })) as string[];
+  const from = accounts?.[0];
+  if (!from) {
+    console.error('[delegate] no account — eth_requestAccounts first');
+    return { error: 'not connected' };
+  }
+  console.log('[delegate] plan:');
+  console.log(`  from:     ${from}  (must be whelm.eth owner — likely invalid.eth)`);
+  console.log(`  operator: ${operator}${operator === DEFAULT_OPERATOR ? '  (eth@ultron)' : ''}`);
+  console.log(`  action:   ${opts?.revoke ? 'REVOKE' : 'GRANT'} approval on NameWrapper`);
+  console.log(`  to:       ${NAME_WRAPPER}`);
+  console.log(`  calldata: ${data}`);
+  if (opts?.dryRun) {
+    console.log('[delegate] dryRun=true — stopping before prompt');
+    return { ok: true, dryRun: true, from, operator };
+  }
+  try {
+    const tx = (await eth.request({
+      method: 'eth_sendTransaction',
+      params: [{ from, to: NAME_WRAPPER, data }],
+    })) as string;
+    console.log(`[delegate] tx submitted: ${tx}`);
+    showToast(`\u2713 ${opts?.revoke ? 'Revoked' : 'Delegated'} to ${operator.slice(0, 10)}\u2026`);
+    return { ok: true, tx, from, operator, revoked: !!opts?.revoke };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[delegate] failed:', msg);
+    return { error: msg };
+  }
+};
+(window as unknown as { delegateWhelmEthManagement: typeof _delegateWhelmEthManagement }).delegateWhelmEthManagement = _delegateWhelmEthManagement;
+(globalThis as unknown as { delegateWhelmEthManagement: typeof _delegateWhelmEthManagement }).delegateWhelmEthManagement = _delegateWhelmEthManagement;
+console.log('[ski] delegateWhelmEthManagement hook installed — one-time call from the invalid.eth Phantom account delegates management of whelm.eth to eth@ultron (or any operator).');
 
 // ── chainAt — canonical console resolver for chain@name identifiers ──
 //

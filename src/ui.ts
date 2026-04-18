@@ -6401,6 +6401,10 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Bind whelm.eth</span>
           <button class="wk-settings-value wk-settings-button" id="wk-bind-whelm-eth" type="button" title="Bind whelm.eth to the deployed resolver (~$0.024 gas)">Bind whelm.eth</button>
         </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Delegate to Ultron</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-delegate-whelm-eth" type="button" title="One-time: approve eth@ultron to manage whelm.eth (run from the invalid.eth Phantom account)">Delegate whelm.eth</button>
+        </div>
       </div>`;
 }
 
@@ -7266,6 +7270,45 @@ function renderSkiMenu() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(`Bind error: ${msg}`, false, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  // Admin — Delegate whelm.eth management to eth@ultron via NameWrapper
+  document.getElementById('wk-delegate-whelm-eth')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Signing\u2026';
+    try {
+      const fn = (window as unknown as {
+        delegateWhelmEthManagement?: (opts?: { operator?: string; dryRun?: boolean }) => Promise<{
+          ok?: boolean;
+          tx?: string;
+          operator?: string;
+          error?: string;
+        }>;
+      }).delegateWhelmEthManagement;
+      if (!fn) {
+        showToast('delegateWhelmEthManagement helper not loaded');
+        return;
+      }
+      const result = await fn();
+      if (result.error) {
+        showToast(`Delegate failed: ${result.error}`, false, true);
+        return;
+      }
+      if (result.tx) {
+        showToast(`\u2713 whelm.eth mgmt \u2192 ${(result.operator ?? '').slice(0, 10)}\u2026 (now run Bind whelm.eth from any admin wallet)`, false, true);
+      } else {
+        showToast('Delegate submitted; no tx hash returned', false, true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Delegate error: ${msg}`, false, true);
     } finally {
       btn.disabled = false;
       btn.textContent = original;

@@ -2134,6 +2134,30 @@ app.post('/api/admin/paymaster-signer', async (c) => {
   }
 });
 
+// GET /api/admin/paymaster-signer/ultron-default
+// Returns ultron's existing secp256k1 dwalletId + its ETH address.
+// The "Rumble Paymaster Squid" button hits this, then POSTs the
+// result to /api/admin/paymaster-signer. No new DKG — ultron's squid
+// already exists and is IKA-native; the separation between "funds
+// dWallet" and "paymaster signer dWallet" is theatrical under
+// 2PC-MPC.
+app.get('/api/admin/paymaster-signer/ultron-default', async (c) => {
+  try {
+    // These mirror ULTRON_DWALLETS.secp256k1 in ultron-signing-agent.ts
+    // and the ETH_ULTRON constant used elsewhere in index.ts. Kept as
+    // a single source of truth in the signing agent; duplicated here
+    // only for the initial GET surface — future rotations will read
+    // from DO state.
+    return c.json({
+      dwalletId: '0xbb8bce5447722a4c6f5f64618164d8420551dfdbc7605afe279a85de1ebb6acb',
+      ethAddress: '0xcaA8d6F00f465129eF0B7D7ABBeA9f2C8a90882d',
+      note: 'ultron existing secp256k1 squid; reused as paymaster signer per 2026-04-18 design revision',
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }, 500);
+  }
+});
+
 // GET /api/admin/paymaster-signer — read current stored paymaster-signer.
 // Not secret (only public addr + dwalletId), so no admin gate — useful
 // for UI status. Returns null until setPaymasterSigner has been called.

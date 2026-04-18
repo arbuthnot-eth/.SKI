@@ -662,14 +662,15 @@ const _rumbleUltron = async (curves: 'ed25519' | 'secp256k1' | 'both' = 'ed25519
 console.log('[ski] rumbleUltron hook installed — call rumbleUltron("ed25519")');
 
 // ─── Paymaster Squid — Weavile Assurance Move 6 ─────────────────────
-// Dedicated secp256k1 dWallet owned by ultron.sui that signs
-// paymasterAndData for Weavile gas-sponsored sweeps. Rotated weekly
-// by re-running this ceremony and calling `setVerifyingSigner` on the
-// Pimlico paymaster contract with the new ETH address.
+// Reuses ultron's existing secp256k1 dWallet (rumbled long ago, owns
+// eth@ultron = 0xcaA8…882d) as the paymaster-signer. With IKA 2PC-MPC
+// there's no bearer key to leak — "key separation" for a secondary
+// paymaster dWallet is theatrical. Same threshold, same user-share,
+// same IKA network. One dWallet is enough.
 //
-// Distinct from the user-funds secp256k1 ultron dWallet (which owns
-// real ETH balances). Keeping them separate means a compromise of
-// the paymaster signer never touches user funds.
+// Future rotation = re-rumble ultron's secp256k1, update Pimlico's
+// on-chain verifying-signer to the new ETH address, repoint the
+// paymaster-signer record here. The button stays; the flow stays.
 window.addEventListener('ski:rumble-paymaster-squid', async () => {
   const ws = getState();
   if (ws.status !== 'connected' || !ws.address) {
@@ -678,65 +679,41 @@ window.addEventListener('ski:rumble-paymaster-squid', async () => {
     }));
     return;
   }
-  showToast('Paymaster squid \u2014 running DKG (3 rounds, ~30s)\u2026');
+  showToast('Paymaster signer \u2014 fetching ultron squid\u2026');
   try {
-    const { provisionDWallet } = await import('./client/ika.js');
-    const { Curve } = await import('@ika.xyz/sdk');
-    const { signTransaction } = await import('./wallet.js');
-    const result = await provisionDWallet(ws.address, {
-      signTransaction: (txBytes: Uint8Array) => signTransaction(txBytes),
-      signAndExecuteTransaction: (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
-      onStatus: (stage) => console.log(`[paymaster-squid] ${stage}`),
-      requestedCurve: Curve.SECP256K1,
-      targetOwner: ULTRON_ADDRESS,
-      // No encryptionSeed → fresh random dwallet each call. Rotation
-      // semantics: every click mints a brand-new squid.
-    });
-    const dwalletId = result.dwalletCaps?.[0] ?? '';
-    const ethAddress = result.ethAddress ?? '';
+    // Fetch ultron's existing dWallet ids + eth address from the server.
+    // (Already known constants server-side; single round trip avoids
+    // duplicating them in the client bundle.)
+    const res = await fetch('/api/admin/paymaster-signer/ultron-default');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `HTTP ${res.status}`);
+    }
+    const { dwalletId, ethAddress } = await res.json() as { dwalletId: string; ethAddress: string };
     if (!dwalletId || !ethAddress) {
-      window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
-        detail: { error: 'DKG returned no dwalletId/ethAddress — check console' },
-      }));
-      return;
+      throw new Error('server returned empty dwalletId/ethAddress');
     }
 
-    // Auto-persist to UltronSigningAgent DO — no more code paste.
-    // Admin-gated endpoint takes a signed message so we match the same
-    // auth surface as /api/cache/squid-stats and friends.
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const message = `set-paymaster-signer:${ethAddress}:${today}`;
-      const { signPersonalMessage } = await import('./wallet.js');
-      const sig = await signPersonalMessage(new TextEncoder().encode(message));
-      const persistRes = await fetch('/api/admin/paymaster-signer', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-ultron-admin': ws.address,
-          'x-ultron-sig': sig.signature,
-          'x-ultron-msg': message,
-        },
-        body: JSON.stringify({ dwalletId, ethAddress }),
-      });
-      if (!persistRes.ok) {
-        const errJson = await persistRes.json().catch(() => ({})) as { error?: string };
-        console.warn('[paymaster-squid] persist failed:', errJson.error ?? persistRes.status);
-        // Don't fail the whole flow — the dwalletId is still usable via clipboard copy.
-        window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
-          detail: {
-            dwalletId,
-            ethAddress,
-            persistError: errJson.error ?? `HTTP ${persistRes.status}`,
-          },
-        }));
-        return;
-      }
-      console.log('[paymaster-squid] persisted to UltronSigningAgent DO');
-    } catch (err) {
-      console.warn('[paymaster-squid] persist error:', err);
+    // Admin-sign + persist to UltronSigningAgent DO.
+    const today = new Date().toISOString().slice(0, 10);
+    const message = `set-paymaster-signer:${ethAddress}:${today}`;
+    const { signPersonalMessage } = await import('./wallet.js');
+    const sig = await signPersonalMessage(new TextEncoder().encode(message));
+    const persistRes = await fetch('/api/admin/paymaster-signer', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-ultron-admin': ws.address,
+        'x-ultron-sig': sig.signature,
+        'x-ultron-msg': message,
+      },
+      body: JSON.stringify({ dwalletId, ethAddress }),
+    });
+    if (!persistRes.ok) {
+      const errJson = await persistRes.json().catch(() => ({})) as { error?: string };
+      throw new Error(errJson.error ?? `HTTP ${persistRes.status}`);
     }
-
+    console.log('[paymaster-squid] persisted to UltronSigningAgent DO');
     window.dispatchEvent(new CustomEvent('ski:rumble-paymaster-squid-complete', {
       detail: { dwalletId, ethAddress, persisted: true },
     }));

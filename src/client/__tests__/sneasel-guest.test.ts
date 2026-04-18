@@ -163,6 +163,86 @@ describe('mintGuestIntermediate (real DKG path — env guards)', () => {
   });
 });
 
+// ─── Shadow Ball pt1 — Sui branch ─────────────────────────────────────
+
+describe('Sui branch (Shadow Ball pt1)', () => {
+  const SUI_HERMES = '0x' + 'aa'.repeat(32);
+  const SUI_ATHENA = '0x' + 'bb'.repeat(32);
+  const SUI_ULTRON = '0x' + 'cc'.repeat(32);
+  const SUI_INTERMEDIATE = '0x' + 'dd'.repeat(32);
+
+  test("chain: 'sui' encrypts v2 intermediate payload", async () => {
+    captured.length = 0;
+    const { sealEncryptColdDest } = await import('../sneasel-guest.js');
+    await sealEncryptColdDest({
+      intermediateAddr: SUI_INTERMEDIATE,
+      chain: 'sui',
+      parentHash: parentHash32(),
+      labelBytes: new TextEncoder().encode('hermes'),
+      sweepDelegate: SUI_ULTRON,
+    });
+    expect(captured.length).toBe(1);
+    const payload = JSON.parse(new TextDecoder().decode(captured[0].data));
+    expect(payload.version).toBe(2);
+    expect(payload.chain).toBe('sui');
+    expect(payload.intermediateAddr).toBe(SUI_INTERMEDIATE);
+    expect(payload.coldAddr).toBeUndefined();
+  });
+
+  test("chain: 'sui' refuses when intermediate == sweepDelegate (Ice Fang collapse)", async () => {
+    const { sealEncryptColdDest } = await import('../sneasel-guest.js');
+    await expect(
+      sealEncryptColdDest({
+        intermediateAddr: SUI_ULTRON,
+        chain: 'sui',
+        parentHash: parentHash32(),
+        labelBytes: new TextEncoder().encode('hermes'),
+        sweepDelegate: SUI_ULTRON,
+      }),
+    ).rejects.toThrow(/Ice Fang collapse/);
+  });
+
+  test("mintGuestIntermediateDryRun picks ed25519 for chain='sui'", async () => {
+    const { mintGuestIntermediateDryRun } = await import('../sneasel-guest.js');
+    const sui = mintGuestIntermediateDryRun({
+      chain: 'sui',
+      parentHash: parentHash32(),
+      label: 'hermes',
+    });
+    expect(sui.curve).toBe('ed25519');
+    expect(sui.previewAddr).toContain('ICY_WIND_PREVIEW_');
+  });
+
+  test("buildGuestPrivateTx rejects non-hex Sui coldAddr", async () => {
+    const { buildGuestPrivateTx } = await import('../sneasel-guest.js');
+    const fakeTx = {
+      moveCall: () => {},
+      object: (id: string) => ({ kind: 'object', id }),
+      pure: {
+        vector: (t: string, v: unknown) => ({ kind: 'vec', t, v }),
+        address: (a: string) => ({ kind: 'addr', a }),
+        string: (s: string) => ({ kind: 'str', s }),
+        u64: (n: number) => ({ kind: 'u64', n }),
+      },
+    } as never;
+    await expect(
+      buildGuestPrivateTx(fakeTx, {
+        rosterObj: '0xroster',
+        parentHash: parentHash32(),
+        labelBytes: new TextEncoder().encode('hermes'),
+        hotAddr: SUI_HERMES,
+        coldAddr: 'not-a-hex-addr',
+        intermediateAddr: SUI_INTERMEDIATE,
+        chain: 'sui',
+        ttlMs: 90 * 24 * 3600 * 1000,
+        sweepDelegate: SUI_ULTRON,
+      }),
+    ).rejects.toThrow(/0x-prefixed|valid hex|chain=sui/);
+    // Silence unused-var lint for athena placeholder
+    void SUI_ATHENA;
+  });
+});
+
 describe('buildRotateSweepDelegateTx (Sneasel Slash)', () => {
   test('emits rotate_sweep_delegate moveCall with expected target + 6 args', async () => {
     const { buildRotateSweepDelegateTx } = await import('../sneasel-guest.js');

@@ -298,12 +298,43 @@ export function deriveIcyWindSeed(params: {
   return sha256(buf);
 }
 
-/** Map a Sneasel chain string to an IKA curve. Throws on unsupported. */
+/** Map a Sneasel chain string to an IKA curve. Throws on unsupported.
+ *
+ * Special case: `chain === 'sui'` overrides the chains.ts registry (which
+ * configures Sui under secp256k1 for address-sharing with btc/eth). For
+ * Sneasel intermediates we always want an *ed25519* Sui address — that's
+ * the native Sui scheme, it's what `0x...` user addresses use, and it's
+ * what the sweep PTB signer will be. The secp256k1 sui derivation in
+ * chains.ts throws anyway. Shadow Ball pt1 pins sui → ed25519. */
 function chainToIkaCurve(chain: string): 'secp256k1' | 'ed25519' {
+  if (chain === 'sui') return 'ed25519';
   const cfg = resolveChain(chain);
   if (cfg.curve === IkaCurve.SECP256K1) return 'secp256k1';
   if (cfg.curve === IkaCurve.ED25519) return 'ed25519';
   throw new Error(`[sneasel:icy-wind] unsupported curve for chain ${chain}`);
+}
+
+/** Validate a chain-native address string. For Sui we require a 32-byte
+ *  0x-prefixed hex address (normalized or not). For other chains we defer
+ *  to the caller — ETH/SOL/BTC validation happens upstream in the UI.
+ *
+ *  Kept loose on purpose: Sneasel's cold-dest JSON blob is opaque to the
+ *  watcher until Seal decrypt, so hard validation here would reject
+ *  otherwise-legitimate forward-compat addresses. This is the minimum
+ *  shape-guard that blocks obvious garbage. */
+function assertSuiAddrShape(addr: string, field: string): void {
+  if (!addr.startsWith('0x')) {
+    throw new Error(`[sneasel] ${field} for chain=sui must be 0x-prefixed hex, got ${addr.slice(0, 8)}…`);
+  }
+  const hex = addr.slice(2);
+  // 0x + 64 hex chars = 32 bytes. Allow shorter (e.g. un-zero-padded) but
+  // no longer than 64 — Sui addresses are fixed-width 32 bytes max.
+  if (hex.length === 0 || hex.length > 64) {
+    throw new Error(`[sneasel] ${field} for chain=sui must be ≤32 bytes hex, got ${hex.length} chars`);
+  }
+  if (!/^[0-9a-fA-F]+$/.test(hex)) {
+    throw new Error(`[sneasel] ${field} for chain=sui must be valid hex`);
+  }
 }
 
 /**
@@ -423,7 +454,24 @@ export async function mintGuestIntermediate(params: {
   // Pick the chain-native address out of the post-DKG status.
   let intermediateAddr = '';
   if (preview.curve === 'ed25519') {
-    intermediateAddr = status.solAddress;
+    if (params.chain === 'sui') {
+      // Sui ed25519 address derivation: sha3/blake2b(flag 0x00 || pubkey).
+      // provisionDWallet's CrossChainStatus populates `solAddress` for the
+      // Solana (base58) mapping; the Sui-native hex address is discovered
+      // via status.addresses. Shadow Ball pt1 keeps this lookup resilient:
+      // prefer the typed entry, fall back to solAddress only if the SDK
+      // hasn't produced a Sui entry yet (Icy Wind pt2 will harden this).
+      const hit = status.addresses.find((a) => a.name === 'Sui' || a.chain.startsWith('sui:'));
+      intermediateAddr = hit?.address ?? '';
+      if (!intermediateAddr) {
+        throw new Error(
+          '[sneasel:icy-wind] ed25519 DKG completed but no Sui address in CrossChainStatus.addresses — ' +
+          'extend chains.ts sui entry to an ed25519 variant (Shadow Ball pt2).',
+        );
+      }
+    } else {
+      intermediateAddr = status.solAddress;
+    }
   } else {
     // secp256k1 family — pick based on caller's chain.
     const chainCfg = resolveChain(params.chain);
@@ -634,6 +682,14 @@ export async function buildGuestPrivateTx(
   }
   if (args.intermediateAddr.toLowerCase() === args.coldAddr.toLowerCase()) {
     throw new Error('[sneasel] intermediateAddr must differ from coldAddr (Ice Fang collapse)');
+  }
+  // Shadow Ball pt1: cheap shape-check for Sui hot/cold/intermediate —
+  // catches typos before they hit the Seal encrypt path. ETH/SOL/BTC
+  // addresses retain caller-side validation in the UI layer.
+  if (args.chain === 'sui') {
+    assertSuiAddrShape(args.hotAddr, 'hotAddr');
+    assertSuiAddrShape(args.coldAddr, 'coldAddr');
+    assertSuiAddrShape(args.intermediateAddr, 'intermediateAddr');
   }
   const sealedColdDest = await sealEncryptColdDest({
     intermediateAddr: args.intermediateAddr,

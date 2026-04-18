@@ -145,6 +145,96 @@ describe('SneaselWatcherAgent.rejectV1SealedPayload', () => {
   });
 });
 
+// ─── Shadow Ball pt1 — Sui sweep branch ──────────────────────────────
+
+describe('SneaselWatcherAgent — Sui sweep branch', () => {
+  test('tick() with two ready Sui sweeps for distinct guests produces two batches', async () => {
+    const { SneaselWatcherAgent } = await import('../sneasel-watcher.js');
+    const agent = new SneaselWatcherAgent(
+      {} as unknown as DurableObjectState,
+      { SUI_NETWORK: 'mainnet' },
+    );
+    const SUI_ULTRON = '0x' + 'cc'.repeat(32);
+    agent.state = {
+      watchedHotAddrs: [
+        {
+          parentHash: '0xparent',
+          label: 'hermes',
+          hotAddr: '0x' + 'aa'.repeat(32),
+          chain: 'sui',
+          sweepDelegate: SUI_ULTRON,
+          expiresMs: 0,
+          registeredAtMs: 0,
+        },
+        {
+          parentHash: '0xparent',
+          label: 'athena',
+          hotAddr: '0x' + 'bb'.repeat(32),
+          chain: 'sui',
+          sweepDelegate: SUI_ULTRON,
+          expiresMs: 0,
+          registeredAtMs: 0,
+        },
+      ],
+      pendingSweeps: [
+        { hotAddr: '0x' + 'aa'.repeat(32), amountWei: '100000', detectedAtMs: 0, scheduledMs: 0 },
+        { hotAddr: '0x' + 'bb'.repeat(32), amountWei: '200000', detectedAtMs: 0, scheduledMs: 0 },
+      ],
+      completedSweeps: [],
+    };
+    const result = await agent.tick();
+    // Ice Fang invariant holds on Sui — two distinct guests → two batches,
+    // even sharing the same sweep delegate on Sui side.
+    expect(result.batches).toBe(2);
+    expect(result.processed).toBe(2);
+  });
+
+  test('_sweepSui no-ops on zero balance (dust gate)', async () => {
+    const { SneaselWatcherAgent } = await import('../sneasel-watcher.js');
+    const agent = new SneaselWatcherAgent(
+      {} as unknown as DurableObjectState,
+      { SUI_NETWORK: 'mainnet' },
+    );
+    const hot = '0x' + 'aa'.repeat(32);
+    agent.state = {
+      watchedHotAddrs: [
+        {
+          parentHash: '0xparent',
+          label: 'hermes',
+          hotAddr: hot,
+          chain: 'sui',
+          sweepDelegate: '0x' + 'cc'.repeat(32),
+          expiresMs: 0,
+          registeredAtMs: 0,
+        },
+      ],
+      pendingSweeps: [],
+      completedSweeps: [],
+    };
+    // amountWei=0 → webhook reported nothing. _sweepSui should short-circuit
+    // on the dust gate without attempting decrypt/sign.
+    const res = await agent._sweepSui([
+      { hotAddr: hot, amountWei: '0', detectedAtMs: 0, scheduledMs: 0 },
+    ]);
+    expect(res.count).toBe(0);
+    expect(res.reason).toBe('below-dust');
+    expect(res.digest).toBe('');
+  });
+
+  test('_sweepSui rejects v1 sealed payload with clear error', async () => {
+    const { SneaselWatcherAgent } = await import('../sneasel-watcher.js');
+    const agent = new SneaselWatcherAgent(
+      {} as unknown as DurableObjectState,
+      { SUI_NETWORK: 'mainnet' },
+    );
+    // The v1-reject gate is the contract pt2 will call once Seal decrypt
+    // lands. Pt1 exposes it directly so the error surface is pinned now.
+    expect(() => agent._sweepSuiRejectV1({ version: 1 })).toThrow(/ice-fang-requires-v2/);
+    expect(() => agent._sweepSuiRejectV1({})).toThrow(/ice-fang-requires-v2/);
+    expect(() => agent._sweepSuiRejectV1({ version: 2 })).not.toThrow();
+  });
+});
+
 // ─── jitter window ────────────────────────────────────────────────────
 
 describe('pickSweepJitterMs', () => {

@@ -1291,7 +1291,7 @@ export class UltronSigningAgent extends Agent<Env, UltronSigningState> {
     let matched = false;
     if (ultronSpec.dwalletId === dwalletId) matched = true;
     if (PAYMASTER_SIGNER_DWALLET && PAYMASTER_SIGNER_DWALLET.dwalletId === dwalletId) matched = true;
-    if (this.state.paymasterSigner && this.state.paymasterSigner.dwalletId === dwalletId) matched = true;
+    if (this.state?.paymasterSigner && this.state.paymasterSigner.dwalletId === dwalletId) matched = true;
     if (!matched) {
       throw new Error(`signForStealth: unknown dwalletId '${dwalletId}' for curve ${curve}`);
     }

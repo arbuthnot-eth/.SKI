@@ -349,12 +349,34 @@ export class SneaselWatcherAgent extends Agent<Env, SneaselWatcherState> {
     // batch independently. A single-guest batch's sweeps all share
     // the same delay, but two distinct guests get two independent
     // jitters so their sweeps don't co-land in the same block.
+    //
+    // Shadow Ball pt1: per-chain sweep dispatch. Each batch routes to
+    // `_sweepEth` or `_sweepSui` based on the watched hot address's
+    // `chain`. Real IKA signing + submit is stubbed in both paths (pt2
+    // wires the actual ceremony); the dispatch + Ice Fang invariants
+    // land here.
     const nextPending: PendingSweep[] = [];
     const stillDeferred = this.state.pendingSweeps.filter(p => p.scheduledMs > now);
     nextPending.push(...stillDeferred);
     for (const [, batch] of groups) {
       const jitter = pickSweepJitterMs();
       const target = now + jitter;
+      // Peek the first sweep's watched record to pick the chain branch.
+      // All sweeps in one batch share (chain, parentHash, label) by
+      // construction (the grouping key above).
+      const first = this.state.watchedHotAddrs.find(
+        ww => ww.hotAddr.toLowerCase() === batch[0].hotAddr.toLowerCase(),
+      );
+      const chainBranch = first?.chain ?? 'eth';
+      try {
+        if (chainBranch === 'sui') {
+          await this._sweepSui(batch);
+        } else {
+          await this._sweepEth(batch);
+        }
+      } catch (err) {
+        console.error(`[SneaselWatcher:${this.name}] sweep branch ${chainBranch} failed:`, err);
+      }
       // Keep them pending with new scheduledMs. Real Icy Wind will
       // replace this with an actual sign+submit and append to
       // completedSweeps instead of re-deferring.
@@ -380,6 +402,96 @@ export class SneaselWatcherAgent extends Agent<Env, SneaselWatcherState> {
         `ice-fang-requires-v2: got version=${decrypted.version ?? 'undefined'}, Sneasel Ice Fang requires v2 cold-dest payload`,
       );
     }
+  }
+
+  // ─── Per-chain sweep branches (Shadow Ball pt1) ──────────────────
+
+  /** ETH sweep branch — stub. Real IKA signing lands in Icy Wind pt2.
+   *  Today this is a no-op placeholder that preserves the Ice Fang
+   *  per-guest invariant: one call per batch, never batched across
+   *  distinct `(parentHash, label)` groups. */
+  async _sweepEth(batch: PendingSweep[]): Promise<{ digest: string; count: number }> {
+    if (batch.length === 0) return { digest: 'pending-ika-sign', count: 0 };
+    // TODO(Sneasel Icy Wind pt2): Seal-decrypt layer-1 → intermediate,
+    // build hot→intermediate ETH tx via IKA, submit through public
+    // relay. Mark digest with real hash on success.
+    console.log(
+      `[SneaselWatcher:${this.name}] _sweepEth stub — batch of ${batch.length} for hot=${shortenAddr(batch[0].hotAddr)}`,
+    );
+    return { digest: 'pending-ika-sign', count: batch.length };
+  }
+
+  /** Sui sweep branch — stub with real balance probe + Ice Fang guards.
+   *
+   *  Pipeline (pt1 scaffold, signing stubbed for pt2):
+   *    1. Fetch hot Sui address balances via SuiGraphQLClient.
+   *    2. If under dust threshold → no-op, return early.
+   *    3. Seal-decrypt layer-1 sealed_cold_dest (pt2 lands real decrypt).
+   *    4. Reject v1 payload with canonical error.
+   *    5. Build a PTB transferring all coins to the intermediate
+   *       (pt2 signs via IKA; pt1 returns `pending-ika-sign`).
+   *
+   *  Respects Ice Fang: never batches across guests — this method only
+   *  ever sees one (parentHash, label) batch at a time (caller enforces). */
+  async _sweepSui(batch: PendingSweep[]): Promise<{ digest: string; count: number; reason?: string }> {
+    if (batch.length === 0) return { digest: 'pending-ika-sign', count: 0 };
+    const hot = batch[0].hotAddr;
+    const watched = this.state.watchedHotAddrs.find(
+      w => w.hotAddr.toLowerCase() === hot.toLowerCase(),
+    );
+    if (!watched) {
+      return { digest: '', count: 0, reason: `no watched record for ${shortenAddr(hot)}` };
+    }
+
+    // 1. Fetch balances via GraphQL (DO/Worker context — no gRPC).
+    //    Lazy-import so unit tests that never touch the Sui branch
+    //    don't drag the GraphQL client into their module graph.
+    let totalBalance = 0n;
+    try {
+      const { SuiGraphQLClient } = await import('@mysten/sui/graphql');
+      const { GQL_URL } = await import('../rpc.js');
+      const gql = new SuiGraphQLClient({ url: GQL_URL, network: 'mainnet' });
+      // Core API: `listCoins({ owner })` returns all coin objects; sum
+      // them to a rough balance. Per-coin type breakdown is a pt2
+      // refinement — pt1 only needs "is there anything to sweep".
+      // SuiGraphQLClient exposes `listCoins` at the top level (not under
+      // .core). Probe SUI first; pt2 will sweep other coin types too.
+      const coins = await gql.listCoins({ owner: hot, coinType: '0x2::sui::SUI' });
+      for (const c of coins.objects ?? []) {
+        totalBalance += BigInt((c as { balance?: string }).balance ?? '0');
+      }
+    } catch (err) {
+      console.warn(`[SneaselWatcher:${this.name}] _sweepSui balance probe failed:`, err);
+      // Don't abort — falls through to the amount already reported by
+      // the webhook enqueue. Real pt2 handles retry + circuit-breaker.
+      totalBalance = BigInt(batch[0].amountWei || '0');
+    }
+
+    // 2. Dust gate — 1000 MIST (0.000001 SUI). Below this, gas > funds.
+    const DUST_MIST = 1000n;
+    if (totalBalance < DUST_MIST) {
+      console.log(`[SneaselWatcher:${this.name}] _sweepSui no-op: ${totalBalance} MIST < dust (${DUST_MIST})`);
+      return { digest: '', count: 0, reason: 'below-dust' };
+    }
+
+    // 3 + 4. Seal decrypt + v1-reject. Real decrypt wires in pt2; for
+    //        pt1 we only exercise the v1-reject gate when a sealed
+    //        blob is pre-decrypted (test-injected via `_sweepSuiForTest`).
+    //        Production path: actual decrypt → rejectV1SealedPayload.
+
+    // 5. Build PTB (stub) — log shape, no real signing.
+    console.log(
+      `[SneaselWatcher:${this.name}] _sweepSui stub — hot=${shortenAddr(hot)} intermediate=(pending-decrypt) balance=${totalBalance} MIST`,
+    );
+    return { digest: 'pending-ika-sign', count: batch.length };
+  }
+
+  /** Test-only: run the v1-reject gate on a pre-decrypted payload.
+   *  Production callsite will be inside `_sweepSui` once Seal decrypt
+   *  lands; exposed now so unit tests can verify the error contract
+   *  without mocking the entire Seal pipeline. */
+  _sweepSuiRejectV1(decrypted: { version?: number }): void {
+    SneaselWatcherAgent.rejectV1SealedPayload(decrypted);
   }
 
   // ─── Private ──────────────────────────────────────────────────────

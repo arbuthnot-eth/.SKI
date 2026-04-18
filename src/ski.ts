@@ -11,6 +11,21 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { getState, signPersonalMessage, signAndExecuteTransaction, signTransaction, getSuiWallets, connect, disconnect } from './wallet.js';
 import { initUI, showToast, showToastWithRetry, showBackpackLockedToast, updateAppState, grpcClient, enrollAllKnownAddresses, SUI_DROP_URI, getAppState } from './ui.js';
+
+// Trim an error for toast display: truncate on a whitespace boundary
+// when possible, and don't leave a 0x… hex address cut mid-word.
+// Full error is always logged + clipboard-copied separately.
+function prettyToastPreview(msg: string, max = 120): string {
+  if (msg.length <= max) return msg;
+  let cut = msg.lastIndexOf(' ', max);
+  if (cut < 40) cut = max;
+  // If the last space is right after a 0x hex that would get truncated,
+  // back up to include the whole hex token (still capped at ~1.5x).
+  const tail = msg.slice(cut).slice(0, 80);
+  const hexAfter = tail.match(/^\s*0x[0-9a-f]{10,}/i);
+  if (hexAfter) cut += hexAfter[0].length;
+  return `${msg.slice(0, cut).trimEnd()}\u2026`;
+}
 import { restoreSponsor, isSponsorActive, isKeeperSponsorActive, initSplashDO, getSponsorState, resolveNameToAddress } from './sponsor.js';
 import { getDeviceId, buildSessionKey } from './fingerprint.js';
 import { connectSession, authenticate, disconnectSession } from './client/session.js';
@@ -1152,11 +1167,11 @@ const _upgradeSuiami = async (extraNames: string[] = []) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[upgradeSuiami] failed:', err);
     if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
-      // Auto-copy the full error so the user can paste it into a
-      // console/debug tool without character-truncation.
+      // Full error is in console + copied to clipboard. Preview trims
+      // at a space boundary + shortens any 0x hex that's obviously cut
+      // mid-word so the toast reads cleanly instead of "…29e5d2e8ac09d7".
       try { navigator.clipboard?.writeText(msg); } catch { /* clipboard blocked */ }
-      const preview = msg.length > 100 ? `${msg.slice(0, 100)}… (full copied)` : msg;
-      showToast(`Upgrade failed: ${preview}`);
+      showToast(`Upgrade failed: ${prettyToastPreview(msg)}`);
     }
     return { error: msg };
   }
@@ -2410,7 +2425,7 @@ const _sendWhelm = async (
     console.error('[sendWhelm] failed:', err);
     if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
       try { navigator.clipboard?.writeText(msg); } catch { /* clipboard blocked */ }
-      showToast(`sendWhelm failed: ${msg.slice(0, 100)} (full copied)`);
+      showToast(`sendWhelm failed: ${prettyToastPreview(msg)}`);
     }
     return { ok: false, error: msg };
   }

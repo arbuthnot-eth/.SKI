@@ -10,7 +10,7 @@
 // fingerprint has changed. Typical user: 1-3 chunks lifetime.
 
 import type { Transaction } from '@mysten/sui/transactions';
-import { encryptCfChunkToWalrus, decryptCfChunkForAddress, SUIAMI_PKG, ROSTER_OBJ, ROSTER_INITIAL_SHARED_VERSION } from './suiami-seal.js';
+import { encryptCfChunkToWalrus, decryptCfChunkForAddress, SUIAMI_PKG_LATEST, ROSTER_OBJ, ROSTER_INITIAL_SHARED_VERSION } from './suiami-seal.js';
 
 export interface CfFields {
   country: string;
@@ -80,7 +80,7 @@ export async function maybeAttachCfHistoryToTx(
     const { blobId } = await encryptCfChunkToWalrus(ownerAddress, chunk);
 
     tx.moveCall({
-      target: `${SUIAMI_PKG}::roster::append_cf_history`,
+      target: `${SUIAMI_PKG_LATEST}::roster::append_cf_history`,
       arguments: [
         tx.sharedObjectRef({
           objectId: ROSTER_OBJ,

@@ -44,6 +44,7 @@
     "deploy": "bun update && bun run build && npx wrangler deploy",
     "smoke": "node scripts/devnet-smoke.mjs",
     "squids": "bun scripts/squids.ts",
+    "check:move": "bun scripts/check-move-targets.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"

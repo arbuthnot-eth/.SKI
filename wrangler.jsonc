@@ -97,6 +97,10 @@
       {
         "name": "AggronBatcher",
         "class_name": "AggronBatcher"
+      },
+      {
+        "name": "SuiInboundWatcher",
+        "class_name": "SuiInboundWatcher"
       }
     ]
   },
@@ -161,6 +165,10 @@
     {
       "tag": "v15",
       "new_sqlite_classes": ["AggronBatcher"]
+    },
+    {
+      "tag": "v16",
+      "new_sqlite_classes": ["SuiInboundWatcher"]
     }
   ],
 

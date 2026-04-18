@@ -254,4 +254,94 @@ export function deriveSuiStealthForEvent(params: {
   };
 }
 
+// ─── Sender-side derivation (gateway / wallet-side) ─────────────────
+//
+// The sender of a stealth payment knows:
+//   - recipient's viewPub (from the published `ska:` meta-address)
+//   - recipient's spendPub (same source)
+//   - freshly generated ephemeral keypair (ephPriv, ephPub)
+//
+// ECDH is symmetric: `ephPriv · viewPub == viewPriv · ephPub`. So the
+// sender computes the same shared secret, applies the same tweak, and
+// derives the same stealth pubkey as the scanner will on the receive
+// side. The ephemeralPub is published alongside the payment so the
+// recipient can scan for it.
+//
+// Beldum Double Hit (#167) uses this path in the CCIP-read gateway:
+// every `addr(node, 784)` query for a personal-mode identity spins a
+// fresh ephemeral keypair and returns a one-time stealth Sui address.
+
+export interface SenderDeriveInput {
+  /** Sender's freshly generated ephemeral private key (seed). 32 bytes
+   *  for ed25519; 32-byte scalar for secp256k1. */
+  ephemeralPriv: Uint8Array | string;
+  /** Recipient's view public key. 33-byte compressed (secp256k1) or
+   *  32-byte (ed25519). */
+  viewPub: Uint8Array | string;
+  /** Recipient's spend public key. Shape matches curve. */
+  spendPub: Uint8Array | string;
+  curve: DeriveCurve;
+}
+
+export interface SenderDeriveOutput {
+  /** Public half of the freshly generated ephemeral keypair. Publish
+   *  this alongside the stealth address so the recipient's scanner can
+   *  recover the same tweak. */
+  ephemeralPub: Uint8Array;
+  /** Derived one-time stealth pubkey (compressed for secp256k1). */
+  stealthPub: Uint8Array;
+  /** First byte of the tweak — the view-tag hint the recipient matches
+   *  against to short-circuit scans. */
+  viewTag: number;
+  /** Hex of the 32-byte tweak scalar. */
+  tweakHex: string;
+}
+
+/** Sender path — compute stealth pubkey from recipient's viewPub/spendPub
+ *  plus a freshly generated ephemeral keypair. Symmetric to
+ *  `deriveStealthForEvent` on the recipient side. */
+export function senderDeriveStealth(input: SenderDeriveInput): SenderDeriveOutput {
+  const ephPriv = asBytes(input.ephemeralPriv);
+  const viewPub = asBytes(input.viewPub);
+  const spendPub = asBytes(input.spendPub);
+
+  if (input.curve === 'secp256k1') {
+    // Sender ECDH: shared = ephPriv · viewPub → 33-byte compressed.
+    const shared = secp256k1.getSharedSecret(ephPriv, viewPub, true);
+    const s = hashTweakSecp(shared);
+    const G = secp256k1.Point.BASE;
+    const sPoint = G.multiply(bytesToScalarSecp(s));
+    const spendPoint = secp256k1.Point.fromBytes(spendPub);
+    const stealthPub = spendPoint.add(sPoint).toBytes(true);
+    const ephemeralPub = secp256k1.getPublicKey(ephPriv, true);
+    return { ephemeralPub, stealthPub, viewTag: s[0], tweakHex: toHex(s) };
+  }
+
+  // ed25519: sender ECDH via point multiplication.
+  // shared = (ephPriv_scalar) · viewPub_point — mirrors the recipient's
+  // (viewPriv_scalar) · ephPub_point.
+  const viewPoint = ed25519.Point.fromBytes(viewPub);
+  const ephScalar = ed25519Scalar(ephPriv);
+  const shared = viewPoint.multiply(ephScalar).toBytes();
+  const s = hashTweakEd25519(shared);
+  const sScalar = bytesToScalarEd(s);
+  const G = ed25519.Point.BASE;
+  const sPoint = G.multiply(sScalar);
+  const spendPoint = ed25519.Point.fromBytes(spendPub);
+  const stealthPub = spendPoint.add(sPoint).toBytes();
+  const ephemeralPub = G.multiply(ephScalar).toBytes();
+  return { ephemeralPub, stealthPub, viewTag: s[0], tweakHex: toHex(s) };
+}
+
+/** Sender convenience — derive one-time Sui stealth address from
+ *  recipient's ed25519 viewPub + spendPub + a fresh ephemeral seed. */
+export function senderDeriveSuiStealth(params: {
+  ephemeralPriv: Uint8Array | string;
+  viewPub: Uint8Array | string;
+  spendPub: Uint8Array | string;
+}): SenderDeriveOutput & { suiAddress: string } {
+  const base = senderDeriveStealth({ ...params, curve: 'ed25519' });
+  return { ...base, suiAddress: suiAddressFromEd25519Pubkey(base.stealthPub) };
+}
+
 export const __test__ = { hashTweakSecp, hashTweakEd25519, bytesToScalarSecp, bytesToScalarEd, ed25519Scalar };

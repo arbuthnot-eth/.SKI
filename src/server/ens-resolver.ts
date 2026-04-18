@@ -19,7 +19,42 @@
 
 import type { Context } from 'hono';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { senderDeriveSuiStealth } from './agents/weavile-stealth-derive.js';
+
+// Inlined meta-address parser — mirrors `parseMetaAddress` in
+// `src/client/weavile-meta.ts` but avoids the transitive `@noble/curves`
+// import (which the client file references without a `.js` suffix, a
+// bundler-only convention that bun:test / Workers runtime don't honour).
+// Keeping a local copy here is cheap and insulates the gateway path
+// from client-side churn. Format: `ska:<id>:<chain>=<hex>(|<chain>=<hex>)*`.
+interface MetaAddressParts {
+  ikaDwalletId: string;
+  viewPubkeysByChain: Record<string, string>;
+}
+function parseMetaAddressLocal(metaStr: string): MetaAddressParts {
+  if (!metaStr.startsWith('ska:')) throw new Error('missing ska: prefix');
+  const rest = metaStr.slice(4);
+  const firstColon = rest.indexOf(':');
+  if (firstColon < 0) throw new Error('missing view-keys segment');
+  const idPart = rest.slice(0, firstColon);
+  const viewPart = rest.slice(firstColon + 1);
+  if (!/^0x[0-9a-fA-F]+$/.test(idPart)) throw new Error('bad ika_dwallet_id');
+  const viewPubkeysByChain: Record<string, string> = {};
+  if (viewPart.length > 0) {
+    for (const segment of viewPart.split('|')) {
+      const eq = segment.indexOf('=');
+      if (eq < 0) throw new Error(`bad segment "${segment.slice(0, 20)}"`);
+      const chain = segment.slice(0, eq);
+      const pk = segment.slice(eq + 1);
+      if (!/^[a-z0-9]+$/.test(chain)) throw new Error(`bad chain "${chain}"`);
+      if (!/^0x[0-9a-fA-F]+$/.test(pk)) throw new Error(`bad pubkey for "${chain}"`);
+      viewPubkeysByChain[chain] = pk;
+    }
+  }
+  return { ikaDwalletId: idPart, viewPubkeysByChain };
+}
 import {
   bytesToHex,
   hexToBytes,
@@ -322,6 +357,113 @@ async function resolveSolFromCaps(caps: string[]): Promise<string | null> {
   return sol;
 }
 
+// ─── Personal-mode stealth resolution (Beldum Double Hit, #167) ────
+//
+// A SUIAMI record is "personal mode" for stealth purposes when its
+// `chains` map carries an `ska` entry whose value parses as a Weavile
+// meta-address (format `ska:<id>:<chain>=<hex>(|<chain>=<hex>)*`). If
+// no `ska` key is present, the identity is "service mode" and the
+// gateway returns the stable `sui_address` as before.
+//
+// When personal-mode resolution lands for a `addr(node, 784)` query,
+// the gateway:
+//   1. Spins a fresh ephemeral ed25519 keypair (no persistence).
+//   2. ECDH-derives the shared secret with the recipient's viewPub.
+//   3. Computes stealthPub = spendPub + h·G where h = sha256(shared).
+//   4. Blake2b-hashes the stealthPub into a one-time Sui address.
+//   5. Logs the ephemeralPub so the downstream sendWhelm flow (or a
+//      follow-up announcement channel) can publish it for the
+//      recipient's scanner.
+//
+// NOTE: the meta-address encoding carries ONE pubkey per chain. Per
+// EIP-5564 / Umbra stealth semantics, that pubkey serves as both the
+// view key AND the spend key for the v1 scaffold — a fully separated
+// key pair ships in a later Weavile move. For the gateway path, we
+// treat it as the viewPub AND spendPub; the math still yields a fresh
+// stealth addr per call.
+
+export type IdentityMode = 'personal' | 'service';
+
+/** Return 'personal' when the record carries a parseable `ska:` meta. */
+export function identityMode(record: RosterRecord | null): IdentityMode {
+  if (!record) return 'service';
+  const ska = record.chains?.ska;
+  if (!ska || !ska.startsWith('ska:')) return 'service';
+  try {
+    parseMetaAddressLocal(ska);
+    return 'personal';
+  } catch {
+    return 'service';
+  }
+}
+
+/** Seam for injecting a deterministic ephemeral key source under test.
+ *  Production returns a 32-byte random ed25519 seed per call. */
+export interface EphemeralKeySource {
+  freshEd25519Seed(): Uint8Array;
+}
+
+const defaultEphemeralSource: EphemeralKeySource = {
+  freshEd25519Seed(): Uint8Array {
+    return ed25519.utils.randomPrivateKey();
+  },
+};
+
+let ephemeralSource: EphemeralKeySource = defaultEphemeralSource;
+
+/** Test-only: override the ephemeral key source. Callers must restore
+ *  with `setEphemeralKeySource(null)` after the test. */
+export function setEphemeralKeySource(src: EphemeralKeySource | null): void {
+  ephemeralSource = src ?? defaultEphemeralSource;
+}
+
+/**
+ * Resolve the Sui address to return for `addr(node, 784)` given an
+ * identity record and desired mode. Personal mode derives a one-time
+ * stealth address via sender-side ECDH; service mode falls back to the
+ * record's stable sui_address (or explicit chains['sui']).
+ *
+ * Returns `{ addr, ephemeralPubHex? }` — ephemeralPubHex is only set
+ * when a stealth derivation ran, so callers can publish it.
+ */
+export function resolveSuiAddr(
+  record: RosterRecord | null,
+  mode: IdentityMode,
+): { addr: string | null; ephemeralPubHex?: string } {
+  if (!record) return { addr: null };
+  const stable = record.chains?.sui ?? record.sui_address ?? null;
+  if (mode === 'service') return { addr: stable };
+
+  // Personal mode: parse ska, require a `sui=` segment, derive.
+  const ska = record.chains?.ska;
+  if (!ska) return { addr: stable };
+  let parts;
+  try {
+    parts = parseMetaAddressLocal(ska);
+  } catch {
+    return { addr: stable };
+  }
+  const suiPubHex = parts.viewPubkeysByChain['sui'];
+  if (!suiPubHex) return { addr: stable };
+
+  try {
+    const seed = ephemeralSource.freshEd25519Seed();
+    // Meta-address carries one pubkey per chain; v1 scaffold treats
+    // it as both view + spend. A later move splits them.
+    const out = senderDeriveSuiStealth({
+      ephemeralPriv: seed,
+      viewPub: suiPubHex,
+      spendPub: suiPubHex,
+    });
+    const ephemeralPubHex = Array.from(out.ephemeralPub, (b) => b.toString(16).padStart(2, '0')).join('');
+    return { addr: out.suiAddress, ephemeralPubHex };
+  } catch (err) {
+    // Derivation failed (malformed pubkey etc.) — fall back to stable.
+    console.error('[ens-resolver] stealth derivation failed:', err);
+    return { addr: stable };
+  }
+}
+
 // ─── Gateway signature ──────────────────────────────────────────────
 //
 // Matches ensdomains/offchain-resolver's SignatureVerifier.sol:
@@ -600,10 +742,32 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
       }
       result = encodeAddrCoinTypeResult(sol ? bytesToHex(new TextEncoder().encode(sol)) : null);
     } else if (coinType === COIN_SUI) {
-      // Sui-side ultron/brando/etc address. Take from chains map if
-      // explicitly publicized, else fall back to the record's
-      // sui_address (always set when the record exists).
-      const sui = chainKey('sui') ?? record.sui_address ?? null;
+      // Sui-side address. Personal-mode identities (carrying an `ska:`
+      // stealth meta on `chains.ska`) get a FRESH one-time stealth
+      // address per query via sender-side ECDH against their viewPub;
+      // service-mode identities return the stable sui_address. The
+      // whitelist-filtered `chainKey('sui')` still takes precedence if
+      // the owner explicitly publicized a Sui address.
+      const explicit = chainKey('sui');
+      let sui: string | null;
+      let ephemeralPubHex: string | undefined;
+      if (explicit) {
+        sui = explicit;
+      } else {
+        // Honour PublicChains whitelist: if a filter is active and
+        // 'ska' isn't whitelisted, fall back to service mode.
+        const canStealth = !publicChainsFilter || publicChainsFilter['ska'] !== undefined;
+        const mode: IdentityMode = canStealth ? identityMode(record) : 'service';
+        const resolved = resolveSuiAddr(record, mode);
+        sui = resolved.addr;
+        ephemeralPubHex = resolved.ephemeralPubHex;
+      }
+      if (ephemeralPubHex) {
+        // V1 scope (Double Hit): log the ephemeral pub for debugging +
+        // downstream scanners. A follow-up move wires this into an
+        // announcement channel (text record, Walrus blob, on-chain).
+        console.log(`[ens-resolver] stealth addr(${bareLabel}.${activeParent}, 784) eph=${ephemeralPubHex}`);
+      }
       result = encodeAddrCoinTypeResult(sui ? bytesToHex(new TextEncoder().encode(sui)) : null);
     } else {
       result = encodeAddrCoinTypeResult(null);

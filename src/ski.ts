@@ -682,7 +682,10 @@ window.addEventListener('ski:rumble-paymaster-squid', async () => {
   try {
     const { provisionDWallet } = await import('./client/ika.js');
     const { Curve } = await import('@ika.xyz/sdk');
+    const { signTransaction } = await import('./wallet.js');
     const result = await provisionDWallet(ws.address, {
+      signTransaction: (txBytes: Uint8Array) => signTransaction(txBytes),
+      signAndExecuteTransaction: (txBytes: Uint8Array) => signAndExecuteTransaction(txBytes),
       onStatus: (stage) => console.log(`[paymaster-squid] ${stage}`),
       requestedCurve: Curve.SECP256K1,
       targetOwner: ULTRON_ADDRESS,

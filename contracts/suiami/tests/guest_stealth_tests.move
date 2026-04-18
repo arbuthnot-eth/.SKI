@@ -481,6 +481,158 @@ fun view_helper_missing_key_aborts() {
     ts::end(scenario);
 }
 
+// ─── Sneasel Slash — rotate_sweep_delegate tests ───────────────────
+
+#[test]
+fun test_rotate_sweep_delegate_preserves_ciphertext_and_hot_addr() {
+    let mut scenario = ts::begin(OWNER);
+    let clk = fresh_clock(&mut scenario);
+    setup_owner(&mut scenario, &clk);
+
+    let mut r = ts::take_shared<Roster>(&mut scenario);
+    roster::bind_guest_stealth(
+        &mut r,
+        owner_name_hash(),
+        LABEL,
+        string::utf8(HOT_ADDR_1),
+        string::utf8(b"eth"),
+        SEALED_1,
+        ONE_DAY_MS,
+        DELEGATE,
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+    let exp_before = roster::guest_stealth_expires_ms(&r, owner_name_hash(), LABEL);
+
+    // Rotate.
+    roster::rotate_sweep_delegate(
+        &mut r,
+        owner_name_hash(),
+        LABEL,
+        STRANGER, // new delegate
+        SEALED_2, // new sealed blob
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+
+    // Unchanged on-chain face.
+    let hot = roster::guest_stealth_hot_addr(&r, owner_name_hash(), LABEL, &clk);
+    assert!(hot == string::utf8(HOT_ADDR_1), 0);
+    let chain = roster::guest_stealth_chain(&r, owner_name_hash(), LABEL);
+    assert!(chain == string::utf8(b"eth"), 1);
+    let exp_after = roster::guest_stealth_expires_ms(&r, owner_name_hash(), LABEL);
+    assert!(exp_after == exp_before, 2);
+
+    // Delegate + sealed blob changed.
+    let del = roster::guest_stealth_sweep_delegate(&r, owner_name_hash(), LABEL);
+    assert!(del == STRANGER, 3);
+    let sealed = roster::guest_stealth_sealed_cold_dest(&r, owner_name_hash(), LABEL);
+    assert!(sealed == SEALED_2, 4);
+
+    ts::return_shared(r);
+    clock::destroy_for_testing(clk);
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = ENotOwner, location = suiami::roster)]
+fun test_rotate_sweep_delegate_owner_only() {
+    let mut scenario = ts::begin(OWNER);
+    let clk = fresh_clock(&mut scenario);
+    setup_owner(&mut scenario, &clk);
+
+    let mut r = ts::take_shared<Roster>(&mut scenario);
+    roster::bind_guest_stealth(
+        &mut r,
+        owner_name_hash(),
+        LABEL,
+        string::utf8(HOT_ADDR_1),
+        string::utf8(b"eth"),
+        SEALED_1,
+        ONE_DAY_MS,
+        DELEGATE,
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(r);
+
+    // Non-owner attempts rotate.
+    ts::next_tx(&mut scenario, STRANGER);
+    let mut r2 = ts::take_shared<Roster>(&mut scenario);
+    roster::rotate_sweep_delegate(
+        &mut r2,
+        owner_name_hash(),
+        LABEL,
+        STRANGER,
+        SEALED_2,
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(r2);
+    clock::destroy_for_testing(clk);
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = EGuestNotBound, location = suiami::roster)]
+fun test_rotate_sweep_delegate_missing_entry_aborts() {
+    let mut scenario = ts::begin(OWNER);
+    let clk = fresh_clock(&mut scenario);
+    setup_owner(&mut scenario, &clk);
+
+    let mut r = ts::take_shared<Roster>(&mut scenario);
+    // Never bound LABEL2 — rotate must abort.
+    roster::rotate_sweep_delegate(
+        &mut r,
+        owner_name_hash(),
+        LABEL2,
+        STRANGER,
+        SEALED_2,
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(r);
+    clock::destroy_for_testing(clk);
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = EGuestNotBound, location = suiami::roster)]
+fun test_rotate_sweep_delegate_expired_aborts() {
+    let mut scenario = ts::begin(OWNER);
+    let mut clk = fresh_clock(&mut scenario);
+    setup_owner(&mut scenario, &clk);
+
+    let mut r = ts::take_shared<Roster>(&mut scenario);
+    roster::bind_guest_stealth(
+        &mut r,
+        owner_name_hash(),
+        LABEL,
+        string::utf8(HOT_ADDR_1),
+        string::utf8(b"eth"),
+        SEALED_1,
+        ONE_DAY_MS,
+        DELEGATE,
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+
+    // Fast-forward past expiry; rotate must abort (auto-lockdown).
+    clock::set_for_testing(&mut clk, T0 + ONE_DAY_MS + 1);
+    roster::rotate_sweep_delegate(
+        &mut r,
+        owner_name_hash(),
+        LABEL,
+        STRANGER,
+        SEALED_2,
+        &clk,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(r);
+    clock::destroy_for_testing(clk);
+    ts::end(scenario);
+}
+
 // ─── 13. guest_stealth_hot_addr after expiry → EGuestNotBound ──────
 
 #[test]

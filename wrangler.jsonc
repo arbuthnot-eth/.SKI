@@ -89,6 +89,10 @@
       {
         "name": "WeavileScannerAgent",
         "class_name": "WeavileScannerAgent"
+      },
+      {
+        "name": "WeavileAssuranceAgent",
+        "class_name": "WeavileAssuranceAgent"
       }
     ]
   },
@@ -145,6 +149,10 @@
     {
       "tag": "v13",
       "new_sqlite_classes": ["WeavileScannerAgent"]
+    },
+    {
+      "tag": "v14",
+      "new_sqlite_classes": ["WeavileAssuranceAgent"]
     }
   ],
 

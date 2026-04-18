@@ -73,12 +73,43 @@ export interface GuestPrivateResult {
 
 /** JSON schema actually sealed into `sealed_cold_dest`. Versioned so a
  *  future move (Sneasel Slash?) can migrate without breaking in-flight
- *  stealth entries. */
+ *  stealth entries.
+ *
+ *  v1 (legacy): baked the real coldAddr directly into an ultron-readable
+ *  blob. Caused the sweep-graph collapse documented in Sneasel Ice Fang
+ *  (plans/2026-04-18-sneasel-ice-fang.md §1).
+ *
+ *  v2 (Ice Fang): two-layer split. Layer 1 (this file's on-chain shape)
+ *  seals a per-guest *intermediate* IKA dWallet addr under
+ *  `seal_approve_guest_stealth` so ultron can only sign hot→intermediate.
+ *  Layer 2 holds the real coldAddr and is parent-owner-only (client-side
+ *  only for this move — Move-level second-layer policy is a follow-up).
+ */
 export interface ColdDestPayload {
-  coldAddr: string;
+  /** Legacy v1 field — present only on pre-Ice Fang payloads. */
+  coldAddr?: string;
+  chain: string;
+  sweepDelegate?: string;
+  version: number;
+  createdAtMs: number;
+}
+
+/** Layer 1 — what ultron sees after Seal decrypt. Points at a
+ *  per-guest intermediate dWallet. */
+export interface ColdDestV2Intermediate {
+  intermediateAddr: string;
   chain: string;
   sweepDelegate: string;
-  version: number;
+  version: 2;
+  createdAtMs: number;
+}
+
+/** Layer 2 — parent-owner-only. Held client-side during Ice Fang;
+ *  a future move will add a parent-gated Seal policy for this. */
+export interface ColdDestV2Final {
+  coldAddr: string;
+  chain: string;
+  version: 2;
   createdAtMs: number;
 }
 
@@ -105,7 +136,9 @@ function concatHex(a: Uint8Array, b: Uint8Array): string {
  * `sealed_cold_dest: vector<u8>` Move arg, no extra framing.
  */
 export async function sealEncryptColdDest(params: {
-  coldAddr: string;
+  /** Per-guest IKA dWallet intermediate addr. NEVER the real cold squid —
+   *  Ice Fang layer-1 seals this, layer-2 (parent-only) holds coldAddr. */
+  intermediateAddr: string;
   chain: string;
   parentHash: Uint8Array;
   labelBytes: Uint8Array;
@@ -123,12 +156,21 @@ export async function sealEncryptColdDest(params: {
   if (params.labelBytes.length === 0) {
     throw new Error('[sneasel] labelBytes must be non-empty');
   }
+  if (!params.intermediateAddr) {
+    throw new Error('[sneasel] intermediateAddr required (Ice Fang v2)');
+  }
+  // Invariants from plan §2: intermediate MUST be distinct from the
+  // ultron delegate. A collapse here would reproduce the v1 sweep-graph
+  // bug by making "intermediate" just an alias for ultron.
+  if (params.intermediateAddr.toLowerCase() === params.sweepDelegate.toLowerCase()) {
+    throw new Error('[sneasel] intermediateAddr must differ from sweepDelegate (Ice Fang collapse)');
+  }
 
-  const payload: ColdDestPayload = {
-    coldAddr: params.coldAddr,
+  const payload: ColdDestV2Intermediate = {
+    intermediateAddr: params.intermediateAddr,
     chain: params.chain,
     sweepDelegate: params.sweepDelegate,
-    version: 1,
+    version: 2,
     createdAtMs: Date.now(),
   };
   const plaintext = new TextEncoder().encode(JSON.stringify(payload));
@@ -143,6 +185,89 @@ export async function sealEncryptColdDest(params: {
     }),
   );
   return encryptedObject;
+}
+
+/**
+ * Legacy v1 encrypt path. Kept for READ-COMPAT only (so a decrypt of a
+ * pre-Ice Fang stealth entry still works on the watcher side). New
+ * bindings MUST call `sealEncryptColdDest` (v2). Calling this logs a
+ * deprecation warning; it will be ripped out after all v1 entries
+ * expire or get re-bound.
+ *
+ * @deprecated since Sneasel Ice Fang — use v2 `sealEncryptColdDest`.
+ */
+export async function sealEncryptColdDestLegacy(params: {
+  coldAddr: string;
+  chain: string;
+  parentHash: Uint8Array;
+  labelBytes: Uint8Array;
+  sweepDelegate: string;
+}): Promise<Uint8Array> {
+  console.warn(
+    '[sneasel] sealEncryptColdDestLegacy called — v1 cold-dest payload ' +
+    'is deprecated (Ice Fang). Migrate callers to v2 `sealEncryptColdDest`.',
+  );
+  if (!SUIAMI_STEALTH_PKG) {
+    throw new Error('[sneasel] SUIAMI_STEALTH_PKG not set');
+  }
+  if (params.parentHash.length !== 32) {
+    throw new Error(`[sneasel] parentHash must be 32 bytes, got ${params.parentHash.length}`);
+  }
+  if (params.labelBytes.length === 0) {
+    throw new Error('[sneasel] labelBytes must be non-empty');
+  }
+  const payload: ColdDestPayload = {
+    coldAddr: params.coldAddr,
+    chain: params.chain,
+    sweepDelegate: params.sweepDelegate,
+    version: 1,
+    createdAtMs: Date.now(),
+  };
+  const plaintext = new TextEncoder().encode(JSON.stringify(payload));
+  const idHex = concatHex(params.parentHash, params.labelBytes);
+  const { encryptedObject } = await sealRace((c) =>
+    c.encrypt({
+      packageId: SUIAMI_STEALTH_PKG as string,
+      id: idHex,
+      data: plaintext,
+      threshold: 2,
+    }),
+  );
+  return encryptedObject;
+}
+
+/**
+ * Mint a fresh per-guest intermediate dWallet. Ice Fang property:
+ * every guest gets its OWN intermediate, never shared with ultron's
+ * broker cluster and never shared across guests.
+ *
+ * TODO(Sneasel Icy Wind): replace stub with real IKA dWallet DKG per
+ * guest — should reuse the `rumble` machinery with a fresh DKG session
+ * keyed on (parentHash, label). The current return is a deterministic
+ * placeholder derived from (parentHash, label, chain) so tests and
+ * integration wiring can reference a stable intermediateAddr without
+ * waiting on Icy Wind. It is clearly marked `0xICE_FANG_STUB_` so a
+ * grep catches any accidental mainnet use.
+ */
+export async function mintGuestIntermediate(params: {
+  chain: string;
+  parentHash: Uint8Array;
+  label: string;
+}): Promise<{ intermediateAddr: string; intermediateCapId: string | null }> {
+  // Deterministic stub: hex of sha-ish concat. Not cryptographic — just
+  // a stable, recognizably-fake address string. Real impl will return
+  // the IKA dWallet's chain-native address + its DWalletCap object id.
+  const labelBytes = new TextEncoder().encode(params.label);
+  const seed = new Uint8Array(params.parentHash.length + labelBytes.length + params.chain.length);
+  seed.set(params.parentHash, 0);
+  seed.set(labelBytes, params.parentHash.length);
+  seed.set(new TextEncoder().encode(params.chain), params.parentHash.length + labelBytes.length);
+  const hex = Array.from(seed)
+    .map((x) => x.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 32);
+  const intermediateAddr = `0xICE_FANG_STUB_${hex}`;
+  return { intermediateAddr, intermediateCapId: null };
 }
 
 /**
@@ -203,7 +328,7 @@ export async function sealDecryptColdDest(params: {
   );
 
   const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as ColdDestPayload;
-  if (typeof parsed.coldAddr !== 'string' || typeof parsed.chain !== 'string') {
+  if (typeof parsed.chain !== 'string' || typeof parsed.version !== 'number') {
     throw new Error('[sneasel] decrypted cold-dest payload malformed');
   }
   return parsed;
@@ -266,19 +391,39 @@ export async function buildGuestPrivateTx(
     parentHash: Uint8Array;
     labelBytes: Uint8Array;
     hotAddr: string;
+    /** Real cold squid — Ice Fang keeps this in the client-side layer-2
+     *  blob, never sealed into the layer-1 (ultron-readable) payload. */
     coldAddr: string;
+    /** Per-guest IKA dWallet intermediate — the only address ultron
+     *  ever sees as "cold dest". Required by Ice Fang v2. */
+    intermediateAddr: string;
     chain: string;
     ttlMs: number;
     sweepDelegate: string;
   },
-): Promise<{ sealedColdDest: Uint8Array }> {
+): Promise<{ sealedColdDest: Uint8Array; layer2: ColdDestV2Final }> {
+  // Ice Fang invariants: intermediate must not collapse onto ultron or
+  // onto the real cold squid. The second check in particular is what
+  // keeps the parent-only layer-2 meaningfully distinct from layer-1.
+  if (args.intermediateAddr.toLowerCase() === args.sweepDelegate.toLowerCase()) {
+    throw new Error('[sneasel] intermediateAddr must differ from sweepDelegate (Ice Fang collapse)');
+  }
+  if (args.intermediateAddr.toLowerCase() === args.coldAddr.toLowerCase()) {
+    throw new Error('[sneasel] intermediateAddr must differ from coldAddr (Ice Fang collapse)');
+  }
   const sealedColdDest = await sealEncryptColdDest({
-    coldAddr: args.coldAddr,
+    intermediateAddr: args.intermediateAddr,
     chain: args.chain,
     parentHash: args.parentHash,
     labelBytes: args.labelBytes,
     sweepDelegate: args.sweepDelegate,
   });
+  const layer2: ColdDestV2Final = {
+    coldAddr: args.coldAddr,
+    chain: args.chain,
+    version: 2,
+    createdAtMs: Date.now(),
+  };
   await buildBindGuestStealthTx(tx, {
     rosterObj: args.rosterObj,
     parentHash: Array.from(args.parentHash),
@@ -289,5 +434,5 @@ export async function buildGuestPrivateTx(
     ttlMs: args.ttlMs,
     sweepDelegate: args.sweepDelegate,
   });
-  return { sealedColdDest };
+  return { sealedColdDest, layer2 };
 }

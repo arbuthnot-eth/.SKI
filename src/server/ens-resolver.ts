@@ -1,6 +1,7 @@
 // ENS CCIP-read gateway — Beldum Iron Defense (#167).
 //
-// Responds to ENSIP-10 wildcard lookups for `*.waap.eth`. The on-chain
+// Responds to ENSIP-10 wildcard lookups for subnames under any parent in
+// ACCEPTED_PARENTS (whelm.eth, waap.eth). The on-chain
 // `OffchainResolver` contract on mainnet reverts `OffchainLookup` when
 // a wallet queries e.g. `alice.waap.eth`; the wallet follows the
 // EIP-3668 redirect to `/ens-resolver/{sender}/{data}.json` on this
@@ -41,8 +42,15 @@ const COIN_ETH = 60n;
 const COIN_BTC = 0n;
 const COIN_SOL = 501n;
 
-const WAAP_ETH_LABEL = 'waap';
-const WAAP_ETH_TLD   = 'eth';
+// Parents this gateway serves subnames under. New entries go live the
+// moment L1 binds `ENS.setResolver(namehash(<parent>), gatewayAddr)`.
+// whelm.eth adopted first (2026-04-17 pivot, already IKA-native); waap.eth
+// stays in the set so it lights up automatically after a future
+// `whelm('waap')` without touching this file again.
+const ACCEPTED_PARENTS: ReadonlySet<string> = new Set([
+  'whelm.eth',
+  'waap.eth',
+]);
 
 // Response TTL — how far in the future we sign the expiry. 5 min
 // matches cb.id / Namestone conventions; long enough to ride through
@@ -122,8 +130,8 @@ function decodeRecord(rec: any): RosterRecord | null {
 // that revocations linger.
 const ROSTER_CACHE_TTL_SEC = 60;
 
-async function lookupRosterUncached(bareLabel: string): Promise<RosterRecord | null> {
-  const ensName = `${bareLabel}.${WAAP_ETH_LABEL}.${WAAP_ETH_TLD}`;
+async function lookupRosterUncached(bareLabel: string, parent: string): Promise<RosterRecord | null> {
+  const ensName = `${bareLabel}.${parent}`;
   const ensHash = keccak_256(new TextEncoder().encode(ensName));
   const nameHash = keccak_256(new TextEncoder().encode(bareLabel));
 
@@ -187,15 +195,15 @@ async function lookupGuest(parentHash: Uint8Array, label: string): Promise<{ tar
   };
 }
 
-async function lookupRoster(bareLabel: string): Promise<RosterRecord | null> {
-  const key = new Request(`https://cache.internal/ens-resolver/roster/${bareLabel}`);
+async function lookupRoster(bareLabel: string, parent: string): Promise<RosterRecord | null> {
+  const key = new Request(`https://cache.internal/ens-resolver/roster/${parent}/${bareLabel}`);
   const cache = caches.default;
   const hit = await cache.match(key);
   if (hit) {
     const body = await hit.text();
     return body === 'null' ? null : (JSON.parse(body) as RosterRecord);
   }
-  const fresh = await lookupRosterUncached(bareLabel);
+  const fresh = await lookupRosterUncached(bareLabel, parent);
   await cache.put(
     key,
     new Response(fresh ? JSON.stringify(fresh) : 'null', {
@@ -381,10 +389,14 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
   ) as [`0x${string}`, `0x${string}`];
 
   const labels = decodeDnsName(hexToBytes(dnsName));
-  // Expect `<label>.waap.eth` or `<guest>.<parent>.waap.eth`.
-  if (labels.length < 3 || labels[labels.length - 2] !== WAAP_ETH_LABEL
-      || labels[labels.length - 1] !== WAAP_ETH_TLD) {
-    return c.json({ error: 'not a waap.eth subname', labels }, 400);
+  // Expect `<label>.<parent>.<tld>` or `<guest>.<label>.<parent>.<tld>` with
+  // `<parent>.<tld>` ∈ ACCEPTED_PARENTS (whelm.eth, waap.eth).
+  if (labels.length < 3) {
+    return c.json({ error: 'name too short', labels }, 400);
+  }
+  const activeParent = `${labels[labels.length - 2]}.${labels[labels.length - 1]}`;
+  if (!ACCEPTED_PARENTS.has(activeParent)) {
+    return c.json({ error: `not a subname under an accepted parent (${activeParent})`, labels }, 400);
   }
 
   const innerBytes = hexToBytes(innerCall);
@@ -443,8 +455,8 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
     // when no guest is active. Deliberate design (graceful fallback).
   }
 
-  const bareLabel = labels[labels.length - 3]; // parent label before .waap.eth
-  const record = await lookupRoster(bareLabel);
+  const bareLabel = labels[labels.length - 3]; // user label directly under the accepted parent
+  const record = await lookupRoster(bareLabel, activeParent);
 
   // v6: intersect chain exposure with PublicChains whitelist when set.
   // If the record owner opted into whitelist mode, serve only chains in

@@ -167,24 +167,6 @@ export const EXACT_INPUT_SINGLE_ABI = parseAbiItem(
 );
 
 /**
- * Quote the ETH→USDC swap rate via Uniswap v3's QuoterV2 (read-only).
- * Returns the expected USDC output for a given ETH input, as a
- * 6-decimal USDC amount. Used to apply slippage bounds before building
- * the actual swap tx.
- *
- * Left as a TODO stub — v1 uses a conservative 2% slippage floor
- * calculated off a Coingecko spot price fetched elsewhere. The
- * QuoterV2 call is the right long-term answer but adds a round trip
- * and a new ABI import.
- */
-export async function quoteEthToUsdc(
-  _client: PublicClient,
-  _ethAmountWei: bigint,
-): Promise<{ usdcAmount: bigint; slippageBps: number }> {
-  throw new Error('quoteEthToUsdc not implemented — stub for Porygon-Z Conversion Beam v1');
-}
-
-/**
  * Format an ETH amount for UI/log display.
  * Thin wrapper so call sites don't need to import viem directly.
  */

@@ -195,6 +195,33 @@ async function lookupGuest(parentHash: Uint8Array, label: string): Promise<{ tar
   };
 }
 
+// Sneasel Metal Claw — stealth-guest hot-addr lookup. BCS for
+// `GuestStealthKey { parent_hash: vector<u8>, label: vector<u8> }` is
+// identical to `GuestKey` (two vector<u8> fields, ULEB128 length
+// prefixes). When present + live this takes precedence over the
+// plaintext `GuestKey` path so `amazon.brando.whelm.eth` resolves to
+// the rotating `hot_addr` and never exposes the sealed cold
+// destination on-chain.
+async function lookupGuestStealth(parentHash: Uint8Array, label: string): Promise<{ hotAddr: string; chain: string; expiresMs: number; sweepDelegate: string } | null> {
+  const labelBytes = new TextEncoder().encode(label);
+  const bcs = new Uint8Array(1 + parentHash.length + 1 + labelBytes.length);
+  bcs[0] = parentHash.length;
+  bcs.set(parentHash, 1);
+  bcs[1 + parentHash.length] = labelBytes.length;
+  bcs.set(labelBytes, 1 + parentHash.length + 1);
+  const typeStr = `${SUIAMI_ORIGINAL_ID}::roster::GuestStealthKey`;
+  const raw = await queryDf(typeStr, bcs);
+  if (!raw) return null;
+  const expiresMs = Number(raw.expires_ms);
+  if (Date.now() >= expiresMs) return null; // ms-based TTL matches Move side
+  return {
+    hotAddr: raw.hot_addr ?? '',
+    chain: raw.chain ?? '',
+    expiresMs,
+    sweepDelegate: raw.sweep_delegate ?? '',
+  };
+}
+
 async function lookupRoster(bareLabel: string, parent: string): Promise<RosterRecord | null> {
   const key = new Request(`https://cache.internal/ens-resolver/roster/${parent}/${bareLabel}`);
   const cache = caches.default;
@@ -424,10 +451,60 @@ export async function handleEnsCcipRead(c: Context): Promise<Response> {
   // (e.g. ['pay','brando','waap','eth']), try GuestKey first.
   // Parent hash = keccak256("<parent>.waap.eth"); label = bytes of
   // labels[0]. Expired guests return null from lookupGuest.
+  //
+  // Sneasel Metal Claw (#197): precedence is stealth > guest > parent.
+  // `GuestStealthKey { parent_hash, label }` shares the same BCS
+  // shape as `GuestKey`, so both live in the same dynamic-field
+  // namespace keyed by (parent_hash, label). The stealth path
+  // publishes a rotating `hot_addr` and keeps `sealed_cold_dest`
+  // private — ultron sweeps it on its own schedule.
   if (labels.length >= 4) {
     const guestLabel = labels[0];
     const parentFull = labels.slice(1).join('.');
     const parentHash = keccak_256(new TextEncoder().encode(parentFull));
+
+    // 1. Stealth lookup first — if live, return hot_addr and skip guest+parent paths.
+    const stealth = await lookupGuestStealth(parentHash, guestLabel);
+    if (stealth) {
+      let result: Uint8Array;
+      if (innerSel === SEL_ADDR) {
+        result = encodeAddrResult(stealth.chain === 'eth' ? stealth.hotAddr : null);
+      } else if (innerSel === SEL_ADDR_COINTYPE) {
+        const [, coinType] = decodeAbiParameters(
+          [{ type: 'bytes32' }, { type: 'uint256' }],
+          bytesToHex(innerBytes.slice(4)),
+        ) as [`0x${string}`, bigint];
+        const chainOk =
+          (coinType === COIN_ETH && stealth.chain === 'eth') ||
+          (coinType === COIN_BTC && stealth.chain === 'btc') ||
+          (coinType === COIN_SOL && stealth.chain === 'sol');
+        if (!chainOk) {
+          result = encodeAddrCoinTypeResult(null);
+        } else if (coinType === COIN_ETH) {
+          result = encodeAddrCoinTypeResult(stealth.hotAddr);
+        } else {
+          result = encodeAddrCoinTypeResult(bytesToHex(new TextEncoder().encode(stealth.hotAddr)));
+        }
+      } else if (innerSel === SEL_TEXT) {
+        const [, key] = decodeAbiParameters(
+          [{ type: 'bytes32' }, { type: 'string' }],
+          bytesToHex(innerBytes.slice(4)),
+        ) as [`0x${string}`, string];
+        result = encodeTextResult(key === 'name' ? `${guestLabel}.${parentFull}` : key === stealth.chain ? stealth.hotAddr : '');
+      } else {
+        return c.json({ error: `unsupported inner selector ${innerSel}` }, 400);
+      }
+      const expires = BigInt(Math.floor(Date.now() / 1000)) + SIG_TTL_SEC;
+      const privKey = privateKeyBytes(signerHex);
+      const signature = signResolverMessage(privKey, sender, expires, data, result);
+      const encoded = encodeAbiParameters(
+        [{ type: 'bytes' }, { type: 'uint64' }, { type: 'bytes' }],
+        [bytesToHex(result), expires, bytesToHex(signature)],
+      );
+      return c.json({ data: encoded, stealth: true });
+    }
+
+    // 2. Plaintext guest lookup.
     const guest = await lookupGuest(parentHash, guestLabel);
     if (guest) {
       let result: Uint8Array;

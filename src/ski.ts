@@ -1807,10 +1807,14 @@ const _bindWhelmEthResolver = async (
     console.log('[bindResolver] dryRun=true — stopping before prompt');
     return { ok: true, dryRun: true, from, node: nodeHex, resolver: resolverAddress, isWrapped };
   }
+  const req = eth.request.bind(eth);
   try {
-    const tx = (await eth.request({
+    await req({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+  } catch { /* already on mainnet or user denied; let the tx itself fail */ }
+  try {
+    const tx = (await req({
       method: 'eth_sendTransaction',
-      params: [{ from, to: target, data, value: '0x0' }],
+      params: [{ from: from.toLowerCase(), to: target.toLowerCase(), data, value: '0x0' }],
     })) as string;
     console.log(`[bindResolver] tx submitted: ${tx}`);
     showToast(`\u2713 ${ensName}.eth → ${resolverAddress.slice(0, 10)}\u2026`);
@@ -1976,10 +1980,14 @@ const _deployOffchainResolver = async (opts?: {
     return { ok: true, dryRun: true, predictedAddress, from };
   }
 
+  const req = eth.request.bind(eth);
   try {
-    const tx = (await eth.request({
+    await req({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+  } catch { /* already on mainnet or user denied; let the tx itself fail */ }
+  try {
+    const tx = (await req({
       method: 'eth_sendTransaction',
-      params: [{ from, data: initCode, value: '0x0' }],
+      params: [{ from: from.toLowerCase(), data: initCode, value: '0x0' }],
     })) as string;
     console.log(`[deployOCR] tx submitted: ${tx}`);
     console.log(`[deployOCR] contract will be at: ${predictedAddress}`);

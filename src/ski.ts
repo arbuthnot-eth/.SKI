@@ -1977,10 +1977,26 @@ const _delegateWhelmEthManagement = async (opts?: {
     console.log('[delegate] dryRun=true — stopping before prompt');
     return { ok: true, dryRun: true, from, operator };
   }
+  // Phantom's ETH provider is strict — wants chainId + gas estimate, or it
+  // returns "Missing or invalid parameters". Gather both before sending.
+  let chainIdHex = '0x1';
+  try { chainIdHex = (await eth.request({ method: 'eth_chainId' })) as string; } catch {}
+  let gasHex: string | undefined;
   try {
+    gasHex = (await eth.request({
+      method: 'eth_estimateGas',
+      params: [{ from, to: NAME_WRAPPER, data, value: '0x0' }],
+    })) as string;
+    console.log(`[delegate] estimated gas: ${BigInt(gasHex)}`);
+  } catch (err) {
+    console.warn('[delegate] eth_estimateGas failed, wallet will estimate:', err);
+  }
+  try {
+    const txParams: Record<string, unknown> = { from, to: NAME_WRAPPER, data, value: '0x0', chainId: chainIdHex };
+    if (gasHex) txParams.gas = gasHex;
     const tx = (await eth.request({
       method: 'eth_sendTransaction',
-      params: [{ from, to: NAME_WRAPPER, data, value: '0x0' }],
+      params: [txParams],
     })) as string;
     console.log(`[delegate] tx submitted: ${tx}`);
     showToast(`\u2713 ${opts?.revoke ? 'Revoked' : 'Delegated'} to ${operator.slice(0, 10)}\u2026`);

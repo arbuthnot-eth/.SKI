@@ -305,20 +305,23 @@ if (typeof window !== 'undefined') {
     const panel = document.createElement('div');
     panel.id = 'ski-font-picker';
     panel.className = 'ski-font-picker';
-    const word = 'PASSKI.XYZ';
+    // PASSKI.XYZ with each I wrapped in .i-thin so it renders as a narrow
+    // stem inside the monospace grid — matches the thin "I" in the
+    // crafted SKI button.
+    const wordHtml = 'PASSK<span class="i-thin">I</span>.XYZ';
     const rows = [
-      { cls: 'f-current',   label: 'current'          },
-      { cls: 'f-oswald',    label: 'Oswald'           },
-      { cls: 'f-barlow',    label: 'Barlow Condensed' },
-      { cls: 'f-saira',     label: 'Saira Condensed'  },
-      { cls: 'f-teko',      label: 'Teko'             },
-      { cls: 'f-chakra',    label: 'Chakra Petch'     },
-      { cls: 'f-syncopate', label: 'Syncopate'        },
-      { cls: 'f-orbitron',  label: 'Orbitron'         },
-      { cls: 'f-russo',     label: 'Russo One'        },
-      { cls: 'f-antonio',   label: 'Antonio'          },
-      { cls: 'f-fjalla',    label: 'Fjalla One'       },
-    ].map(r => `<div class="ski-font-picker-row"><span class="ski-font-picker-label">${r.label}</span><span class="ski-font-picker-word ${r.cls}">${r.cls === 'f-current' ? '\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}.\u{1D54F}\u{1D550}\u2124' : word}</span></div>`).join('');
+      { cls: 'f-current',    label: 'current'      },
+      { cls: 'f-jetbrains',  label: 'JetBrains'    },
+      { cls: 'f-spacemono',  label: 'Space Mono'   },
+      { cls: 'f-ibmplex',    label: 'IBM Plex'     },
+      { cls: 'f-robotomono', label: 'Roboto Mono'  },
+      { cls: 'f-firacode',   label: 'Fira Code'    },
+      { cls: 'f-sharetech',  label: 'Share Tech'   },
+      { cls: 'f-major',      label: 'Major Mono'   },
+      { cls: 'f-vt323',      label: 'VT323'        },
+      { cls: 'f-azeret',     label: 'Azeret Mono'  },
+      { cls: 'f-dmmono',     label: 'DM Mono'      },
+    ].map(r => `<div class="ski-font-picker-row"><span class="ski-font-picker-label">${r.label}</span><span class="ski-font-picker-word ${r.cls}">${r.cls === 'f-current' ? '\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}.\u{1D54F}\u{1D550}\u2124' : wordHtml}</span></div>`).join('');
     panel.innerHTML = `<button class="ski-font-picker-close" type="button" aria-label="Close">\u00D7</button><div class="ski-font-picker-title">PASSKI.XYZ wordmark preview</div>${rows}`;
     panel.querySelector<HTMLElement>('.ski-font-picker-close')?.addEventListener('click', () => panel.remove());
     document.body.appendChild(panel);

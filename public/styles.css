@@ -1,5 +1,5 @@
 /* TEMPORARY font picker — remove once user picks a candidate. */
-@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@600;700&family=Barlow+Condensed:wght@700;800&family=Saira+Condensed:wght@700;800&family=Teko:wght@600;700&family=Chakra+Petch:wght@700&family=Syncopate:wght@700&family=Orbitron:wght@700;800&family=Russo+One&family=Antonio:wght@700&family=Fjalla+One&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700;800&family=Space+Mono:wght@700&family=IBM+Plex+Mono:wght@600;700&family=Roboto+Mono:wght@700&family=Fira+Code:wght@600;700&family=Share+Tech+Mono&family=Major+Mono+Display&family=VT323&family=Azeret+Mono:wght@700;800&family=DM+Mono:wght@500&display=swap');
 
 :root {
   --bg: #05070d;
@@ -65,17 +65,28 @@
   font-size: 14px;
   cursor: pointer;
 }
-.f-oswald   { font-family: 'Oswald', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
-.f-barlow   { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; letter-spacing: 0.02em; }
-.f-saira    { font-family: 'Saira Condensed', sans-serif; font-weight: 800; letter-spacing: 0.02em; }
-.f-teko     { font-family: 'Teko', sans-serif; font-weight: 700; letter-spacing: 0.03em; }
-.f-chakra   { font-family: 'Chakra Petch', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
-.f-syncopate{ font-family: 'Syncopate', sans-serif; font-weight: 700; letter-spacing: 0.03em; }
-.f-orbitron { font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 0.02em; }
-.f-russo    { font-family: 'Russo One', sans-serif; font-weight: 400; letter-spacing: 0.02em; }
-.f-antonio  { font-family: 'Antonio', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
-.f-fjalla   { font-family: 'Fjalla One', sans-serif; font-weight: 400; letter-spacing: 0.02em; }
+.f-jetbrains{ font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 800; }
+.f-spacemono{ font-family: 'Space Mono', ui-monospace, monospace; font-weight: 700; }
+.f-ibmplex  { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-weight: 700; }
+.f-robotomono{font-family: 'Roboto Mono', ui-monospace, monospace; font-weight: 700; }
+.f-firacode { font-family: 'Fira Code', ui-monospace, monospace; font-weight: 700; }
+.f-sharetech{ font-family: 'Share Tech Mono', ui-monospace, monospace; font-weight: 400; }
+.f-major    { font-family: 'Major Mono Display', ui-monospace, monospace; font-weight: 400; }
+.f-vt323    { font-family: 'VT323', ui-monospace, monospace; font-weight: 400; }
+.f-azeret   { font-family: 'Azeret Mono', ui-monospace, monospace; font-weight: 800; }
+.f-dmmono   { font-family: 'DM Mono', ui-monospace, monospace; font-weight: 500; }
 .f-current  { font-family: 'Apple Symbols', 'STIX Two Math', 'Cambria Math', 'Noto Sans Math', 'Inter Display', Inter, sans-serif; font-weight: 700; }
+
+/* Thin-I override: shrink the character horizontally so it visually
+   reads as a narrow stem inside the monospace grid. Applies to any
+   .i-thin span inside a wordmark. */
+.ski-font-picker-word .i-thin {
+  display: inline-block;
+  transform: scaleX(0.45);
+  transform-origin: center;
+  margin: 0 -0.2em;
+  font-weight: 300;
+}
 
 * {
   box-sizing: border-box;

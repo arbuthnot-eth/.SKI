@@ -7822,8 +7822,18 @@ a.ski-idle-bubble-name:hover {
 }
 .ski-modal-header-left > .ski-modal-brand-link {
   grid-area: logo;
-  justify-self: start;
+  justify-self: stretch;
   align-self: center;
+  width: 100%;
+  display: block;
+  height: auto;
+  overflow: visible;
+}
+.ski-modal-header-left > .ski-modal-brand-link .ski-modal-logo {
+  width: 100%;
+  height: auto;
+  max-height: 140px;
+  margin: 0;
 }
 .ski-modal-header-left > .ski-modal-titles { display: contents; }
 .ski-modal-header-left .ski-modal-title {

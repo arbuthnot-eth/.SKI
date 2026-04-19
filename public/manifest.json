@@ -1,7 +1,7 @@
 {
-  "name": ".SKI",
-  "short_name": ".SKI",
-  "description": ".Sui Key-In — once, everywhere",
+  "name": "passki",
+  "short_name": "passki",
+  "description": "passki — Sui Key-In. Native BTC, SOL, ETH from one Sui account.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0d1117",

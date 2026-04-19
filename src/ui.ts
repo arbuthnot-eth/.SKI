@@ -1940,7 +1940,7 @@ function activateLegendRow(idx: number, fromHover = false) {
     const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
     const iconSrc = wallet?.icon || '';
     detailEl.innerHTML = `
-      <div class="ski-detail-header ski-detail-header--keyed" data-detail-wallet="${esc(walletName || '')}" data-detail-create-waap="true">
+      <div class="ski-detail-header ski-detail-header--keyed ski-detail-header--create-waap" data-detail-wallet="${esc(walletName || '')}" data-detail-create-waap="true" role="button" tabindex="0" aria-label="Tap to lock in a new WaaP wallet">
         <div class="ski-detail-icon-row">
           <div class="ski-detail-icons-top">
             ${iconSrc ? `<div class="ski-detail-icon-wrap"><img src="${esc(iconSrc)}" alt="" class="ski-detail-icon"></div>` : ''}
@@ -1955,6 +1955,7 @@ function activateLegendRow(idx: number, fromHover = false) {
             </div>
           </div>
         </div>
+        <div class="ski-detail-create-waap-cta" aria-hidden="true">Tap to lock in new WaaP&nbsp;→</div>
       </div>`;
     activeDetailAddr = '';
     activeDetailSui = 0;

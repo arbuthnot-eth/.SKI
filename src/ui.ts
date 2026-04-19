@@ -6443,6 +6443,10 @@ function _skiAdminGroupHtml(): string {
           <span class="wk-settings-label">Squids</span>
           <button class="wk-settings-value wk-settings-button" id="wk-whelm-ultron-squids" type="button" title="Sweep DWalletCap objects from old Ultron into the new address">Whelm Squids</button>
         </div>
+        <div class="wk-settings-row wk-settings-row--button">
+          <span class="wk-settings-label">Send Sheet</span>
+          <button class="wk-settings-value wk-settings-button" id="wk-open-send-sheet" type="button" title="Open the Beldum Body Slam send bottom-sheet (hidden from idle until shipped)">Open Send Sheet</button>
+        </div>
       </div>` : '';
 
   return ensGroup + adminGroup;
@@ -7295,6 +7299,21 @@ function renderSkiMenu() {
       btn.disabled = false;
       btn.textContent = original;
     }
+  });
+
+  // Admin — Open Send Sheet (Beldum Body Slam preview, hidden from idle)
+  // The Send button was removed from the idle bottom row (not ready for
+  // primary UX) but the sheet, resolvers, and handlers stay wired. This
+  // admin row shows the idle overlay and triggers the same click path.
+  document.getElementById('wk-open-send-sheet')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    window.dispatchEvent(new CustomEvent('ski:show-idle'));
+    // Defer until idle overlay has rendered, then click the hidden send button
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const sendBtn = document.getElementById('ski-idle-send') as HTMLButtonElement | null;
+      if (sendBtn) sendBtn.click();
+      else showToast('Send sheet unavailable — idle overlay missing');
+    }));
   });
 
   // Admin — Deploy OffchainResolver (ENS CCIP-read resolver for whelm.eth)
@@ -10525,6 +10544,12 @@ function bindEvents() {
         } catch {}
       }
 
+      // Rumble button hides when the connected wallet is already rumbled
+      // AND has a verified SUIAMI proof — the primary squids-provisioning
+      // entry point becomes noise for fully-keyed users. Those users can
+      // still reach Rumble (re-mint / rotate) via the wallet-kind settings.
+      const _rumbleDone = !!app.ikaWalletId && _suiamiVerifyHtml.includes('verified');
+
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
           <a class="ski-idle-version" href="https://www.npmjs.com/package/passki" target="_blank" rel="noopener noreferrer">v${SKI_VERSION}</a>
@@ -10592,8 +10617,8 @@ function bindEvents() {
         </div>
         <div class="ski-idle-bottom-row">
           <a href="https://x.com/intent/follow?screen_name=brando_sui" target="_blank" rel="noopener" class="ski-idle-follow" title="Follow @brando_sui on X"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="flex-shrink:0"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Follow</a>
-          <button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble Your Squids">\ud83e\udd91 Rumble</button>
-          <button class="ski-idle-send" id="ski-idle-send" type="button" title="Send via *.whelm.eth">\u2708\ufe0f Send</button>
+          ${_rumbleDone ? '' : `<button class="ski-idle-rumble" id="ski-idle-rumble" type="button" title="Rumble Your Squids">\ud83e\udd91 Rumble</button>`}
+          <button class="ski-idle-send" id="ski-idle-send" type="button" title="Send via *.whelm.eth" hidden style="display:none">\u2708\ufe0f Send</button>
           <button class="ski-idle-next" id="ski-idle-next" type="button" title="Guest Manager">\u203a</button>
         </div>
         <div class="ski-send-sheet" id="ski-send-sheet" hidden aria-hidden="true">

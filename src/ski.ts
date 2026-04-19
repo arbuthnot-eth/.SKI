@@ -307,14 +307,17 @@ if (typeof window !== 'undefined') {
     panel.className = 'ski-font-picker';
     const word = 'PASSKI.XYZ';
     const rows = [
-      { cls: 'f-current',   label: 'current'       },
-      { cls: 'f-bungee',    label: 'Bungee'        },
-      { cls: 'f-bungee-i',  label: 'Bungee Inline' },
-      { cls: 'f-archivo',   label: 'Archivo Black' },
-      { cls: 'f-blackops',  label: 'Black Ops One' },
-      { cls: 'f-alfa',      label: 'Alfa Slab One' },
-      { cls: 'f-monoton',   label: 'Monoton'       },
-      { cls: 'f-rubikmono', label: 'Rubik Mono'    },
+      { cls: 'f-current',   label: 'current'          },
+      { cls: 'f-oswald',    label: 'Oswald'           },
+      { cls: 'f-barlow',    label: 'Barlow Condensed' },
+      { cls: 'f-saira',     label: 'Saira Condensed'  },
+      { cls: 'f-teko',      label: 'Teko'             },
+      { cls: 'f-chakra',    label: 'Chakra Petch'     },
+      { cls: 'f-syncopate', label: 'Syncopate'        },
+      { cls: 'f-orbitron',  label: 'Orbitron'         },
+      { cls: 'f-russo',     label: 'Russo One'        },
+      { cls: 'f-antonio',   label: 'Antonio'          },
+      { cls: 'f-fjalla',    label: 'Fjalla One'       },
     ].map(r => `<div class="ski-font-picker-row"><span class="ski-font-picker-label">${r.label}</span><span class="ski-font-picker-word ${r.cls}">${r.cls === 'f-current' ? '\u2119\u{1D538}\u{1D54A}\u{1D54A}\u{1D542}\u{1D540}.\u{1D54F}\u{1D550}\u2124' : word}</span></div>`).join('');
     panel.innerHTML = `<button class="ski-font-picker-close" type="button" aria-label="Close">\u00D7</button><div class="ski-font-picker-title">PASSKI.XYZ wordmark preview</div>${rows}`;
     panel.querySelector<HTMLElement>('.ski-font-picker-close')?.addEventListener('click', () => panel.remove());

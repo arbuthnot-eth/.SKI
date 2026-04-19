@@ -1,5 +1,5 @@
 /* TEMPORARY font picker — remove once user picks a candidate. */
-@import url('https://fonts.googleapis.com/css2?family=Bungee&family=Bungee+Inline&family=Archivo+Black&family=Black+Ops+One&family=Alfa+Slab+One&family=Monoton&family=Rubik+Mono+One&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@600;700&family=Barlow+Condensed:wght@700;800&family=Saira+Condensed:wght@700;800&family=Teko:wght@600;700&family=Chakra+Petch:wght@700&family=Syncopate:wght@700&family=Orbitron:wght@700;800&family=Russo+One&family=Antonio:wght@700&family=Fjalla+One&display=swap');
 
 :root {
   --bg: #05070d;
@@ -65,13 +65,16 @@
   font-size: 14px;
   cursor: pointer;
 }
-.f-bungee   { font-family: 'Bungee', sans-serif; font-weight: 400; }
-.f-bungee-i { font-family: 'Bungee Inline', sans-serif; font-weight: 400; }
-.f-archivo  { font-family: 'Archivo Black', sans-serif; font-weight: 900; }
-.f-blackops { font-family: 'Black Ops One', sans-serif; font-weight: 400; }
-.f-alfa     { font-family: 'Alfa Slab One', serif; font-weight: 400; }
-.f-monoton  { font-family: 'Monoton', sans-serif; font-weight: 400; }
-.f-rubikmono{ font-family: 'Rubik Mono One', sans-serif; font-weight: 400; }
+.f-oswald   { font-family: 'Oswald', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
+.f-barlow   { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; letter-spacing: 0.02em; }
+.f-saira    { font-family: 'Saira Condensed', sans-serif; font-weight: 800; letter-spacing: 0.02em; }
+.f-teko     { font-family: 'Teko', sans-serif; font-weight: 700; letter-spacing: 0.03em; }
+.f-chakra   { font-family: 'Chakra Petch', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
+.f-syncopate{ font-family: 'Syncopate', sans-serif; font-weight: 700; letter-spacing: 0.03em; }
+.f-orbitron { font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 0.02em; }
+.f-russo    { font-family: 'Russo One', sans-serif; font-weight: 400; letter-spacing: 0.02em; }
+.f-antonio  { font-family: 'Antonio', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
+.f-fjalla   { font-family: 'Fjalla One', sans-serif; font-weight: 400; letter-spacing: 0.02em; }
 .f-current  { font-family: 'Apple Symbols', 'STIX Two Math', 'Cambria Math', 'Noto Sans Math', 'Inter Display', Inter, sans-serif; font-weight: 700; }
 
 * {

@@ -754,12 +754,23 @@ function getInlineSkiSvg(): string {
     const rawBal = balView === 'usd'
       ? ((fmtUsd(_showUsd) || '').replace(/^\$/, '') || '--')
       : fmtSui(_showSui);
-    // Balance text: starts right after the dot shape, extends to right edge
-    const balX = 280; // tighter left start (closer to dot)
-    const balW = 1180 - balX; // available width
-    const fontSize = Math.max(200, Math.min(380, Math.floor(balW / (rawBal.length * 0.52))));
+    // Push the number further right so the $-circle doesn't clip the whole-dollars digit
+    const balX = 360;
+    const balW = 1180 - balX;
+    // Size the WHOLE-dollar digits to fill the available width; cents render smaller + green
+    const dotIdx = rawBal.indexOf('.');
+    const wholeStr = dotIdx >= 0 ? rawBal.slice(0, dotIdx) : rawBal;
+    const decStr = dotIdx >= 0 ? rawBal.slice(dotIdx) : '';
+    // Estimate full visual width as whole@fontSize + dec@0.55*fontSize; solve for fontSize
+    const wholeUnits = wholeStr.length * 0.52;
+    const decUnits = decStr.length * 0.52 * 0.55;
+    const fontSize = Math.max(200, Math.min(380, Math.floor(balW / Math.max(0.5, wholeUnits + decUnits))));
+    const decFont = Math.round(fontSize * 0.55);
     const textY = Math.min(672, 840 - Math.round(fontSize / 2));
-    extraOverlay = `<defs><filter id="ski-bal-glow" x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><text x="${balX}" y="${textY}" textLength="${balW}" lengthAdjust="spacingAndGlyphs" text-anchor="start" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${fontSize}" font-weight="800" fill="white" stroke="white" stroke-width="6" paint-order="stroke fill" filter="url(#ski-bal-glow)" pointer-events="none">${esc(rawBal)}</text>`;
+    const decTspan = decStr
+      ? `<tspan font-size="${decFont}" fill="#22c55e" stroke="#22c55e">${esc(decStr)}</tspan>`
+      : '';
+    extraOverlay = `<defs><filter id="ski-bal-glow" x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><text x="${balX}" y="${textY}" text-anchor="start" dominant-baseline="central" font-family="Inter,system-ui,sans-serif" font-size="${fontSize}" font-weight="800" fill="white" stroke="white" stroke-width="6" paint-order="stroke fill" filter="url(#ski-bal-glow)" pointer-events="none">${esc(wholeStr)}${decTspan}</text>`;
   }
 
   const overlays = dotOverlay + extraOverlay;
@@ -1218,7 +1229,7 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
   const providerBadgeHtml = /waap/i.test(w.name) && addr0
     ? `<div class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</div>`
     : '';
-  const lockInBtnHtml = `<button type="button" class="ski-detail-lockin-btn" data-detail-lockin="true" aria-label="Lock In">LOCK IN</button>`;
+  const lockInBtnHtml = `<button type="button" class="ski-detail-lockin-btn" data-detail-lockin="true" aria-label="Lock In">LOCKIN</button>`;
 
   const otherKeysHtml = displayAddrs.slice(1).map((addr: string, i: number) => keyCardHtml(addr, i + 1)).join('');
 

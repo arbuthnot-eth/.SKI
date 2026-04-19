@@ -3174,15 +3174,29 @@ import('./waap.js').then(async ({ registerWaaP, purgeWaaPState, reinitWaaP }) =>
       console.log('[.SKI] WaaP cache migration v2 complete —', keysToDrop.length, 'keys purged');
     }
   } catch {}
-  // Read cached provider pick — if the user previously chose a social
-  // provider via the NEW PASSKI picker, register WaaP constrained to
-  // that provider so the iframe opens on a single-button screen.
-  // First visit / no cache → default to 'twitter' (X). X is the dominant
-  // pick so new users land on a single-button screen without a reload.
+  // Resolve the social provider to register WaaP with. Priority order:
+  //   1. A previously-connected WaaP address's detected provider
+  //      (ski:waap-provider:<addr>) — overrides everything; the user's
+  //      existing session should re-auth with the same provider.
+  //   2. The user's explicit pick from the NEW PASSKI chip picker
+  //      (ski:waap-preferred-provider).
+  //   3. Default 'twitter' (X) — dominant on first visit.
   let _cachedProvider: 'twitter' | 'google' | 'discord' | 'github' = 'twitter';
   try {
     const raw = localStorage.getItem('ski:waap-preferred-provider');
     if (raw === 'twitter' || raw === 'google' || raw === 'discord' || raw === 'github') _cachedProvider = raw;
+  } catch {}
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('ski:waap-provider:')) continue;
+      const v = localStorage.getItem(k);
+      // Map legacy values ('x' = twitter, 'email'/'phone' not supported as allowedSocials — skip)
+      if (v === 'x' || v === 'twitter') { _cachedProvider = 'twitter'; break; }
+      if (v === 'google') { _cachedProvider = 'google'; break; }
+      if (v === 'discord') { _cachedProvider = 'discord'; break; }
+      if (v === 'github') { _cachedProvider = 'github'; break; }
+    }
   } catch {}
   await registerWaaP(_cachedProvider);
   // If we just reloaded from the NEW PASSKI picker with a provider switch,

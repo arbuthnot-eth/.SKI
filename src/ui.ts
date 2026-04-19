@@ -1699,7 +1699,7 @@ function buildSplashLegend(): string {
     const iconHtml = waapWallet.icon
       ? `<img class="ski-legend-wallet-icon" src="${esc(waapWallet.icon)}" alt="${esc(waapWallet.name)}">`
       : `<span></span>`;
-    const html = `<div class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-row-mid"><span class="ski-legend-name ski-legend-name--create-waap">+ new WaaP</span></span>${iconHtml}</div>`;
+    const html = `<div class="ski-legend-row ski-legend-row--create-waap" data-legend-idx="${rowIdx}" data-legend-wallet="${esc(waapWallet.name)}" data-legend-create-waap="true" tabindex="0" role="option" aria-selected="false"><span class="ski-legend-shape">${LEGEND_GREEN}</span><span class="ski-legend-row-mid"><span class="ski-legend-name ski-legend-name--create-waap">NEW PASSKI</span></span>${iconHtml}</div>`;
     rowIdx++;
     return html;
   };

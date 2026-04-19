@@ -3147,6 +3147,33 @@ import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
   console.warn('[.SKI] zkLogin lazy-load failed:', err);
 });
 import('./waap.js').then(async ({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
+  // One-time cache migration — stale WaaP/silk/walletconnect storage from
+  // before the provider-picker rollout can wedge the iframe on returning
+  // visitors (incognito works fine, normal browsers time out). Purge once
+  // per browser, keep ski:* prefs intact.
+  try {
+    const MIG_KEY = 'ski:waap-mig-v2';
+    if (localStorage.getItem(MIG_KEY) !== '1') {
+      const keysToDrop: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (k.startsWith('ski:')) continue; // preserve our own prefs
+        if (/waap|silk|walletconnect/i.test(k)) keysToDrop.push(k);
+      }
+      keysToDrop.forEach((k) => { try { localStorage.removeItem(k); } catch {} });
+      if (typeof sessionStorage !== 'undefined') {
+        const sk: string[] = [];
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const k = sessionStorage.key(i);
+          if (k && /waap|silk|walletconnect/i.test(k)) sk.push(k);
+        }
+        sk.forEach((k) => { try { sessionStorage.removeItem(k); } catch {} });
+      }
+      try { localStorage.setItem(MIG_KEY, '1'); } catch {}
+      console.log('[.SKI] WaaP cache migration v2 complete —', keysToDrop.length, 'keys purged');
+    }
+  } catch {}
   // Read cached provider pick — if the user previously chose a social
   // provider via the NEW PASSKI picker, register WaaP constrained to
   // that provider so the iframe opens on a single-button screen.

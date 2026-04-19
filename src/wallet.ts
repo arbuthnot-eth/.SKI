@@ -121,16 +121,19 @@ export function getSuiWallets(): Wallet[] {
   const real = walletsApi.get().filter((w) => {
     const hasSuiChain = w.chains.some((c) => c.startsWith('sui:'));
     const hasConnect = 'standard:connect' in w.features;
-    return hasSuiChain && hasConnect;
+    // Hide zkLogin from the modal roster — the flow is not production-ready.
+    // The module stays in the bundle for when it lands; simply unlisted.
+    const isZkLogin = /^zklogin$/i.test(w.name);
+    return hasSuiChain && hasConnect && !isZkLogin;
   });
   // Include static WaaP placeholder if the real WaaP SDK hasn't registered yet
   if (!real.some(w => /waap/i.test(w.name))) {
     real.push(waapPlaceholder);
   }
-  // Include static zkLogin placeholder if the real zklogin module hasn't registered yet
-  if (!real.some(w => /^zklogin$/i.test(w.name))) {
-    real.push(zkLoginPlaceholder);
-  }
+  // zkLogin placeholder intentionally omitted — flow not production-ready.
+  // Re-enable by restoring the push below when shipping zkLogin:
+  //   if (!real.some(w => /^zklogin$/i.test(w.name))) real.push(zkLoginPlaceholder);
+  void zkLoginPlaceholder;
   return real;
 }
 

@@ -141,7 +141,14 @@ const AU_ICON_URI     = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgC
 
 // ─── Passki header title — "·XYZ" where `·` is the black-diamond SKI shape
 // and XYZ is the heavy geometric wordmark that pairs with the X logo.
-const PASSKI_TITLE_HTML = '<span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#3a3a5e" stroke="#ffffff" stroke-width="4"/></svg></span><span class="ski-title-xyz">XYZ</span>';
+// Inline `style` with forced-color-adjust on both the <svg> and the
+// <polygon> defends the vantablack fill from Windows High Contrast,
+// print stylesheets, and Brave/Firefox "invert on dark" extensions that
+// override system colors — those modes replace fill: attributes with
+// CanvasText / ButtonText (often white on dark). The explicit hex fill,
+// `forced-color-adjust: none`, and `color-scheme: light` on the svg root
+// together keep the diamond absolute-black across every rendering mode.
+const PASSKI_TITLE_HTML = '<span class="ski-title-diamond" aria-hidden="true"><svg viewBox="0 0 47 47" width="1em" height="1em" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;color-scheme:light"><polygon points="23.5,2.5 44.5,23.5 23.5,44.5 2.5,23.5" fill="#000000" stroke="#ffffff" stroke-width="4" style="forced-color-adjust:none;-webkit-forced-color-adjust:none;fill:#000000!important"/></svg></span><span class="ski-title-xyz">XYZ</span>';
 
 // ─── Social provider icons (inline SVG, ships in the bundle) ─────────
 // Used in legend col-4 to replace wallet logos for social-login wallets.

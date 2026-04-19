@@ -7792,8 +7792,31 @@ a.ski-idle-bubble-name:hover {
   height: 1em;
   line-height: 1;
   vertical-align: middle;
+  /* Defend the vantablack against forced-colors and dark-mode inversion */
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+  color-scheme: light;
+  color: #000000;
 }
-.ski-title-diamond svg { display: block; width: 100%; height: 100%; }
+.ski-title-diamond svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+.ski-title-diamond svg polygon {
+  fill: #000000 !important;
+  forced-color-adjust: none;
+  -webkit-forced-color-adjust: none;
+}
+/* Some UA high-contrast modes keyed to system queries — pin fills again */
+@media (forced-colors: active) {
+  .ski-title-diamond svg polygon { fill: #000000 !important; stroke: #ffffff !important; }
+}
+@media (prefers-contrast: more), (prefers-contrast: high) {
+  .ski-title-diamond svg polygon { fill: #000000 !important; }
+}
 .ski-title-xyz {
   font-family: 'Inter Display', 'Space Grotesk', 'Arial Black', Inter, sans-serif;
   font-weight: 900;

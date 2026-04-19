@@ -7250,17 +7250,22 @@ a.ski-idle-bubble-name:hover {
    corner; provider badge (X/Google/Discord) overlaps top-right corner. */
 .ski-detail-logo-stack {
   position: relative;
-  display: inline-block;
-  width: clamp(96px, 55cqw, 140px);
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
 }
 .ski-detail-logo-stack .ski-detail-icon-wrap {
   width: 100%;
+  height: 100%;
   aspect-ratio: 1;
+  border-radius: 14px;
+  overflow: hidden;
 }
 .ski-detail-logo-stack .ski-detail-icon {
   width: 100%;
   height: 100%;
   display: block;
+  object-fit: cover;
 }
 .ski-detail-pfp-overlap {
   position: absolute;

@@ -1206,8 +1206,9 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
         ${addrUnderQrHtml}
       </div>`
     : '';
-  const bigNameHtml = suinsName0
-    ? `<div class="ski-detail-name-big"><span class="ski-detail-name-text">${esc(suinsName0)}</span><span class="ski-detail-name-tld">.sui</span></div>`
+  const bareName0 = (suinsName0 || '').replace(/\.sui$/i, '');
+  const bigNameHtml = bareName0
+    ? `<div class="ski-detail-name-big"><span class="ski-detail-name-text">${esc(bareName0)}</span><span class="ski-detail-name-tld">.sui</span></div>`
     : `<div class="ski-detail-name-big-input">${nameInputHtml}</div>`;
   const providerBadgeHtml = /waap/i.test(w.name) && addr0
     ? `<div class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</div>`

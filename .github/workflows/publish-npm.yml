@@ -12,6 +12,7 @@ on:
       - 'package.json'
       - 'bun.lock'
       - 'wrangler.jsonc'
+      - 'README.md'
       - '.github/workflows/publish-npm.yml'
   workflow_dispatch:
 

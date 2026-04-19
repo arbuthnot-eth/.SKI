@@ -25,7 +25,9 @@
 
   // Custom domain
   "routes": [
-    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" }
+    { "pattern": "sui.ski/*", "zone_id": "87dac7421456cdd43ae9a1c5d00da601" },
+    { "pattern": "passki.xyz", "zone_id": "44c8352be494227bef1b893f0eadb5d5", "custom_domain": true },
+    { "pattern": "www.passki.xyz", "zone_id": "44c8352be494227bef1b893f0eadb5d5", "custom_domain": true }
   ],
 
   // Serve public/ as static assets

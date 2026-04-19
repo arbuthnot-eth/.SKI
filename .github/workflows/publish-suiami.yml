@@ -43,7 +43,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Mirror of the sui.ski workflow's preflight — fail fast on bad
+      # Mirror of the passki workflow's preflight — fail fast on bad
       # token before wasting build minutes.
       - name: NPM token preflight
         env:
@@ -100,7 +100,7 @@ jobs:
         id: bst
         run: |
           # Scope "since" to the last suiami tag so we don't count
-          # sui.ski-only commits.
+          # passki-only commits.
           SINCE=$(git tag --list 'suiami-v*' --sort=-v:refname | head -n1)
           if [ -z "$SINCE" ]; then
             echo "No prior suiami-v* tag; using root."

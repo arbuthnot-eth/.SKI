@@ -3,9 +3,9 @@ name: Publish npm Package
 on:
   push:
     branches: [master]
-    # Monorepo path filtering — publish `sui.ski` ONLY when its own
+    # Monorepo path filtering — publish `passki` ONLY when its own
     # sources changed. suiami-only changes route to publish-suiami.yml
-    # and don't trigger an unrelated sui.ski patch bump.
+    # and don't trigger an unrelated passki patch bump.
     paths:
       - 'src/**'
       - 'public/**'
@@ -47,37 +47,37 @@ jobs:
         run: |
           set -e
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::error::NODE_AUTH_TOKEN secret is empty or missing. Fix: gh secret set NODE_AUTH_TOKEN --repo arbuthnot-eth/.SKI"
+            echo "::error::NODE_AUTH_TOKEN secret is empty or missing. Fix: gh secret set NODE_AUTH_TOKEN --repo arbuthnot-eth/passki"
             exit 1
           fi
           echo "Checking npm whoami..."
           if ! WHO=$(npm whoami 2>&1); then
             echo "::error::npm whoami failed. Token is invalid/expired/revoked. Root cause: $WHO"
-            echo "::error::Fix: create a new Granular Access Token at https://www.npmjs.com/settings/<user>/tokens with Read and write + sui.ski in the Packages list, then update NODE_AUTH_TOKEN."
+            echo "::error::Fix: create a new Granular Access Token at https://www.npmjs.com/settings/<user>/tokens with Read and write + passki in the Packages list, then update NODE_AUTH_TOKEN."
             exit 1
           fi
           echo "npm whoami: $WHO"
           echo ""
-          echo "Checking that token can publish to sui.ski..."
+          echo "Checking that token can publish to passki..."
           # npm access list packages returns the packages this token can access.
           # Grep for the exact package name to catch wrong-scope tokens.
           if ! PKGS=$(npm access list packages 2>&1); then
             echo "::warning::npm access list packages failed — continuing anyway, publish will tell us the real answer. Output: $PKGS"
           else
-            if ! echo "$PKGS" | grep -q '"sui.ski"'; then
-              echo "::error::Token does not have access to sui.ski. Granular tokens must explicitly include the package in their Packages list."
+            if ! echo "$PKGS" | grep -q '"passki"'; then
+              echo "::error::Token does not have access to passki. Granular tokens must explicitly include the package in their Packages list."
               echo "::error::Current accessible packages:"
               echo "$PKGS"
-              echo "::error::Fix: https://www.npmjs.com/settings/$WHO/tokens → Edit token → add sui.ski to Packages, OR regenerate as a Classic Automation token."
+              echo "::error::Fix: https://www.npmjs.com/settings/$WHO/tokens → Edit token → add passki to Packages, OR regenerate as a Classic Automation token."
               exit 1
             fi
-            ACCESS=$(echo "$PKGS" | grep '"sui.ski"')
+            ACCESS=$(echo "$PKGS" | grep '"passki"')
             if echo "$ACCESS" | grep -q '"read-only"'; then
-              echo "::error::Token has READ-ONLY access to sui.ski. Need Read and write to publish."
-              echo "::error::Fix: https://www.npmjs.com/settings/$WHO/tokens → Edit token → change sui.ski to Read and write."
+              echo "::error::Token has READ-ONLY access to passki. Need Read and write to publish."
+              echo "::error::Fix: https://www.npmjs.com/settings/$WHO/tokens → Edit token → change passki to Read and write."
               exit 1
             fi
-            echo "Token has write access to sui.ski. Proceeding."
+            echo "Token has write access to passki. Proceeding."
           fi
 
       - name: Install dependencies
@@ -95,7 +95,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       # Pokemon-BST-driven version bump. Reads commit subjects since
-      # the most recent plain `v*` tag (sui.ski's tag convention —
+      # the most recent plain `v*` tag (passki's tag convention —
       # `suiami-v*` tags belong to the SDK). Maps named Pokemon in
       # each subject to a base-stat-total and picks patch/minor/major.
       # See scripts/pokemon-bump.ts for the BST table and rules.

@@ -10526,7 +10526,7 @@ function bindEvents() {
 
       _idleOverlay.innerHTML = `
         <div class="ski-idle-media">
-          <a class="ski-idle-version" href="https://www.npmjs.com/package/sui.ski" target="_blank" rel="noopener noreferrer">v${SKI_VERSION}</a>
+          <a class="ski-idle-version" href="https://www.npmjs.com/package/passki" target="_blank" rel="noopener noreferrer">v${SKI_VERSION}</a>
           <video class="ski-idle-img" autoplay loop muted playsinline></video>
           <div class="ski-idle-iusd-btn" id="ski-idle-iusd" title="Swap 95% of wallet to iUSD"></div>
           <div class="ski-idle-ns-row">

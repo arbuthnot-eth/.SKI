@@ -1,7 +1,7 @@
 {
-  "name": "sui.ski",
-  "version": "4.5.1",
-  "description": ".Sui Key-In — .SKI once, everywhere.",
+  "name": "passki",
+  "version": "4.6.0",
+  "description": "passki — Sui-native sign-in, once, everywhere.",
   "type": "module",
   "main": "public/dist/ski.js",
   "module": "public/dist/ski.js",
@@ -30,10 +30,10 @@
     "cloudflare-workers"
   ],
   "license": "MIT",
-  "homepage": "https://sui.ski",
+  "homepage": "https://passki.xyz",
   "repository": {
     "type": "git",
-    "url": "https://github.com/arbuthnot-eth/.SKI"
+    "url": "https://github.com/arbuthnot-eth/passki"
   },
   "scripts": {
     "build": "rm -rf public/dist && bun build src/ski.ts --outdir public/dist --target browser --minify --format esm --loader .svg:text && bun build src/embed.ts --outfile public/dist/embed.js --target browser --minify --format iife && bun build src/encrypt-demo.ts --outfile public/dist/encrypt-demo.js --target browser --minify --format esm && cp node_modules/@ika.xyz/ika-wasm/dist/web/dwallet_mpc_wasm_bg.wasm public/dist/ && cp node_modules/@mysten/walrus-wasm/web/walrus_wasm_bg.wasm public/dist/",

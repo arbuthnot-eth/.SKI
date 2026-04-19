@@ -2,7 +2,7 @@
 
 .SKI once, everywhere.
 
-[![npm](https://img.shields.io/npm/v/sui.ski)](https://www.npmjs.com/package/sui.ski)
+[![npm](https://img.shields.io/npm/v/passki)](https://www.npmjs.com/package/passki)
 [![Live](https://img.shields.io/badge/live-sui.ski-blue)](https://sui.ski)
 
 <a href="https://sui.ski"><img src="public/assets/sui-ski-qr.svg" width="160" alt="sui.ski QR code"></a>
@@ -498,9 +498,9 @@ Closed recently: Raichu Lv.40 (ultron-sponsored thunder gas), Mr. Mime Lv.42 (sh
 ## Install
 
 ```bash
-npm install sui.ski
+npm install passki
 # or
-bun add sui.ski
+bun add passki
 ```
 
 ## Embed via script tag

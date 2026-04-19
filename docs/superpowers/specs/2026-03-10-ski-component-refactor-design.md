@@ -39,7 +39,7 @@ All components register as Custom Elements with the `ski-` prefix:
 
 <!-- Imperative control -->
 <script type="module">
-  import { openModal, signIn } from 'sui.ski'
+  import { openModal, signIn } from 'passki'
 </script>
 ```
 

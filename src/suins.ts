@@ -358,6 +358,36 @@ export async function readRosterByChain(chainKey: string): Promise<RosterRecord 
   } catch { return null; }
 }
 
+/** SUIAMI package original ID — used to type the EnsHashKey wrapper. */
+const SUIAMI_ORIGINAL_ID = '0x2c1d63b3b314f9b6e96c33e9a3bca4faaa79a69a5729e5d2e8ac09d70e1052fa';
+
+/**
+ * Read the SUIAMI Roster record bound to an ENS name (e.g. "waap.whelm.eth").
+ * Returns null if no record exists. Used by the key-detail UI to surface
+ * a `<name>.whelm.eth` subname when the user has whelmed their SuiNS name.
+ */
+export async function readRosterByEns(ensName: string): Promise<{ name: string; sui_address: string } | null> {
+  if (!isMainnet()) return null;
+  const name = (ensName || '').trim().toLowerCase();
+  if (!name) return null;
+  try {
+    const ensHash = keccak_256(new TextEncoder().encode(name));
+    const bcs = String.fromCharCode(32, ...ensHash); // 32-byte length prefix + hash bytes
+    const b64 = btoa(bcs);
+    const res = await fetch(GQL_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        query: `{ object(address:"${ROSTER_OBJ}"){ dynamicField(name:{ type:"${SUIAMI_ORIGINAL_ID}::roster::EnsHashKey", bcs:"${b64}" }){ value{ ...on MoveValue{ json } } } } }`,
+      }),
+    });
+    const gql = await res.json() as any;
+    const record = gql?.data?.object?.dynamicField?.value?.json;
+    if (!record) return null;
+    return { name: record.name ?? '', sui_address: record.sui_address ?? '' };
+  } catch { return null; }
+}
+
 /** Split a swap fee from an output coin and send to treasury.
  *  @param tx - the Transaction
  *  @param outputCoin - the coin result to skim from

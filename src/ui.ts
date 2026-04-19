@@ -1207,8 +1207,13 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       </div>`
     : '';
   const bareName0 = (suinsName0 || '').replace(/\.sui$/i, '');
+  // Name block: SuiNS name up top; `.whelm.eth` subname slot underneath,
+  // empty until the async roster check resolves.
   const bigNameHtml = bareName0
-    ? `<div class="ski-detail-name-big"><span class="ski-detail-name-text">${esc(bareName0)}</span><span class="ski-detail-name-tld">.sui</span></div>`
+    ? `<div class="ski-detail-name-block">
+        <div class="ski-detail-name-big"><span class="ski-detail-name-text">${esc(bareName0)}</span><span class="ski-detail-name-tld">.sui</span></div>
+        <div class="ski-detail-whelm-slot" id="ski-detail-whelm-slot" data-bare="${esc(bareName0)}"></div>
+      </div>`
     : `<div class="ski-detail-name-big-input">${nameInputHtml}</div>`;
   const providerBadgeHtml = /waap/i.test(w.name) && addr0
     ? `<div class="ski-detail-provider-badge" aria-hidden="true">${waapProviderIcon(addr0)}</div>`
@@ -1248,6 +1253,22 @@ function showKeyDetail(w: Wallet, detailEl: HTMLElement, connectedAddr: string) 
       ${activeQrHtml}
     </div>
   `;
+
+  // Async: if a `<bareName>.whelm.eth` subname is bound in the SUIAMI
+  // roster, inject it under the SuiNS name so the user sees both handles.
+  if (bareName0) {
+    void (async () => {
+      try {
+        const { readRosterByEns } = await import('./suins.js');
+        const ensName = `${bareName0.toLowerCase()}.whelm.eth`;
+        const rec = await readRosterByEns(ensName);
+        if (!rec) return;
+        const slot = document.getElementById('ski-detail-whelm-slot');
+        if (!slot || slot.dataset.bare !== bareName0) return; // pane swapped since
+        slot.innerHTML = `<span class="ski-detail-whelm-eth" title="${esc(ensName)} bound in SUIAMI roster">${esc(bareName0)}<span class="ski-detail-whelm-eth-tld">.whelm.eth</span></span>`;
+      } catch {}
+    })();
+  }
 
   // Render other keys (black diamonds) into the slot below the legend
   const otherKeysSlot = document.getElementById('ski-other-keys-slot');

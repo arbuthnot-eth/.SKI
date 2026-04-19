@@ -14,9 +14,13 @@ const WAAP_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5
 
 let registered = false;
 let waapWallet: ReturnType<typeof initWaaPSui> | null = null;
+let currentProvider: SocialProvider | null = null;
 
 /** Get the WaaP wallet instance (null if not registered) */
 export function getWaaPWallet() { return waapWallet; }
+
+/** Return the SocialProvider this page registered WaaP with (null = full list). */
+export function getCurrentWaapProvider(): SocialProvider | null { return currentProvider; }
 
 /**
  * Force a fresh WaaP registration. Use after a sign-personal-message timeout
@@ -143,10 +147,11 @@ export async function registerWaaP(providerHint?: SocialProvider): Promise<void>
       },
     });
     waapWallet = wallet;
+    currentProvider = providerHint ?? null;
     // Override the built-in icon with our custom branded SVG
     Object.defineProperty(wallet, 'icon', { value: WAAP_ICON, writable: false, enumerable: true, configurable: true });
     registerWallet(wallet as unknown as Parameters<typeof registerWallet>[0]);
-    console.log('[.SKI] WaaP wallet registered');
+    console.log('[.SKI] WaaP wallet registered', providerHint ? `(social=${providerHint})` : '(full picker)');
   } catch (err) {
     registered = false;
     console.warn('[.SKI] WaaP registration failed:', err);

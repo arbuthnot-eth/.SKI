@@ -18249,31 +18249,42 @@ export function initUI() {
       const walletName = providerChip.dataset.walletName;
       const wallet = walletName ? getSuiWallets().find((w) => w.name === walletName) : null;
       if (!wallet || !provider) return;
-      // Remember the provider so future pickers pre-highlight it
+      // Cache the pick so next page load constrains WaaP to this provider.
       try { localStorage.setItem('ski:waap-preferred-provider', provider); } catch {}
-      closeModal();
       void (async () => {
-        try { await disconnect(); } catch {}
+        const { getCurrentWaapProvider } = await import('./waap.js');
+        const current = getCurrentWaapProvider();
+        // WaaP's SDK cannot be re-initialized in the same page load — the
+        // iframe's postMessage origin gets stuck. If the registered provider
+        // already matches the user's pick, connect directly. Otherwise we
+        // cache an auto-connect flag in sessionStorage and hard-reload the
+        // page so WaaP re-initializes with the new allowedSocials constraint.
+        if (current === provider) {
+          closeModal();
+          try { await disconnect(); } catch {}
+          try {
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+              const k = localStorage.key(i);
+              if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
+            }
+          } catch {}
+          try {
+            await connect(wallet, { skipSilent: true });
+          } catch (err) {
+            showToast('Failed to connect: ' + _errMsg(err));
+          }
+          return;
+        }
+        // Provider mismatch → reload with auto-connect flag. The reload is
+        // fast (< 1s) and gets us a freshly-initialized WaaP iframe.
         try {
+          sessionStorage.setItem('ski:waap-auto-connect', provider);
           for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
             if (k && !k.startsWith('ski:')) localStorage.removeItem(k);
           }
         } catch {}
-        try {
-          const { reinitWaaP } = await import('./waap.js');
-          await reinitWaaP(provider);
-        } catch (err) {
-          showToast('WaaP init failed: ' + _errMsg(err));
-          return;
-        }
-        // Re-resolve the wallet after reinit — the registration replaces the instance
-        const freshWallet = getSuiWallets().find((w) => /waap/i.test(w.name)) ?? wallet;
-        try {
-          await connect(freshWallet, { skipSilent: true });
-        } catch (err) {
-          showToast('Failed to connect: ' + _errMsg(err));
-        }
+        window.location.reload();
       })();
       return;
     }

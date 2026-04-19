@@ -3146,8 +3146,31 @@ import('./zklogin.js').then(({ registerZkLogin, configureZkLogin }) => {
 }).catch((err) => {
   console.warn('[.SKI] zkLogin lazy-load failed:', err);
 });
-import('./waap.js').then(({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
-  registerWaaP();
+import('./waap.js').then(async ({ registerWaaP, purgeWaaPState, reinitWaaP }) => {
+  // Read cached provider pick — if the user previously chose a social
+  // provider via the NEW PASSKI picker, register WaaP constrained to
+  // that provider so the iframe opens on a single-button screen. First
+  // visit / no cache → full picker fallback.
+  let _cachedProvider: 'twitter' | 'google' | 'discord' | 'github' | null = null;
+  try {
+    const raw = localStorage.getItem('ski:waap-preferred-provider');
+    if (raw === 'twitter' || raw === 'google' || raw === 'discord' || raw === 'github') _cachedProvider = raw;
+  } catch {}
+  await registerWaaP(_cachedProvider || undefined);
+  // If we just reloaded from the NEW PASSKI picker with a provider switch,
+  // auto-continue the connect flow so the user doesn't have to tap again.
+  try {
+    const autoProv = sessionStorage.getItem('ski:waap-auto-connect');
+    if (autoProv) {
+      sessionStorage.removeItem('ski:waap-auto-connect');
+      const { getSuiWallets, connect, disconnect } = await import('./wallet.js');
+      const waap = getSuiWallets().find((w: { name: string }) => /waap/i.test(w.name));
+      if (waap) {
+        try { await disconnect(); } catch {}
+        try { await connect(waap as never, { skipSilent: true }); } catch (err) { console.warn('[.SKI] auto-connect after reload failed:', err); }
+      }
+    }
+  } catch {}
   // Console helpers on window.ski:
   //   ski.resetWaaP()           — nuclear WaaP state purge + reinit
   //   ski.reinitWaaP()          — just re-register the iframe

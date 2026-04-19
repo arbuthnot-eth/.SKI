@@ -77,16 +77,6 @@
 .f-dmmono   { font-family: 'DM Mono', ui-monospace, monospace; font-weight: 500; }
 .f-current  { font-family: 'Apple Symbols', 'STIX Two Math', 'Cambria Math', 'Noto Sans Math', 'Inter Display', Inter, sans-serif; font-weight: 700; }
 
-/* Thin-I override: shrink the character horizontally so it visually
-   reads as a narrow stem inside the monospace grid. Applies to any
-   .i-thin span inside a wordmark. */
-.ski-font-picker-word .i-thin {
-  display: inline-block;
-  transform: scaleX(0.45);
-  transform-origin: center;
-  margin: 0 -0.2em;
-  font-weight: 300;
-}
 
 * {
   box-sizing: border-box;

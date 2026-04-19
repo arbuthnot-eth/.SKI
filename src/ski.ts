@@ -305,10 +305,7 @@ if (typeof window !== 'undefined') {
     const panel = document.createElement('div');
     panel.id = 'ski-font-picker';
     panel.className = 'ski-font-picker';
-    // PASSKI.XYZ with each I wrapped in .i-thin so it renders as a narrow
-    // stem inside the monospace grid — matches the thin "I" in the
-    // crafted SKI button.
-    const wordHtml = 'PASSK<span class="i-thin">I</span>.XYZ';
+    const wordHtml = 'PASSKI.XYZ';
     const rows = [
       { cls: 'f-current',    label: 'current'      },
       { cls: 'f-jetbrains',  label: 'JetBrains'    },

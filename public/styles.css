@@ -7809,11 +7809,20 @@ a.ski-idle-bubble-name:hover {
 }
 
 .ski-modal-header-left {
-  display: flex;
-  align-items: flex-end;
-  gap: 5px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "title   title"
+    "logo    tagline";
+  align-items: end;
+  column-gap: 10px;
+  row-gap: 4px;
   overflow: visible;
 }
+.ski-modal-header-left > .ski-modal-brand-link { grid-area: logo; }
+.ski-modal-header-left > .ski-modal-titles { display: contents; }
+.ski-modal-header-left .ski-modal-title { grid-area: title; text-align: center; justify-content: center; }
+.ski-modal-header-left .ski-modal-tagline { grid-area: tagline; text-align: left; align-self: center; }
 
 .ski-modal-brand-link {
   display: flex;

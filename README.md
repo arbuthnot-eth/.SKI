@@ -7,13 +7,11 @@ Key in once, everywhere.
 
 <a href="https://passki.xyz"><img src="public/assets/sui-ski-qr.svg" width="160" alt="passki QR code"></a>
 
-> **Rebranded April 2026.** Formerly `.SKI` / `sui.ski`. The npm package, GitHub repo, and primary domain are now `passki`. The legacy domain `sui.ski` still routes to the same worker as an alias. Internal lore ("SKI Pass", "key-in", Pokemon versioning) is unchanged — SKI is still the in-project shorthand for the sign-in primitive.
-
 ---
 
 ## What passki Is
 
-passki is a Sui-native messaging and cross-chain identity dApp where SuiNS names are communication endpoints. You send a thunder to `@name` and it lands as an encrypted storm conversation whose ciphertext lives on Walrus and whose keys live behind Seal. Every wallet, agent, and cross-chain address is IKA-native — no private keys sit on Cloudflare Workers, ever. The same UI rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
+passki is a Sui-native identity and messaging stack where SuiNS names are the endpoints. A single Sui account controls native Bitcoin, Solana, and Ethereum addresses through IKA dWallets — no bridges, no wrapping, no custodians. Every agent, wallet, and cross-chain address is IKA-native, and no private keys sit on Cloudflare Workers. Send a thunder to `@name` and it lands as a Seal-encrypted storm whose ciphertext lives on Walrus and whose keys live behind threshold decryption. The same rails carry Thunder messages, Thunder IOU transfers, shielded Pedersen commitments, Shade grace-period snipes, and SUIAMI cross-chain identity proofs.
 
 Agents (ultron, chronicoms, t2000s) are Durable Objects that sign via IKA dWallet user shares + DWalletCap wrappers. `brando.sui` runs DKG in the browser and re-encrypts the user share to the agent. Either brando OR agent + IKA network = a valid signature.
 
@@ -105,7 +103,7 @@ Thunder isn't a performance compromise — it's the decision that unlocks everyt
 
 | Layer | What Thunder unlocks |
 |---|---|
-| **Spam control (inkas vs strangers)** | Enforcement lives at ultron, not in N client implementations. Visiting sui.ski and keying in mints a SKI Pass automatically — that's the gate. Strangers to SKI fix it in 10 seconds; inkas (anyone whose suiami you carry) pass through. Zero client trust needed. |
+| **Spam control (inkas vs strangers)** | Enforcement lives at ultron, not in N client implementations. Keying in mints a SKI Pass automatically — that's the gate. Strangers fix it in 10 seconds; inkas (anyone whose suiami you carry) pass through. Zero client trust needed. |
 | **Delivery model** | One WebSocket per Prismoid to ultron, reused for all traffic. Cloudflare Durable Object hibernatable WebSockets are free when idle. Already wired. |
 | **Forward secrecy** | Single write path. Ultron watches Prismoid rotation events on-chain and scribes new anchors into the timestream. No multi-device desync — the anchor lives in the chronicom where both sides read from it. |
 | **Cross-chain delivery** | Collapses into "ultron emits chain-specific notifications." Ultron has its own dWallets (ed25519, secp256k1) and can drop a SOL memo, an EVM event, or a BTC OP_RETURN when the recipient has no SKI client. The non-Sui recipient installs nothing. |
@@ -144,12 +142,11 @@ Thunder. Ultron sees who, never what. Everything else falls out for free.
 
 | Domain | Purpose |
 |---|---|
-| `passki.xyz` | Root — main application, embeddable widget, API endpoints (custom domain on `dotski` worker) |
-| `www.passki.xyz` | Apex alias (custom domain, same worker) |
-| `sui.ski` | Legacy alias — still routed to `dotski` for backward compatibility |
-| `<name>.sui.ski` | SuiNS profile pages (e.g. `brando.sui.ski`) — preserved for existing links |
+| `passki.xyz` | Root — main application, embeddable widget, API endpoints |
+| `www.passki.xyz` | Apex alias |
+| `<name>.sui.ski` | SuiNS profile pages (e.g. `brando.sui.ski`) |
 
-Cross-domain session cookie (`ski:xdomain`) on `domain=sui.ski` for auth persistence across legacy subdomains. A parallel cookie on `passki.xyz` is registered alongside.
+Cross-domain session cookie persistence across subdomains via `domain` attribute on the active root.
 
 ---
 
